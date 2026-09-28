@@ -560,6 +560,35 @@ stay below `p`, so `2·bits < log2 p` and the batch is capped at
 4-bit values in silent mode. This is the honest reach of a 20-bit plaintext
 modulus, and the reason the regression pilot is a pilot.
 
+### Per-element bounds: `BoundedSumVec`
+
+`SumVec` checks every element against one width, so a task with blood
+pressure (0–255) and oxygen saturation (0–100) in one vector would accept
+oxygen 200. `BoundedSumVec { bounds }` gives each element an exact range
+by applying the draft's `Sum` encoding per element: element `e` with bound
+`B_e` uses `b_e = bitlen(B_e)` value bits and `b_e` bits of
+`v_e + offset_e`, `offset_e = 2^b_e − 1 − B_e`, and one linear constraint
+`value(x_e) + offset_e − value(y_e) = 0`. If `v_e > B_e` then
+`v_e + offset_e ≥ 2^b_e` fits no `y_e`, so no assignment of the offset
+bits satisfies the constraint. The constraints enter the existing random
+linear combination, one challenge element each, so the soundness bound of
+section 4.1 is unchanged (a nonzero constraint vector survives an
+independent random combination with probability `1/p` per repetition, and
+two elements violated in opposite directions cancel only when two
+independent coefficients coincide). Cost: `2·b_e` slots per element, no
+extra depth. The aggregate and the second moments read only the value
+bits; the collector's consistency check holds per element
+(`value_sum_e + count·offset_e = offset_sum_e`). Bounds are part of the
+task binding, so a client encoding under other bounds is rejected. The
+second-moment circuit now recomposes each value from its own bit slots
+with a per-value weight mask, so values of different widths coexist, and
+the batch cap for moments follows the two widest values:
+`(p − 1) / 2^(b_1 + b_2)`. `tests/bounds.rs`: every element at its bound
+passes; bound + 1 with a zero, wrapped or saturated offset half fails;
+inconsistent offset bits fail; the tail element fails; opposite violations
+fail across twelve fresh challenges; silent mode contributes zero;
+mixed-width moments match the plaintext fit; the bounds are bound.
+
 ### Horizontal sharding (`sharding.rs`, node `router`)
 
 Throughput beyond one aggregator set comes from running several sets in

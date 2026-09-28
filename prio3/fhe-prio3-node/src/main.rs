@@ -43,7 +43,7 @@ enum Cmd {
     TaskConfig {
         #[arg(long)]
         out: PathBuf,
-        /// count | sum:<max> | sumvec:<len>:<bits> | histogram:<len> | multihot:<len>:<maxw>
+        /// count | sum:<max> | sumvec:<len>:<bits> | bounded:<b1,b2,...> | histogram:<len> | multihot:<len>:<maxw>
         #[arg(long)]
         r#type: String,
         #[arg(long, default_value_t = 2)]
@@ -115,7 +115,7 @@ enum Cmd {
         leader: String,
         #[arg(long)]
         ca: PathBuf,
-        /// Measurement: count:<0|1> | sum:<v> | sumvec:<a,b,c> | histogram:<i> | multihot:<0,1,0,...>
+        /// Measurement: count:<0|1> | sum:<v> | sumvec:<a,b,c> (also for bounded tasks) | histogram:<i> | multihot:<0,1,0,...>
         #[arg(long)]
         value: String,
         /// Client signing key file (32 bytes hex) when the task requires authentication.
@@ -204,6 +204,7 @@ fn parse_type(s: &str) -> anyhow::Result<MeasurementType> {
         ["count"] => MeasurementType::Count,
         ["sum", m] => MeasurementType::Sum { max_measurement: m.parse()? },
         ["sumvec", l, b] => MeasurementType::SumVec { length: l.parse()?, bits: b.parse()? },
+        ["bounded", bs] => MeasurementType::BoundedSumVec { bounds: bs.split(',').map(|x| x.parse::<u64>()).collect::<std::result::Result<Vec<u64>, _>>()? },
         ["histogram", l] => MeasurementType::Histogram { length: l.parse()? },
         ["multihot", l, w] => MeasurementType::MultihotCountVec { length: l.parse()?, max_weight: w.parse()? },
         _ => anyhow::bail!("unknown type {s}"),

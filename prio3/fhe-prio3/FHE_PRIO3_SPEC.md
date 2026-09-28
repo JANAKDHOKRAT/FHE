@@ -379,38 +379,61 @@ depend on honest inputs) are never decrypted.
 Container: 4 vCPUs of an Intel Xeon at 2.80 GHz, OpenFHE
 v1.3.1 with OpenMP, `cargo --release`, ring dimension 32768, 128-bit
 security, `p = 4293918721`, `k = 4` (soundness `2^-124`), 2 aggregators.
-`simulate` numbers, per report and per aggregator unless stated.
+`simulate` numbers, per report and per aggregator unless stated, measured
+with the packed wire format (§6b); 8 reports per run (4 for SumVec(1200)).
 
 | Type | `m` | block | chunks | client shard | aggregator (init + masks + finish) | report size |
 | --- | --- | --- | --- | --- | --- | --- |
-| Count | 1 | 1 | 1 | 59 ms | 380 + 91 + 27 = **499 ms** | 3.5 MiB |
-| Sum(100) | 14 | 16 | 1 | 50 ms | 486 + 84 + 28 = **598 ms** | 3.5 MiB |
-| Histogram(64) | 64 | 64 | 1 | 49 ms | 553 + 77 + 26 = **655 ms** | 3.5 MiB |
-| SumVec(8, 8 bits) | 64 | 64 | 1 | 50 ms | 536 + 81 + 27 = **643 ms** | 3.5 MiB |
-| MultihotCountVec(32, 4) | 35 | 64 | 1 | 54 ms | 556 + 82 + 26 = **664 ms** | 3.5 MiB |
-| SumVec(1200, 4 bits) | 4800 | 4096 | 2 | 111 ms | 1101 + 84 + 27 = **1212 ms** | 7.0 MiB |
-| Histogram(16), 3 aggregators | 16 | 16 | 1 | — | 504 + 111 + 50 = **665 ms** | 3.5 MiB |
+| Count | 1 | 1 | 1 | 48 ms | 373 + 70 + 7 = **451 ms** | 2.73 MiB |
+| Sum(100) | 14 | 16 | 1 | 47 ms | 493 + 64 + 7 = **565 ms** | 2.73 MiB |
+| Histogram(64) | 64 | 64 | 1 | 48 ms | 566 + 67 + 7 = **641 ms** | 2.73 MiB |
+| SumVec(8, 8 bits) | 64 | 64 | 1 | 46 ms | 535 + 65 + 7 = **607 ms** | 2.73 MiB |
+| MultihotCountVec(32, 4) | 35 | 64 | 1 | 48 ms | 542 + 63 + 7 = **613 ms** | 2.73 MiB |
+| SumVec(1200, 4 bits) | 4800 | 4096 | 2 | 93 ms | 1075 + 67 + 9 = **1151 ms** | 5.47 MiB |
+| Histogram(16), 3 aggregators | 16 | 16 | 1 | 52 ms | 483 + 72 + 10 = **565 ms** | 2.73 MiB |
 
-Other sizes: mask message 3.5 MiB, verifier message 1.0 MiB, aggregate
-share 1.75 MiB per chunk, public key 5.5 MiB, relinearisation key 11 MiB,
-rotation keys 11 MiB per index. Ceremony 1.7–4.8 s. Batch close:
-25 ms per aggregator plus 50 ms at the collector per chunk. With `k = 2`
-(soundness `2^-62`) the aggregator cost for Sum(100) drops to 487 ms.
-With `AuthPolicy::Required` (Count, 3 reports) the aggregator cost is
-563 ms per report: signature verification is not measurable next to the
-homomorphic work.
+Other sizes: mask message 2.73 MiB, verifier message 0.87 MiB, aggregate
+share 1.37 MiB per chunk, public key 5.5 MiB, relinearisation key 11 MiB,
+rotation keys 11 MiB per index. Ceremony 1.6–4.2 s. Batch close:
+22–27 ms per aggregator plus 10–14 ms at the collector per chunk.
+
+Against the same table measured with OpenFHE's encoding (3.5 MiB reports
+and masks, 1.0 MiB verifier messages, 1.75 MiB shares), reports, masks
+and shares are 22 % smaller. Verifier messages are about 13 % smaller,
+since the four towers a partial keeps at level 3 are 48 to 60 bits wide.
+The steps that receive a ciphertext are faster:
+`prepare_finish` went from 26–28 ms to 7–10 ms, and the collector from
+50 ms to 10–14 ms per chunk. That is OpenFHE's deserializer (about 23 ms
+per fresh ciphertext) replaced by parse and rebuild (about 5 ms). The
+remaining differences are within run-to-run noise.
+
+Two older figures were measured with OpenFHE's encoding and not re-run.
+With `k = 2` (soundness `2^-62`), the aggregator cost for Sum(100) was
+487 ms. With `AuthPolicy::Required` (Count, 3 reports), it was 563 ms per
+report: signature verification is not measurable next to the homomorphic
+work.
 
 **Silent mode** (`p = 786433`, `k = 4`, depth 25, ring dimension 65536,
 2 aggregators, `simulate --mode silent`):
 
 | Type | client shard | aggregator `process_silent` | report size | ceremony | key material per aggregator |
 | --- | --- | --- | --- | --- | --- |
-| Count | 471 ms | **16.2 s** per report | 29 MiB | 72 s | 2.1 GiB (18 rotation keys of 111 MiB, relin key 111 MiB) |
-| Sum(100) | 480 ms | **16.8 s** per report | 29 MiB | 70 s | 2.1 GiB |
+| Count | 473 ms | **15.2 s** per report | 19.95 MiB | 76 s | 2.1 GiB (18 rotation keys of 111 MiB, relin key 111 MiB) |
+| Sum(100)¹ | 480 ms | **16.8 s** per report | 19.95 MiB | 70 s | 2.1 GiB |
 
-Batch close: 330 ms per aggregator for the count and sum partials
-(4.5 MiB each), 400 ms at the collector. Aggregator start-up (installing
-the keys) 13 s.
+¹ Timings measured with OpenFHE's encoding and not re-run. The report size
+follows from the parameters and is the same as for Count. Count was
+re-measured with the packed format (§6b); OpenFHE's encoding gave 16.2 s
+and 29 MiB.
+
+Batch close with the packed format: 91 ms per aggregator for its aggregate
+share (3.13 MiB: the valid-count partial and the chunk-sum partial, 1.56 MiB
+each), and 59 ms
+at the collector. The previous measurement in this document, with
+OpenFHE's encoding, was 330 ms per aggregator, 4.5 MiB per partial and
+400 ms at the collector. Aggregator start-up (installing the keys) was
+13 s in the earlier measurement. This run measured 22 s for two
+aggregators in one process, about 11 s each.
 
 **Batched silent mode** (`silent_batch_groups = 64`, 64 reports, same
 parameters; the per-report figure includes the batch close, i.e. the last
@@ -420,6 +443,10 @@ shared chain):
 | --- | --- | --- |
 | Count | **4.75 s** | 16.8 s |
 | Sum(100) | **4.66 s** | 16.8 s |
+
+These were measured with OpenFHE's encoding and not re-run. The packed
+format changes only the decoding of each report chunk, from 124 ms to
+54 ms (§6b). That is about 1.5 % of these figures.
 
 A 3.5× reduction, less than the operation count predicted (about 9× fewer
 heavy operations): the per-report work that remains, one full
@@ -438,9 +465,9 @@ mode, i.e. noise. The default build is kept.
 1.00–1.08 s per report per aggregator against 0.64 s without moments, i.e.
 the six pair products and their alignment cost about 0.4 s per report. The simulator process, which runs the ceremony and both
 aggregators, peaked at 9.6 GiB resident; an aggregator on its own holds the
-2.1 GiB of keys plus a few 29 MiB ciphertexts. The test suite with three
+2.1 GiB of keys plus a few 20 MiB ciphertexts. The test suite with three
 aggregators in one process peaked at 11.5 GiB. Silent mode is therefore
-about 30 times the CPU and 8 times the bandwidth of verdict mode per
+about 30 times the CPU and 7 times the bandwidth of verdict mode per
 report, with no inter-aggregator traffic per report at all, and it still
 beats the thesis prototype's 11 s per report only by one constant factor
 less; the difference is that it is sound and that it leaks nothing per

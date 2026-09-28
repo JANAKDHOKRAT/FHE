@@ -54,8 +54,8 @@ cargo run --release --bin simulate -- --type count --auth --reports 4
 ```
 
 Measured on 4 vCPUs (see the spec for the full tables): verdict mode
-0.5–0.7 s per report per aggregator with 2.7 MiB reports; silent mode
-4.7 s per report per aggregator with 64-report batching (16–17 s
+0.45–0.65 s per report per aggregator with 2.7 MiB reports; silent mode
+4.7 s per report per aggregator with 64-report batching (15–17 s
 unbatched), 20 MiB reports and 2.1 GiB of keys per aggregator. Report
 sizes are those of the packed wire format (spec §6b), which also keeps
 every received byte away from OpenFHE's deserializer. The

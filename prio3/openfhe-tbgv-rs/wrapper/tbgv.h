@@ -70,6 +70,11 @@ TbgvEvalKey tbgv_evalkey_deserialize(TbgvContext ctx, const uint8_t* buf, size_t
 TbgvRotKeys tbgv_rotkeys_first(TbgvContext ctx, TbgvSecretKey sk, const int32_t* indices, size_t n);
 TbgvRotKeys tbgv_rotkeys_next(TbgvContext ctx, TbgvSecretKey sk, TbgvRotKeys prev, const int32_t* indices, size_t n, const char* joint_tag);
 TbgvRotKeys tbgv_rotkeys_add(TbgvContext ctx, TbgvRotKeys a, TbgvRotKeys b, const char* joint_tag);
+/* Installs `keys` under `joint_tag`, merging with keys already installed
+ * for that tag (used to install per-index keys one at a time). */
+int tbgv_context_merge_rotkeys(TbgvContext ctx, TbgvRotKeys keys, const char* joint_tag);
+/* Removes every rotation key installed under `joint_tag`. */
+int tbgv_context_clear_rotkeys(TbgvContext ctx, const char* joint_tag);
 int tbgv_context_install_rotkeys(TbgvContext ctx, TbgvRotKeys keys, const char* joint_tag);
 void tbgv_rotkeys_free(TbgvRotKeys keys);
 int tbgv_rotkeys_serialize(TbgvRotKeys keys, uint8_t** out, size_t* out_len);
@@ -97,6 +102,13 @@ TbgvCiphertext tbgv_eval_add_plain(TbgvContext ctx, TbgvCiphertext a, TbgvPlaint
 TbgvCiphertext tbgv_eval_sub_plain(TbgvContext ctx, TbgvCiphertext a, TbgvPlaintext b);
 TbgvCiphertext tbgv_eval_mult_plain(TbgvContext ctx, TbgvCiphertext a, TbgvPlaintext b);
 TbgvCiphertext tbgv_eval_rotate(TbgvContext ctx, TbgvCiphertext a, int32_t index);
+TbgvCiphertext tbgv_eval_negate(TbgvContext ctx, TbgvCiphertext a);
+
+/* TEST HOOK. Returns a copy of `ct` whose first component has p*N(X) added,
+ * where N has uniformly random coefficients below 2^log2_magnitude. The
+ * plaintext modulo p is unchanged but the noise is enlarged: this models a
+ * client that submits something that is not a proper encryption. */
+TbgvCiphertext tbgv_ciphertext_add_noise_for_tests(TbgvContext ctx, TbgvCiphertext ct, uint32_t log2_magnitude, uint64_t seed);
 
 /* ---- threshold decryption --------------------------------------------- */
 TbgvCiphertext tbgv_partial_decrypt(TbgvContext ctx, TbgvCiphertext ct, TbgvSecretKey sk, int is_lead);

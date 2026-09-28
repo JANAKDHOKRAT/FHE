@@ -3,7 +3,7 @@
 
 use fhe_prio3::messages::{decode, encode};
 use fhe_prio3::*;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 /// OpenFHE keeps evaluation keys in unsynchronised process-global tables.
 pub static SERIAL: Mutex<()> = Mutex::new(());
@@ -15,6 +15,8 @@ pub fn serial() -> std::sync::MutexGuard<'static, ()> {
 
 pub struct Net {
     pub cfg: TaskConfig,
+    /// Only what clients need: the evaluation keys are dropped once the
+    /// aggregators have installed them (they are gigabytes in silent mode).
     pub material: PublicMaterial,
     pub aggs: Vec<Aggregator>,
     pub client: Client,
@@ -30,13 +32,25 @@ pub fn task_id(seed: u8) -> [u8; 32] {
 
 impl Net {
     pub fn new(cfg: TaskConfig) -> Self {
-        let (material, shares) = keys::run_local_ceremony(&cfg).expect("ceremony");
-        let material: PublicMaterial = decode(&encode(&material).unwrap()).unwrap();
+        Self::with_registry(cfg, None)
+    }
+
+    pub fn with_registry(cfg: TaskConfig, registry: Option<Arc<dyn ClientRegistry>>) -> Self {
+        let (full, shares) = keys::run_local_ceremony(&cfg).expect("ceremony");
+        let mut full: PublicMaterial = {
+            let bytes = encode(&full).unwrap();
+            drop(full);
+            decode(&bytes).unwrap()
+        };
         let aggs = shares
             .iter()
             .enumerate()
-            .map(|(i, s)| Aggregator::new(cfg.clone(), &material, i, s).expect("aggregator"))
+            .map(|(i, s)| Aggregator::new(cfg.clone(), &full, i, s, registry.clone()).expect("aggregator"))
             .collect();
+        // Keep only the public parameters clients and the collector need.
+        full.rotation_keys.clear();
+        full.eval_mult_key.clear();
+        let material = full;
         let client = Client::new(cfg.clone(), &material.context, &material.public_key).expect("client");
         let collector = Collector::new(cfg.clone(), &material).expect("collector");
         Self { cfg, material, aggs, client, collector }
@@ -47,6 +61,18 @@ impl Net {
     /// as a verdict too).
     pub fn run_report(&mut self, report: &Report) -> Vec<Verdict> {
         let report: Report = decode(&encode(report).unwrap()).unwrap();
+        if self.cfg.mode == VerificationMode::Silent {
+            let verdicts: Vec<Verdict> = self
+                .aggs
+                .iter_mut()
+                .map(|a| match a.process_silent(&report) {
+                    Ok(()) => Verdict::Accepted,
+                    Err(Error::Reject(r)) => Verdict::Rejected(r),
+                    Err(e) => panic!("process_silent failed: {e}"),
+                })
+                .collect();
+            return verdicts;
+        }
         let mut masks: Vec<MaskMessage> = Vec::new();
         let mut early = Vec::new();
         for a in self.aggs.iter_mut() {
@@ -84,10 +110,33 @@ impl Net {
         assert!(v.iter().all(|v| *v == Verdict::Rejected(reason.clone())), "expected {reason:?}, got {v:?}");
     }
 
-    pub fn collect(&self) -> Result<(AggregateResult, u64)> {
+    /// Closes the batch (with the silent-mode count round when needed) and
+    /// returns `(aggregate, valid_count)` from the collector.
+    pub fn collect(&mut self) -> Result<(AggregateResult, u64)> {
+        let r = self.collect_full()?;
+        Ok((r.aggregate, r.valid_count))
+    }
+
+    pub fn collect_full(&mut self) -> Result<BatchResult> {
+        if self.cfg.mode == VerificationMode::Silent {
+            let counts: Vec<CountShare> = self
+                .aggs
+                .iter_mut()
+                .map(|a| a.count_share())
+                .collect::<Result<Vec<_>>>()?
+                .into_iter()
+                .map(|c| decode(&encode(&c).unwrap()).unwrap())
+                .collect();
+            let mut seen = None;
+            for a in self.aggs.iter_mut() {
+                let v = a.count_finish(&counts)?;
+                assert!(seen.is_none() || seen == Some(v), "aggregators must agree on the valid count");
+                seen = Some(v);
+            }
+        }
         let shares: Vec<AggregateShare> = self
             .aggs
-            .iter()
+            .iter_mut()
             .map(|a| a.aggregate_share())
             .collect::<Result<Vec<_>>>()?
             .into_iter()

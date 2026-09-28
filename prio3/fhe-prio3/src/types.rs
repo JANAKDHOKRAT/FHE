@@ -49,6 +49,19 @@ pub enum AggregateResult {
     MultihotCountVec(Vec<u64>),
 }
 
+/// What the collector returns for a batch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BatchResult {
+    pub aggregate: AggregateResult,
+    /// Reports that entered the sums (verdict mode: accepted reports;
+    /// silent mode: admitted reports, valid or not).
+    pub report_count: u64,
+    /// Reports that contributed a valid measurement. Equal to
+    /// `report_count` in verdict mode; decrypted from the encrypted counter
+    /// in silent mode.
+    pub valid_count: u64,
+}
+
 /// `sum_i coeffs[i].1 * x[coeffs[i].0] + constant == 0` in F_p.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinearConstraint {
@@ -233,6 +246,39 @@ impl MeasurementType {
         })
     }
 
+    /// Checks that decrypted per-slot sums over `count` reports are
+    /// consistent with `count` valid reports: every slot sum is at most
+    /// `count`, and the type's linear constraints, summed over the batch,
+    /// hold over the integers. A batch that contains a contribution that is
+    /// not a proper encryption fails this with overwhelming probability,
+    /// which is how silent mode detects (but cannot attribute) corruption.
+    pub fn check_aggregate_consistency(&self, slot_sums: &[u64], count: u64) -> Result<()> {
+        if slot_sums.len() < self.input_len() {
+            return Err(Error::Protocol("aggregate has too few slots".into()));
+        }
+        if let Some((i, &s)) = slot_sums[..self.input_len()].iter().enumerate().find(|&(_, &s)| s > count) {
+            return Err(Error::Protocol(format!("aggregate inconsistent: slot {i} sums to {s} over {count} reports")));
+        }
+        let value = |bits: &[u64]| -> u128 { decode_bits_u128(bits) };
+        let ok = match self {
+            MeasurementType::Count | MeasurementType::SumVec { .. } => true,
+            MeasurementType::Sum { max_measurement } => {
+                let bits = Self::sum_bits(*max_measurement) as usize;
+                value(&slot_sums[..bits]) + count as u128 * Self::sum_offset(*max_measurement) as u128 == value(&slot_sums[bits..2 * bits])
+            }
+            MeasurementType::Histogram { length } => slot_sums[..*length].iter().map(|&s| s as u128).sum::<u128>() == count as u128,
+            MeasurementType::MultihotCountVec { length, max_weight } => {
+                let wb = Self::weight_bits(*max_weight) as usize;
+                let weight: u128 = slot_sums[..*length].iter().map(|&s| s as u128).sum();
+                weight + count as u128 * Self::weight_offset(*max_weight) as u128 == value(&slot_sums[*length..*length + wb])
+            }
+        };
+        if !ok {
+            return Err(Error::Protocol("aggregate inconsistent: the batch linear constraint does not hold".into()));
+        }
+        Ok(())
+    }
+
     /// Plaintext reference aggregation, for tests and for the collector's
     /// documentation of what the aggregate means.
     pub fn aggregate_plain(&self, ms: &[Measurement]) -> Result<AggregateResult> {
@@ -314,6 +360,28 @@ mod tests {
         assert_eq!(t.aggregate_plain(&ms).unwrap(), AggregateResult::SumVec(vec![16, 2, 10]));
         let c = MeasurementType::Count;
         assert_eq!(c.aggregate_plain(&[Measurement::Count(true), Measurement::Count(false), Measurement::Count(true)]).unwrap(), AggregateResult::Count(2));
+    }
+
+    #[test]
+    fn consistency_check() {
+        let t = MeasurementType::Sum { max_measurement: 100 };
+        let ms = vec![Measurement::Sum(51), Measurement::Sum(49)];
+        let mut sums = vec![0u64; t.input_len()];
+        for m in &ms {
+            for (s, b) in sums.iter_mut().zip(t.encode(m).unwrap()) {
+                *s += b;
+            }
+        }
+        assert!(t.check_aggregate_consistency(&sums, 2).is_ok());
+        let mut bad = sums.clone();
+        bad[0] += 1; // breaks value(x) + 2*offset == value(y)
+        assert!(t.check_aggregate_consistency(&bad, 2).is_err());
+        let mut big = sums.clone();
+        big[3] = 3; // more than count
+        assert!(t.check_aggregate_consistency(&big, 2).is_err());
+        let h = MeasurementType::Histogram { length: 3 };
+        assert!(h.check_aggregate_consistency(&[1, 0, 2], 3).is_ok());
+        assert!(h.check_aggregate_consistency(&[1, 0, 1], 3).is_err());
     }
 
     #[test]

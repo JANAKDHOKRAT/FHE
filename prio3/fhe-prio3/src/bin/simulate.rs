@@ -6,11 +6,14 @@
 //!
 //! Example:
 //!   simulate --type sum --max 100 --reports 8 --aggregators 2
+//!   simulate --type sum --max 100 --mode silent --reports 2
+//!   simulate --type count --auth --reports 4
 //!   simulate --type histogram --length 64 --reports 4
 //!   simulate --type sumvec --length 1200 --bits 4 --reports 2
 
 use fhe_prio3::messages::{decode, encode};
 use fhe_prio3::*;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 struct Args {
@@ -22,10 +25,12 @@ struct Args {
     bits: u32,
     max: u64,
     max_weight: usize,
+    silent: bool,
+    auth: bool,
 }
 
 fn parse() -> Args {
-    let mut a = Args { ty: "sum".into(), aggregators: 2, reports: 4, repetitions: 4, length: 8, bits: 4, max: 100, max_weight: 2 };
+    let mut a = Args { ty: "sum".into(), aggregators: 2, reports: 4, repetitions: 0, length: 8, bits: 4, max: 100, max_weight: 2, silent: false, auth: false };
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
     while i < argv.len() {
@@ -39,6 +44,15 @@ fn parse() -> Args {
             "--bits" => a.bits = v.parse().expect("--bits"),
             "--max" => a.max = v.parse().expect("--max"),
             "--max-weight" => a.max_weight = v.parse().expect("--max-weight"),
+            "--mode" => a.silent = match v {
+                "silent" => true,
+                "verdict" => false,
+                other => panic!("unknown mode {other}"),
+            },
+            "--auth" => {
+                a.auth = true;
+                i -= 1; // flag without value
+            }
             other => {
                 eprintln!("unknown argument {other}");
                 std::process::exit(2);
@@ -81,12 +95,20 @@ fn main() {
             std::process::exit(2);
         }
     };
-    let mut cfg = TaskConfig::new([7u8; 32], ty.clone(), a.aggregators);
-    cfg.repetitions = a.repetitions;
+    let mut cfg = if a.silent { TaskConfig::new_silent([7u8; 32], ty.clone(), a.aggregators) } else { TaskConfig::new([7u8; 32], ty.clone(), a.aggregators) };
+    if a.repetitions > 0 {
+        cfg.repetitions = a.repetitions;
+    }
+    if a.auth {
+        cfg.auth = AuthPolicy::Required { max_reports_per_client_per_batch: 1 };
+    }
     cfg.validate().expect("config");
+    let identities: Vec<ClientIdentity> = (0..a.reports).map(|_| ClientIdentity::generate()).collect();
+    let registry: Option<Arc<dyn ClientRegistry>> =
+        if a.auth { Some(StaticRegistry::new(identities.iter().map(|i| i.public_key()))) } else { None };
 
-    println!("type={:?} aggregators={} repetitions={} reports={}", ty, a.aggregators, a.repetitions, a.reports);
-    println!("plain_mod={} soundness=2^-{:.1} per report", cfg.plain_mod, cfg.soundness_bits());
+    println!("type={:?} mode={:?} auth={:?} aggregators={} repetitions={} reports={}", ty, cfg.mode, cfg.auth, a.aggregators, cfg.repetitions, a.reports);
+    println!("plain_mod={} mult_depth={} soundness=2^-{:.1} per report", cfg.plain_mod, cfg.mult_depth(), cfg.soundness_bits());
 
     let t0 = Instant::now();
     let (material, shares) = keys::run_local_ceremony(&cfg).expect("ceremony");
@@ -99,17 +121,16 @@ fn main() {
         mib(material.context.len()),
         mib(material.public_key.len()),
         mib(material.eval_mult_key.len()),
-        mib(material.rotation_keys.len()),
+        mib(material.rotation_key_bytes()),
         material.rotation_indices.len()
     );
 
     let t0 = Instant::now();
     let mut aggs: Vec<Aggregator> =
-        shares.iter().enumerate().map(|(i, s)| Aggregator::new(cfg.clone(), &material, i, s).expect("aggregator")).collect();
+        shares.iter().enumerate().map(|(i, s)| Aggregator::new(cfg.clone(), &material, i, s, registry.clone()).expect("aggregator")).collect();
     println!("aggregator setup: {:.0} ms total for {} aggregators", ms(t0.elapsed()), aggs.len());
-    let client = Client::new(cfg.clone(), &material.context, &material.public_key).expect("client");
     let collector = Collector::new(cfg.clone(), &material).expect("collector");
-    let layout = client.layout().clone();
+    let layout = cfg.layout(aggs[0].layout().row).expect("layout");
     println!(
         "layout: input_len={} block={} chunks={} row={} ring_dim={}",
         layout.input_len,
@@ -128,14 +149,29 @@ fn main() {
     let mut verifier_bytes = 0usize;
     let mut ms_list = Vec::new();
 
+    let mut t_silent = Duration::ZERO;
     for i in 0..a.reports {
         let m = measurement(&ty, i);
+        let mut client = Client::new(cfg.clone(), &material.context, &material.public_key).expect("client");
+        if a.auth {
+            client = client.with_identity(ClientIdentity::from_secret_bytes(&identities[i].secret_bytes()));
+        }
         let t0 = Instant::now();
         let report = client.shard(&m).expect("shard");
         t_shard += t0.elapsed();
         let rb = encode(&report).unwrap();
         report_bytes = rb.len();
         let report: Report = decode(&rb).unwrap();
+        ms_list.push(m);
+
+        if a.silent {
+            for ag in aggs.iter_mut() {
+                let t0 = Instant::now();
+                ag.process_silent(&report).expect("process_silent");
+                t_silent += t0.elapsed();
+            }
+            continue;
+        }
 
         let mut masks = Vec::new();
         for ag in aggs.iter_mut() {
@@ -163,13 +199,15 @@ fn main() {
             t_finish += t0.elapsed();
             assert_eq!(verdict, Verdict::Accepted, "honest report {i} rejected");
         }
-        ms_list.push(m);
     }
 
     let n_ag = aggs.len() as f64;
     let n_r = a.reports as f64;
     println!("per report:");
     println!("  client shard            {:>8.1} ms   report {:.2} MiB ({} chunk(s))", ms(t_shard) / n_r, mib(report_bytes), layout.num_chunks);
+    if a.silent {
+        println!("  aggregator process_silent {:>6.1} ms per report per aggregator (no messages, no per-report decryption)", ms(t_silent) / n_r / n_ag);
+    } else {
     println!("  aggregator prepare_init {:>8.1} ms   mask message {:.2} MiB", ms(t_init) / n_r / n_ag, mib(mask_bytes));
     println!("  aggregator prepare_masks{:>8.1} ms   verifier message {:.2} MiB", ms(t_masks) / n_r / n_ag, mib(verifier_bytes));
     println!("  aggregator prepare_finish{:>7.1} ms", ms(t_finish) / n_r / n_ag);
@@ -177,12 +215,19 @@ fn main() {
         "  aggregator total        {:>8.1} ms per report per aggregator",
         (ms(t_init) + ms(t_masks) + ms(t_finish)) / n_r / n_ag
     );
+    }
 
     let t0 = Instant::now();
-    let shares: Vec<AggregateShare> = aggs.iter().map(|ag| decode(&encode(&ag.aggregate_share().expect("share")).unwrap()).unwrap()).collect();
+    if a.silent {
+        let counts: Vec<CountShare> = aggs.iter_mut().map(|ag| decode(&encode(&ag.count_share().expect("count share")).unwrap()).unwrap()).collect();
+        for ag in aggs.iter_mut() {
+            ag.count_finish(&counts).expect("count finish");
+        }
+    }
+    let shares: Vec<AggregateShare> = aggs.iter_mut().map(|ag| decode(&encode(&ag.aggregate_share().expect("share")).unwrap()).unwrap()).collect();
     let t_share = t0.elapsed();
     let t0 = Instant::now();
-    let (agg, count) = collector.unshard(&shares).expect("unshard");
+    let BatchResult { aggregate: agg, report_count: count, valid_count } = collector.unshard(&shares).expect("unshard");
     let t_unshard = t0.elapsed();
     let expected = ty.aggregate_plain(&ms_list).unwrap();
     println!(
@@ -192,7 +237,7 @@ fn main() {
         ms(t_unshard),
         count
     );
-    println!("aggregate = {agg:?}");
+    println!("aggregate = {agg:?} (valid reports: {valid_count})");
     assert_eq!(agg, expected, "aggregate mismatch");
     println!("aggregate matches plaintext reference: OK");
 }

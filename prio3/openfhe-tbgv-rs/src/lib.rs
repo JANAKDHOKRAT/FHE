@@ -205,6 +205,18 @@ impl Context {
         self.wrap_ct(unsafe { ffi::tbgv_eval_rotate(self.raw(), a.ptr, index) })
     }
 
+    pub fn negate(&self, a: &Ciphertext) -> Result<Ciphertext> {
+        self.wrap_ct(unsafe { ffi::tbgv_eval_negate(self.raw(), a.ptr) })
+    }
+
+    /// TEST HOOK: a copy of `ct` with `p * N(X)` added to its first component,
+    /// `N` having uniformly random coefficients below `2^log2_magnitude`. The
+    /// plaintext is unchanged, the noise is not. Models a client that submits
+    /// a value that is not a proper encryption.
+    pub fn add_noise_for_tests(&self, ct: &Ciphertext, log2_magnitude: u32, seed: u64) -> Result<Ciphertext> {
+        self.wrap_ct(unsafe { ffi::tbgv_ciphertext_add_noise_for_tests(self.raw(), ct.ptr, log2_magnitude, seed) })
+    }
+
     pub fn deserialize_ciphertext(&self, bytes: &[u8]) -> Result<Ciphertext> {
         self.wrap_ct(unsafe { ffi::tbgv_ciphertext_deserialize(self.raw(), bytes.as_ptr(), bytes.len()) })
     }
@@ -250,6 +262,25 @@ impl Context {
     pub fn install_rotation_keys(&self, keys: &RotationKeys, joint_tag: &str) -> Result<()> {
         let t = c_tag(joint_tag)?;
         if unsafe { ffi::tbgv_context_install_rotkeys(self.raw(), keys.ptr, t.as_ptr()) } == 0 {
+            return Err(last_error());
+        }
+        Ok(())
+    }
+
+    /// Adds `keys` to the rotation keys installed under `joint_tag`,
+    /// keeping the ones already there. Lets large key sets be installed one
+    /// index at a time.
+    pub fn merge_rotation_keys(&self, keys: &RotationKeys, joint_tag: &str) -> Result<()> {
+        let t = c_tag(joint_tag)?;
+        if unsafe { ffi::tbgv_context_merge_rotkeys(self.raw(), keys.ptr, t.as_ptr()) } == 0 {
+            return Err(last_error());
+        }
+        Ok(())
+    }
+    /// Removes every rotation key installed under `joint_tag`.
+    pub fn clear_rotation_keys(&self, joint_tag: &str) -> Result<()> {
+        let t = c_tag(joint_tag)?;
+        if unsafe { ffi::tbgv_context_clear_rotkeys(self.raw(), t.as_ptr()) } == 0 {
             return Err(last_error());
         }
         Ok(())

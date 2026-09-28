@@ -2,6 +2,7 @@
 #include "tbgv.h"
 
 #include <cstring>
+#include <random>
 #include <map>
 #include <memory>
 #include <sstream>
@@ -261,6 +262,20 @@ int tbgv_context_install_rotkeys(TbgvContext ctx, TbgvRotKeys keys, const char* 
     return 1;
     TBGV_CATCH(0)
 }
+int tbgv_context_merge_rotkeys(TbgvContext ctx, TbgvRotKeys keys, const char* tag) {
+    TBGV_TRY
+    (void)ctx;
+    CryptoContextImpl<DCRTPoly>::InsertEvalAutomorphismKey(rk_of(keys), tag);
+    return 1;
+    TBGV_CATCH(0)
+}
+int tbgv_context_clear_rotkeys(TbgvContext ctx, const char* tag) {
+    TBGV_TRY
+    (void)ctx;
+    CryptoContextImpl<DCRTPoly>::ClearEvalAutomorphismKeys(std::string(tag));
+    return 1;
+    TBGV_CATCH(0)
+}
 void tbgv_rotkeys_free(TbgvRotKeys keys) { delete static_cast<RotMap*>(keys); }
 int tbgv_rotkeys_serialize(TbgvRotKeys keys, uint8_t** out, size_t* out_len) {
     TBGV_TRY return serialize_to(*rk_of(keys), out, out_len); TBGV_CATCH(0)
@@ -346,6 +361,46 @@ TbgvCiphertext tbgv_eval_mult_plain(TbgvContext ctx, TbgvCiphertext a, TbgvPlain
 }
 TbgvCiphertext tbgv_eval_rotate(TbgvContext ctx, TbgvCiphertext a, int32_t index) {
     TBGV_TRY return new CT(cc_of(ctx)->EvalRotate(ct_of(a), index)); TBGV_CATCH(nullptr)
+}
+
+TbgvCiphertext tbgv_eval_negate(TbgvContext ctx, TbgvCiphertext a) {
+    TBGV_TRY return new CT(cc_of(ctx)->EvalNegate(ct_of(a))); TBGV_CATCH(nullptr)
+}
+
+TbgvCiphertext tbgv_ciphertext_add_noise_for_tests(TbgvContext ctx, TbgvCiphertext h, uint32_t log2_magnitude, uint64_t seed) {
+    TBGV_TRY
+    CT ct = ct_of(h)->Clone();
+    const uint64_t p = cc_of(ctx)->GetCryptoParameters()->GetPlaintextModulus();
+    DCRTPoly& c0 = ct->GetElements()[0];
+    const Format fmt = c0.GetFormat();
+    // Work on a big-integer (non-RNS) copy to build coefficients of arbitrary size.
+    DCRTPoly coef = c0;
+    coef.SetFormat(Format::COEFFICIENT);
+    DCRTPoly::PolyLargeType big = coef.CRTInterpolate();
+    const BigInteger Q = big.GetModulus();
+    const BigInteger P(std::to_string(p));
+    const BigInteger two64("18446744073709551616");
+    std::mt19937_64 rng(seed);
+    const uint32_t words = (log2_magnitude + 63) / 64;
+    const uint32_t top_bits = log2_magnitude - 64 * (words - 1);
+    const uint64_t top_mask = top_bits >= 64 ? ~0ULL : ((1ULL << top_bits) - 1);
+    DCRTPoly::PolyLargeType noise(big.GetParams(), Format::COEFFICIENT, true);
+    for (usint i = 0; i < noise.GetLength(); ++i) {
+        BigInteger acc(0);
+        for (uint32_t w = 0; w < words; ++w) {
+            uint64_t r = rng();
+            if (w == 0) r &= top_mask;
+            acc = acc * two64 + BigInteger(std::to_string(r));
+        }
+        noise[i] = (acc * P).Mod(Q);
+    }
+    big += noise;
+    big = big.Mod(Q);
+    DCRTPoly replaced(big, c0.GetParams());
+    replaced.SetFormat(fmt);
+    ct->GetElements()[0] = replaced;
+    return new CT(ct);
+    TBGV_CATCH(nullptr)
 }
 
 /* ---- threshold decryption ---------------------------------------------- */

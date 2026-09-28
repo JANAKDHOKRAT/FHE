@@ -27,6 +27,14 @@ pub enum RejectReason {
     MalformedCiphertext(String),
     ValidityCheckFailed,
     BatchFull,
+    BatchClosed,
+    TooLarge { limit: usize, got: usize },
+    /// Policy requires a signature and none was supplied, or it did not verify.
+    Unauthenticated(String),
+    /// The signing key is not in the aggregator's registry.
+    UnknownClient,
+    /// The signing key has used up its reports for this batch.
+    QuotaExceeded,
 }
 
 impl std::fmt::Display for RejectReason {

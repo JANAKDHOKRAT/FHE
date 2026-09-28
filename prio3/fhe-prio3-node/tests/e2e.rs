@@ -165,6 +165,24 @@ async fn verdict_count_over_tls_with_leader_restart() {
     }
     // unauthenticated internal calls are refused
     let http = https_client(&c.tls.ca_pem).unwrap();
+    // malformed and oversized bodies are refused without touching the aggregator
+    // (an all-zero body decodes as a report for task id 0 and is rejected as WrongTask;
+    // a truncated body cannot decode at all)
+    let resp = http.post(format!("{}/v1/submit", c.agg_urls[0])).body(vec![0xffu8; 3]).send().await.unwrap();
+    assert_eq!(resp.status().as_u16(), 400, "undecodable body");
+    let resp = http.post(format!("{}/v1/submit", c.agg_urls[0])).body(vec![0u8; 100]).send().await.unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    let out: SubmitOutcome = fhe_prio3::messages::decode(&resp.bytes().await.unwrap()).unwrap();
+    assert!(matches!(out, SubmitOutcome::Rejected(ref r) if r.contains("WrongTask")), "{out:?}");
+    let cap = 4 << 20; // above one fresh ciphertext (3.5 MiB) plus slack
+    let resp = http.post(format!("{}/v1/submit", c.agg_urls[0])).body(vec![0u8; cap]).send().await.unwrap();
+    assert_eq!(resp.status().as_u16(), 413, "oversized body");
+    // a helper refuses client submissions and group tickets
+    let resp = http.get(format!("{}/v1/group", c.agg_urls[1])).send().await.unwrap();
+    assert_eq!(resp.status().as_u16(), 404);
+    // a wrong-token close is refused
+    let resp = http.post(format!("{}/v1/close", c.agg_urls[0])).header("x-fhe-prio3-token", "nope").send().await.unwrap();
+    assert_eq!(resp.status().as_u16(), 401);
     let r: anyhow::Result<CountShare> = http_post(&http, &format!("{}/v1/count-share", c.agg_urls[1]), Some("wrong"), &()).await;
     match r {
         Err(e) => assert!(e.to_string().contains("401"), "{e}"),

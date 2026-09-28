@@ -81,7 +81,10 @@ fn measurement(ty: &MeasurementType, i: usize) -> Measurement {
     match ty {
         MeasurementType::Count => Measurement::Count(i % 3 != 0),
         MeasurementType::Sum { max_measurement } => Measurement::Sum((i as u64 * 37) % (max_measurement + 1)),
-        MeasurementType::SumVec { length, bits } => Measurement::SumVec((0..*length).map(|j| ((i * 7 + j) as u64) % (1u64 << bits)).collect()),
+        // Distinct, non-collinear columns so the regression pilot's normal equations are regular.
+        MeasurementType::SumVec { length, bits } => {
+            Measurement::SumVec((0..*length).map(|j| ((i * (2 * j + 3) + j * j + (i * j) % 5) as u64) % (1u64 << bits)).collect())
+        }
         MeasurementType::Histogram { length } => Measurement::Histogram((i * 5) % length),
         MeasurementType::MultihotCountVec { length, max_weight } => {
             Measurement::MultihotCountVec((0..*length).map(|j| j % length < *max_weight && (i + j) % 2 == 0).collect())

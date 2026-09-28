@@ -6,6 +6,7 @@ use crate::config::{TaskConfig, VerificationMode};
 use crate::error::{Error, Result};
 use crate::layout::Layout;
 use crate::messages::{AggregateShare, PublicMaterial};
+use crate::packed::{Codec, Expect};
 use crate::types::{AggregateResult, BatchResult, RegressionResult};
 use openfhe_tbgv_rs::{Context, PartialDecryption};
 
@@ -13,6 +14,9 @@ pub struct Collector {
     cfg: TaskConfig,
     ctx: Context,
     layout: Layout,
+    /// Partial decryptions arrive packed and are rebuilt through this
+    /// codec, never through OpenFHE's deserializer.
+    codec: Codec,
 }
 
 impl Collector {
@@ -20,7 +24,30 @@ impl Collector {
         cfg.validate()?;
         let ctx = Context::deserialize(&material.context)?;
         let layout = cfg.layout(ctx.row_slots())?;
-        Ok(Self { cfg, ctx, layout })
+        let pk = ctx.deserialize_public_key(&material.public_key)?;
+        let codec = Codec::new(&ctx, &pk, &material.public_key)?;
+        Ok(Self { cfg, ctx, layout, codec })
+    }
+
+    /// Decodes every aggregator's partial decryption of one released
+    /// ciphertext. The collector did not compute that ciphertext, so each is
+    /// parsed as a generic partial decryption (one element, every metadata
+    /// value within the bounds the rebuild accepts), and all of them must
+    /// have identical metadata: with at least one honest aggregator that is
+    /// the true shape, and fusion never mixes tower counts.
+    fn decode_partials<'a>(&self, shares: &'a [AggregateShare], pick: impl Fn(&'a AggregateShare) -> Result<&'a [u8]>) -> Result<Vec<PartialDecryption>> {
+        let mut out = Vec::with_capacity(shares.len());
+        let mut first = None;
+        for s in shares {
+            let (meta, ct) = self.codec.decode_with_meta(pick(s)?, Expect::Partial)?;
+            match first {
+                None => first = Some(meta),
+                Some(m) if m != meta => return Err(Error::Protocol(format!("aggregators' partial decryptions disagree on their shape: {m:?} vs {meta:?}"))),
+                Some(_) => {}
+            }
+            out.push(PartialDecryption::from_ciphertext(ct, s.aggregator == 0));
+        }
+        Ok(out)
     }
 
     /// Single-collector tasks: [`Self::unshard_for`] with collector 0.
@@ -81,13 +108,9 @@ impl Collector {
         let valid = match self.cfg.mode {
             VerificationMode::Verdict => count,
             VerificationMode::Silent => {
-                let partials: Vec<PartialDecryption> = shares
-                    .iter()
-                    .map(|s| {
-                        let b = s.valid_count_partial.as_ref().ok_or_else(|| Error::Protocol("silent mode share lacks the valid-count partial".into()))?;
-                        PartialDecryption::deserialize(&self.ctx, b, s.aggregator == 0).map_err(Into::into)
-                    })
-                    .collect::<Result<_>>()?;
+                let partials = self.decode_partials(shares, |s| {
+                    s.valid_count_partial.as_deref().ok_or_else(|| Error::Protocol("silent mode share lacks the valid-count partial".into()))
+                })?;
                 let refs: Vec<&PartialDecryption> = partials.iter().collect();
                 self.ctx.fuse(&refs, 1)?[0]
             }
@@ -102,10 +125,7 @@ impl Collector {
         let mut slot_sums = vec![0u64; m];
         let mut visible = vec![false; m];
         for (pi, &k) in chunks.iter().enumerate() {
-            let partials: Vec<PartialDecryption> = shares
-                .iter()
-                .map(|s| PartialDecryption::deserialize(&self.ctx, &s.partials[pi], s.aggregator == 0))
-                .collect::<std::result::Result<_, _>>()?;
+            let partials = self.decode_partials(shares, |s| Ok(s.partials[pi].as_slice()))?;
             let refs: Vec<&PartialDecryption> = partials.iter().collect();
             let fused = self.ctx.fuse(&refs, self.layout.chunk_span(k))?;
             for (i, g) in self.layout.chunk_range(k).enumerate() {
@@ -130,10 +150,7 @@ impl Collector {
             let pos = |e: usize| values.iter().position(|&x| x == e).expect("pair within elements");
             let mut second = vec![vec![0u128; l]; l];
             for (idx, &(a, b)) in pairs.iter().enumerate() {
-                let partials: Vec<PartialDecryption> = shares
-                    .iter()
-                    .map(|s| PartialDecryption::deserialize(&self.ctx, &s.moment_partials[idx], s.aggregator == 0).map_err(Into::into))
-                    .collect::<Result<_>>()?;
+                let partials = self.decode_partials(shares, |s| Ok(s.moment_partials[idx].as_slice()))?;
                 let refs: Vec<&PartialDecryption> = partials.iter().collect();
                 let v = self.ctx.fuse(&refs, 1)?[0] as u128;
                 // Each second moment (a, b) is a sum of `valid` products each at

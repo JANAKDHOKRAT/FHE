@@ -1,11 +1,14 @@
 //! Aggregator state machine.
 //!
 //! Admission (both modes), in `prepare_init` / `process_silent`, before any
-//! ciphertext is deserialized and in this order: batch open; size cap; task
-//! id; signature and registry and per-client quota (when the policy requires
-//! it); report id recomputation; replay; chunk count; then structural
-//! validation of each ciphertext against a reference fresh encryption.
-//! Every one of these decisions is deterministic, so honest aggregators agree.
+//! ciphertext is parsed and in this order: batch open; size cap; task id;
+//! signature and registry and per-client quota (when the policy requires
+//! it); report id recomputation; replay; chunk count; then each chunk is
+//! parsed in the packed wire format (`packed.rs`: fingerprint, exactly the
+//! metadata of a fresh encryption, exact length, every residue below its
+//! modulus) and rebuilt inside this aggregator's own context. Bytes from
+//! another party never reach OpenFHE's deserializer. Every one of these
+//! decisions is deterministic, so honest aggregators agree.
 //!
 //! Verdict mode, per report:
 //!   1. `prepare_init`   — compute the check ciphertext `S`, broadcast a mask;
@@ -30,8 +33,9 @@ use crate::field::Field;
 use crate::keys;
 use crate::layout::Layout;
 use crate::messages::{AggregateShare, CountShare, MaskMessage, PublicMaterial, Report, ReportId, VerifierMessage, batch_digest};
+use crate::packed::{Codec, Expect, WireError};
 use crate::verify::{Challenge, Circuit};
-use openfhe_tbgv_rs::{Ciphertext, CiphertextInfo, Context, PartialDecryption, PublicKey, SecretShare};
+use openfhe_tbgv_rs::{Ciphertext, CiphertextMeta, Context, PartialDecryption, PublicKey, SecretShare};
 use rand::rngs::OsRng;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
@@ -100,17 +104,15 @@ pub struct Aggregator {
     layout: Layout,
     ctx: Context,
     pk: PublicKey,
-    joint_tag: String,
     /// Keeps the joint evaluation keys installed while this aggregator lives.
     _keys: keys::KeyLease,
     index: usize,
     share: SecretShare,
     circuit: Circuit,
-    /// Structure of a fresh encryption under the joint key; every incoming
-    /// ciphertext must match it exactly.
-    fresh: CiphertextInfo,
-    /// Serialized size of a fresh encryption, for the report size cap.
-    fresh_bytes: usize,
+    /// Packed wire format bound to this task's parameters and joint key:
+    /// every ciphertext received from another party is parsed and rebuilt
+    /// through it, never through OpenFHE's deserializer.
+    codec: Codec,
     registry: Option<Arc<dyn ClientRegistry>>,
     client_reports: HashMap<[u8; 32], u32>,
     seen: HashSet<ReportId>,
@@ -165,22 +167,18 @@ impl Aggregator {
         }
         let share = ctx.deserialize_secret_share(share)?;
         let circuit = Circuit::new(&ctx, &layout)?;
-        let reference = ctx.encrypt(&pk, &ctx.plaintext(&[0])?)?;
-        let fresh = reference.info()?;
-        let fresh_bytes = reference.serialize()?.len();
+        let codec = Codec::new(&ctx, &pk, &material.public_key)?;
         Ok(Self {
             cfg,
             field,
             layout,
             ctx,
             pk,
-            joint_tag,
             _keys: key_lease,
             index,
             share,
             circuit,
-            fresh,
-            fresh_bytes,
+            codec,
             registry,
             client_reports: HashMap::new(),
             seen: HashSet::new(),
@@ -227,31 +225,48 @@ impl Aggregator {
         self.closed
     }
 
-    /// Largest serialized ciphertext payload a report may carry.
+    /// Largest ciphertext payload a report may carry: exactly one packed
+    /// fresh ciphertext per chunk.
     pub fn max_report_bytes(&self) -> usize {
-        let derived = self.layout.num_chunks * (self.fresh_bytes + 1024);
+        let derived = self.layout.num_chunks * self.codec.fresh_len();
         if self.cfg.max_report_bytes == 0 { derived } else { self.cfg.max_report_bytes.min(derived) }
     }
 
-    fn check_fresh(&self, info: &CiphertextInfo) -> std::result::Result<(), RejectReason> {
-        if info.key_tag != self.joint_tag {
-            return Err(RejectReason::MalformedCiphertext("not encrypted under the joint key".into()));
-        }
-        if *info != self.fresh {
-            return Err(RejectReason::MalformedCiphertext(format!(
-                "not a fresh ciphertext: expected {} elements, level {}, degree {}, {} limbs, packed={}; got {} elements, level {}, degree {}, {} limbs, packed={}",
-                self.fresh.num_elements, self.fresh.level, self.fresh.noise_scale_deg, self.fresh.num_limbs, self.fresh.packed_encoding,
-                info.num_elements, info.level, info.noise_scale_deg, info.num_limbs, info.packed_encoding
-            )));
-        }
-        Ok(())
+    /// Largest ciphertext payload of any message between aggregators: a
+    /// report forwarded to a helper, or the masks of the other `n - 1`
+    /// aggregators sent in one request (each a packed fresh ciphertext).
+    /// Partial decryptions have one element, so the `n - 1` verifier
+    /// messages or the `n` count shares of one request are smaller still.
+    pub fn max_message_bytes(&self) -> usize {
+        let masks = (self.cfg.num_aggregators - 1) * self.codec.fresh_len();
+        self.max_report_bytes().max(masks)
     }
 
+    /// The packed-ciphertext codec of this aggregator.
+    pub fn codec(&self) -> &Codec {
+        &self.codec
+    }
+
+    /// A client chunk or a peer's mask: must be a packed fresh encryption
+    /// under this task's joint key.
     fn load_fresh(&self, bytes: &[u8]) -> std::result::Result<Ciphertext, RejectReason> {
-        let ct = self.ctx.deserialize_ciphertext(bytes).map_err(|e| RejectReason::MalformedCiphertext(e.0))?;
-        let info = ct.info().map_err(|e| RejectReason::MalformedCiphertext(e.0))?;
-        self.check_fresh(&info)?;
-        Ok(ct)
+        self.codec.decode(bytes, Expect::Exactly(self.codec.fresh_meta())).map_err(|e| match e {
+            WireError::WrongParameters => RejectReason::WrongParameters,
+            other => RejectReason::MalformedCiphertext(other.to_string()),
+        })
+    }
+
+    /// Metadata of a partial decryption of `ct`: the same as `ct`'s, with
+    /// one element.
+    fn partial_meta(ct: &Ciphertext) -> Result<CiphertextMeta> {
+        Ok(CiphertextMeta { num_elements: 1, ..ct.meta()? })
+    }
+
+    /// A peer's partial decryption of a ciphertext this aggregator computed
+    /// too: must have exactly the shape of this aggregator's own.
+    fn load_partial(&self, bytes: &[u8], expected: CiphertextMeta, lead: bool) -> Result<PartialDecryption> {
+        let ct = self.codec.decode(bytes, Expect::Exactly(expected))?;
+        Ok(PartialDecryption::from_ciphertext(ct, lead))
     }
 
     /// Cheap checks first, FHE work last. On success the report id and the
@@ -328,7 +343,7 @@ impl Aggregator {
         let challenge = Challenge::derive(&self.cfg, &self.field, &self.layout, &report.report_id, 0);
         let s = self.circuit.check_sum(&chunks, &challenge)?;
         let mask = self.circuit.make_mask(&self.pk, &self.field, &mut self.rng)?;
-        let mask_bytes = mask.serialize()?;
+        let mask_bytes = self.codec.encode(&mask)?;
         let mut masks = BTreeMap::new();
         masks.insert(self.index, mask);
         self.pending.insert(report.report_id, Pending { chunks, s, masks, partials: BTreeMap::new(), u: None });
@@ -348,9 +363,6 @@ impl Aggregator {
             if m.aggregator >= n || m.aggregator == my_index {
                 return Err(Error::Protocol("mask from an unexpected aggregator".into()));
             }
-            if m.mask.len() > self.fresh_bytes + 1024 {
-                return Err(Error::Protocol("mask ciphertext too large".into()));
-            }
             let ct = self.load_fresh(&m.mask).map_err(|r| Error::Protocol(format!("mask ciphertext rejected: {r}")))?;
             loaded.push((m.aggregator, ct));
         }
@@ -366,7 +378,7 @@ impl Aggregator {
         let mask_refs: Vec<&Ciphertext> = pending.masks.values().collect();
         let u = self.circuit.apply_masks(&pending.s, &mask_refs)?;
         let partial = self.share.partial_decrypt(&u, my_index == 0)?;
-        let bytes = partial.serialize()?;
+        let bytes = self.codec.encode(partial.ciphertext())?;
         pending.partials.insert(my_index, partial);
         pending.u = Some(u);
         Ok(VerifierMessage { report_id: *report_id, aggregator: my_index, partial: bytes })
@@ -376,6 +388,11 @@ impl Aggregator {
     /// Accepted reports are added to the running sums.
     pub fn prepare_finish(&mut self, report_id: &ReportId, verifiers: &[VerifierMessage]) -> Result<Verdict> {
         let n = self.cfg.num_aggregators;
+        let expected = {
+            let pending = self.pending.get(report_id).ok_or_else(|| Error::Protocol("unknown or finished report".into()))?;
+            let u = pending.u.as_ref().ok_or_else(|| Error::Protocol("prepare_masks has not run for this report".into()))?;
+            Self::partial_meta(u)?
+        };
         let mut loaded = Vec::new();
         for v in verifiers {
             if v.report_id != *report_id {
@@ -384,12 +401,9 @@ impl Aggregator {
             if v.aggregator >= n || v.aggregator == self.index {
                 return Err(Error::Protocol("verifier message from an unexpected aggregator".into()));
             }
-            loaded.push((v.aggregator, PartialDecryption::deserialize(&self.ctx, &v.partial, v.aggregator == 0)?));
+            loaded.push((v.aggregator, self.load_partial(&v.partial, expected, v.aggregator == 0)?));
         }
         let mut pending = self.pending.remove(report_id).ok_or_else(|| Error::Protocol("unknown or finished report".into()))?;
-        if pending.u.is_none() {
-            return Err(Error::Protocol("prepare_masks has not run for this report".into()));
-        }
         for (i, p) in loaded {
             if pending.partials.insert(i, p).is_some() {
                 return Err(Error::Protocol("duplicate verifier message".into()));
@@ -485,6 +499,10 @@ impl Aggregator {
     }
 
     /// Serializes the resumable state (see [`AggregatorState`]).
+    /// The accumulators are this aggregator's own objects, written to and
+    /// read back from its own database, so they keep OpenFHE's format;
+    /// nothing in the snapshot comes from another party except the stored
+    /// client reports, which `restore` decodes through the packed codec.
     pub fn snapshot(&self) -> Result<AggregatorState> {
         let ser = |v: &Vec<Ciphertext>| -> Result<Vec<Vec<u8>>> { v.iter().map(|c| c.serialize().map_err(Into::into)).collect() };
         Ok(AggregatorState {
@@ -549,7 +567,8 @@ impl Aggregator {
             }
             let mut masked = Vec::with_capacity(report.chunks.len());
             for (c, bytes) in report.chunks.iter().enumerate() {
-                let ct = self.ctx.deserialize_ciphertext(bytes)?;
+                // stored client bytes: decoded like any client chunk
+                let ct = self.load_fresh(bytes).map_err(Error::Reject)?;
                 masked.push(self.circuit.mask_to_group(&ct, c, *g)?);
             }
             batch.reports.push((*g, *id, masked));
@@ -597,7 +616,7 @@ impl Aggregator {
             aggregator: self.index,
             batch_digest: batch_digest(self.accepted_ids.clone()),
             report_count: count as u64,
-            partial: self.share.partial_decrypt(ct, self.index == 0)?.serialize()?,
+            partial: self.codec.encode(self.share.partial_decrypt(ct, self.index == 0)?.ciphertext())?,
         };
         self.released_count_share = Some(share.clone());
         Ok(share)
@@ -611,6 +630,7 @@ impl Aggregator {
             return Err(Error::Protocol(format!("expected {n} count shares, got {}", shares.len())));
         }
         let digest = batch_digest(self.accepted_ids.clone());
+        let expected = Self::partial_meta(self.valid_count_sum.as_ref().ok_or_else(|| Error::Protocol("count_finish before count_share".into()))?)?;
         let mut seen = vec![false; n];
         let mut partials = Vec::with_capacity(n);
         for s in shares {
@@ -620,7 +640,7 @@ impl Aggregator {
             if s.aggregator >= n || std::mem::replace(&mut seen[s.aggregator], true) {
                 return Err(Error::Protocol("duplicate or out-of-range aggregator in count shares".into()));
             }
-            partials.push(PartialDecryption::deserialize(&self.ctx, &s.partial, s.aggregator == 0)?);
+            partials.push(self.load_partial(&s.partial, expected, s.aggregator == 0)?);
         }
         let refs: Vec<&PartialDecryption> = partials.iter().collect();
         let fused = self.ctx.fuse(&refs, 1)?;
@@ -672,10 +692,10 @@ impl Aggregator {
         let chunks = self.cfg.collector_chunks(&self.layout, collector);
         let mut partials = Vec::with_capacity(chunks.len());
         for &k in &chunks {
-            partials.push(self.share.partial_decrypt(&sums[k], self.index == 0)?.serialize()?);
+            partials.push(self.codec.encode(self.share.partial_decrypt(&sums[k], self.index == 0)?.ciphertext())?);
         }
         let valid_count_partial = match &self.valid_count_sum {
-            Some(ct) => Some(self.share.partial_decrypt(ct, self.index == 0)?.serialize()?),
+            Some(ct) => Some(self.codec.encode(self.share.partial_decrypt(ct, self.index == 0)?.ciphertext())?),
             None => None,
         };
         let mut moment_partials = Vec::new();
@@ -687,7 +707,7 @@ impl Aggregator {
                 // accumulator index of pair (a <= b) in row-major (a, b >= a) order
                 let idx = pair_index(n, a, b);
                 debug_assert!(idx < sums.len());
-                moment_partials.push(self.share.partial_decrypt(&sums[idx], self.index == 0)?.serialize()?);
+                moment_partials.push(self.codec.encode(self.share.partial_decrypt(&sums[idx], self.index == 0)?.ciphertext())?);
             }
         }
         let _ = elements;

@@ -6,6 +6,7 @@ use crate::config::{AuthPolicy, TaskConfig};
 use crate::error::{Error, Result};
 use crate::layout::Layout;
 use crate::messages::Report;
+use crate::packed::{Codec, Expect};
 use crate::types::Measurement;
 use openfhe_tbgv_rs::{Context, PublicKey};
 
@@ -15,6 +16,7 @@ pub struct Client {
     pk: PublicKey,
     layout: Layout,
     identity: Option<ClientIdentity>,
+    codec: Codec,
 }
 
 impl Client {
@@ -27,7 +29,8 @@ impl Client {
         }
         let pk = ctx.deserialize_public_key(public_key)?;
         let layout = cfg.layout(ctx.row_slots())?;
-        Ok(Self { cfg, ctx, pk, layout, identity: None })
+        let codec = Codec::new(&ctx, &pk, public_key)?;
+        Ok(Self { cfg, ctx, pk, layout, identity: None, codec })
     }
 
     /// Attaches the signing identity used when the task requires authentication.
@@ -38,6 +41,11 @@ impl Client {
 
     pub fn layout(&self) -> &Layout {
         &self.layout
+    }
+
+    /// The packed-ciphertext codec for this task's parameters and joint key.
+    pub fn codec(&self) -> &Codec {
+        &self.codec
     }
 
     fn finish(&self, chunks: Vec<Vec<u8>>, group: u32) -> Result<Report> {
@@ -73,7 +81,7 @@ impl Client {
                 slots[self.layout.group_slot(group as usize, i)] = v;
             }
             let ct = self.ctx.encrypt(&self.pk, &self.ctx.plaintext(&slots)?)?;
-            chunks.push(ct.serialize()?);
+            chunks.push(self.codec.encode(&ct)?);
         }
         self.finish(chunks, group)
     }
@@ -85,7 +93,7 @@ impl Client {
         let mut chunks = Vec::with_capacity(slots_per_chunk.len());
         for slots in slots_per_chunk {
             let ct = self.ctx.encrypt(&self.pk, &self.ctx.plaintext(slots)?)?;
-            chunks.push(ct.serialize()?);
+            chunks.push(self.codec.encode(&ct)?);
         }
         self.finish(chunks, 0)
     }
@@ -95,7 +103,7 @@ impl Client {
         let mut chunks = Vec::with_capacity(slots_per_chunk.len());
         for slots in slots_per_chunk {
             let ct = self.ctx.encrypt(&self.pk, &self.ctx.plaintext(slots)?)?;
-            chunks.push(ct.serialize()?);
+            chunks.push(self.codec.encode(&ct)?);
         }
         self.finish(chunks, group)
     }
@@ -114,7 +122,7 @@ impl Client {
                 slots[self.layout.group_slot(group as usize, i)] = v;
             }
             let ct = self.ctx.encrypt(&self.pk, &self.ctx.plaintext(&slots)?)?;
-            chunks.push(ct.serialize()?);
+            chunks.push(self.codec.encode(&ct)?);
         }
         self.finish(chunks, group)
     }
@@ -129,8 +137,9 @@ impl Client {
         let clean = self.shard_in_group(m, group)?;
         let mut chunks = Vec::with_capacity(clean.chunks.len());
         for (i, bytes) in clean.chunks.iter().enumerate() {
-            let ct = self.ctx.deserialize_ciphertext(bytes)?;
-            chunks.push(self.ctx.add_noise_for_tests(&ct, log2_magnitude, seed + i as u64)?.serialize()?);
+            let ct = self.codec.decode(bytes, Expect::Exactly(self.codec.fresh_meta()))?;
+            let noisy = self.ctx.add_noise_for_tests(&ct, log2_magnitude, seed + i as u64)?;
+            chunks.push(self.codec.encode(&noisy)?);
         }
         self.finish(chunks, group)
     }

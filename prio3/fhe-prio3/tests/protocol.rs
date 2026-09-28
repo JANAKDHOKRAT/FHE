@@ -229,10 +229,8 @@ fn structural_rejections_and_replay() {
     let mut foreign = other.client.shard(&Measurement::Count(true)).unwrap();
     foreign.task_id = net.cfg.task_id;
     foreign.report_id = Report::compute_id(&foreign.task_id, foreign.group, &foreign.chunks);
-    match &net.run_report(&foreign)[0] {
-        Verdict::Rejected(RejectReason::MalformedCiphertext(m)) => assert!(m.contains("joint key"), "{m}"),
-        v => panic!("expected MalformedCiphertext, got {v:?}"),
-    }
+    // the packed format's fingerprint binds the joint key
+    net.expect_reject(&foreign, RejectReason::WrongParameters);
 
     assert_eq!(net.collect().unwrap(), (AggregateResult::Count(1), 1));
 }

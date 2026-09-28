@@ -177,6 +177,42 @@ impl Context {
         self.wrap_ct(unsafe { ffi::tbgv_encrypt(self.raw(), pk.ptr, pt.ptr) })
     }
 
+    /// Number of RNS towers of the full modulus chain (a fresh ciphertext has all of them).
+    pub fn num_towers(&self) -> u32 {
+        unsafe { ffi::tbgv_context_num_towers(self.raw()) }
+    }
+
+    /// Moduli of towers `0..num_towers()` of the full chain. A ciphertext
+    /// with `k` towers uses the first `k` of them.
+    pub fn moduli(&self) -> Result<Vec<u64>> {
+        let mut out = vec![0u64; self.num_towers() as usize];
+        if unsafe { ffi::tbgv_context_moduli(self.raw(), out.as_mut_ptr(), out.len()) } == 0 {
+            return Err(last_error());
+        }
+        Ok(out)
+    }
+
+    /// Rebuilds a ciphertext from its residues and metadata inside this
+    /// context, without touching OpenFHE's deserializer. `reference` must be
+    /// a fresh encryption made by the caller under the joint key; it supplies
+    /// the key tag, the encoding and the tower parameters. The shim rejects
+    /// any metadata or residue outside the documented bounds before building.
+    pub fn build_ciphertext(&self, reference: &Ciphertext, meta: &CiphertextMeta, residues: &[u64]) -> Result<Ciphertext> {
+        self.wrap_ct(unsafe {
+            ffi::tbgv_ciphertext_build(
+                self.raw(),
+                reference.ptr,
+                meta.num_elements,
+                meta.num_towers,
+                meta.level,
+                meta.noise_scale_deg,
+                meta.scaling_factor_int,
+                residues.as_ptr(),
+                residues.len(),
+            )
+        })
+    }
+
     fn wrap_ct(&self, p: ffi::TbgvCiphertext) -> Result<Ciphertext> {
         if p.is_null() {
             return Err(last_error());
@@ -228,6 +264,10 @@ impl Context {
         self.wrap_ct(unsafe { ffi::tbgv_ciphertext_add_noise_for_tests(self.raw(), ct.ptr, log2_magnitude, seed) })
     }
 
+    /// OpenFHE's own loader. Trusted input only: it trusts the lengths and
+    /// moduli it reads, and mutated bytes crash the process (arithmetic
+    /// fault, abort, segmentation fault). Bytes from another party go
+    /// through [`Context::build_ciphertext`] instead.
     pub fn deserialize_ciphertext(&self, bytes: &[u8]) -> Result<Ciphertext> {
         self.wrap_ct(unsafe { ffi::tbgv_ciphertext_deserialize(self.raw(), bytes.as_ptr(), bytes.len()) })
     }
@@ -490,6 +530,18 @@ impl RotationKeys {
     }
 }
 
+/// The metadata that travels with a ciphertext's residues: together they
+/// determine the ciphertext exactly (for objects in EVALUATION format built
+/// from the receiver's own reference).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CiphertextMeta {
+    pub num_elements: u32,
+    pub num_towers: u32,
+    pub level: u32,
+    pub noise_scale_deg: u32,
+    pub scaling_factor_int: u64,
+}
+
 /// Structural facts about a ciphertext, used to validate untrusted input.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CiphertextInfo {
@@ -510,6 +562,22 @@ impl Ciphertext {
         let mut len = 0usize;
         let ok = unsafe { ffi::tbgv_ciphertext_serialize(self.ptr, &mut buf, &mut len) };
         take_buffer(ok, buf, len)
+    }
+    pub fn meta(&self) -> Result<CiphertextMeta> {
+        let (mut ne, mut nt, mut lvl, mut deg, mut sf) = (0u32, 0u32, 0u32, 0u32, 0u64);
+        if unsafe { ffi::tbgv_ciphertext_meta(self.ptr, &mut ne, &mut nt, &mut lvl, &mut deg, &mut sf) } == 0 {
+            return Err(last_error());
+        }
+        Ok(CiphertextMeta { num_elements: ne, num_towers: nt, level: lvl, noise_scale_deg: deg, scaling_factor_int: sf })
+    }
+    /// Residues element-major, then tower, then coefficient index.
+    pub fn export_residues(&self) -> Result<Vec<u64>> {
+        let m = self.meta()?;
+        let mut out = vec![0u64; m.num_elements as usize * m.num_towers as usize * self.ctx.ring_dim() as usize];
+        if unsafe { ffi::tbgv_ciphertext_export(self.ptr, out.as_mut_ptr(), out.len()) } == 0 {
+            return Err(last_error());
+        }
+        Ok(out)
     }
     pub fn info(&self) -> Result<CiphertextInfo> {
         let (mut level, mut ne, mut nsd, mut limbs, mut packed) = (0u32, 0u32, 0u32, 0u32, 0u32);
@@ -537,8 +605,18 @@ impl PartialDecryption {
         self.ct.serialize()
     }
     /// Reconstructs a partial decryption received from another party. The
-    /// `lead` flag is part of the message, not the bytes.
+    /// `lead` flag is part of the message, not the bytes. Trusted input only
+    /// (OpenFHE's own format); untrusted input goes through
+    /// [`Context::build_ciphertext`] and [`PartialDecryption::from_ciphertext`].
     pub fn deserialize(ctx: &Context, bytes: &[u8], lead: bool) -> Result<Self> {
         Ok(Self { ct: ctx.deserialize_ciphertext(bytes)?, lead })
+    }
+    /// The partial decryption as a (one-element) ciphertext, for transport.
+    pub fn ciphertext(&self) -> &Ciphertext {
+        &self.ct
+    }
+    /// Wraps a rebuilt one-element ciphertext as a partial decryption.
+    pub fn from_ciphertext(ct: Ciphertext, lead: bool) -> Self {
+        Self { ct, lead }
     }
 }

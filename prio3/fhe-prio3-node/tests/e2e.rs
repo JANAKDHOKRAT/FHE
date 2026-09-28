@@ -197,7 +197,7 @@ async fn verdict_count_over_tls_with_leader_restart() {
     assert_eq!(resp.status().as_u16(), 200);
     let out: SubmitOutcome = fhe_prio3::messages::decode(&resp.bytes().await.unwrap()).unwrap();
     assert!(matches!(out, SubmitOutcome::Rejected(ref r) if r.contains("WrongTask")), "{out:?}");
-    let cap = 4 << 20; // above one fresh ciphertext (3.5 MiB) plus slack
+    let cap = 4 << 20; // above one packed fresh ciphertext (2.7 MiB) plus the 64 KiB slack
     // The server answers 413 as soon as the declared length exceeds the cap,
     // while the client may still be uploading; the client then sees either
     // the 413 or a reset connection. Both mean the upload was refused.
@@ -212,6 +212,9 @@ async fn verdict_count_over_tls_with_leader_restart() {
             Err(e) => assert!(e.is_request() || e.is_body() || e.is_connect(), "unexpected error on oversized upload: {e}"),
         }
     }
+    // The server closes a connection it refused with 413; a pooled client
+    // could race that close on its next request, so continue on a new one.
+    let http = https_client(&c.tls.ca_pem).unwrap();
     if !refused {
         // Five resets in a row: the server closed on us each time; it must still be up.
         let st: fhe_prio3_node::wire::StatusReply = http_get(&http, &format!("{}/v1/status", c.agg_urls[0]), None).await.unwrap();
@@ -337,4 +340,87 @@ async fn two_collectors_with_policies_over_tls() {
     assert!(bad.is_err());
     let none = CollectorNode::new(CollectorNodeConfig { task, material: c.material.clone(), collector_id: 0, seal_key: None, token: c.token.clone(), db: c.dir.path().join("bad2.db") });
     assert!(none.is_err());
+}
+
+/// Three aggregators in verdict mode over TLS. Every internal request must
+/// fit the body limit: the leader sends each helper the masks of the other
+/// two aggregators in one request, which is larger than one report.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn three_aggregators_verdict_over_tls() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let task = TaskConfig::new([12u8; 32], MeasurementType::Sum { max_measurement: 100 }, 3);
+    let mut c = Cluster::new(task);
+    c.start_all().await;
+    let client = c.client();
+    assert_eq!(client.submit(&Measurement::Sum(40)).await.unwrap(), SubmitOutcome::Accepted);
+    assert_eq!(client.submit(&Measurement::Sum(2)).await.unwrap(), SubmitOutcome::Accepted);
+    // out of range: 101 with a saturated offset half
+    let bits = |v: u64| -> Vec<u64> { (0..7).map(|i| (v >> i) & 1).collect() };
+    let mut bad = bits(101);
+    bad.extend(bits(127));
+    match client.submit_report(&client.inner().shard_raw(&[bad]).unwrap()).await.unwrap() {
+        SubmitOutcome::Rejected(r) => assert!(r.contains("ValidityCheckFailed"), "{r}"),
+        o => panic!("expected rejection, got {o:?}"),
+    }
+    // Hostile chunks over the network: the leader parses them in safe Rust
+    // and refuses them before any OpenFHE call; nothing is forwarded, and
+    // the cluster keeps serving.
+    let codec = client.inner().codec();
+    let good = client.inner().shard(&Measurement::Sum(5)).unwrap();
+    let legacy = codec
+        .decode(&good.chunks[0], fhe_prio3::packed::Expect::Exactly(codec.fresh_meta()))
+        .unwrap()
+        .serialize()
+        .unwrap();
+    // OpenFHE's own encoding is larger than the packed one, so the public
+    // body limit (packed report size plus 64 KiB) refuses it before it is
+    // even decoded: 413, or a reset if the server closes while we upload.
+    {
+        let mut r = good.clone();
+        r.chunks[0] = legacy;
+        r.report_id = fhe_prio3::Report::compute_id(&r.task_id, r.group, &r.chunks);
+        let body = fhe_prio3::messages::encode(&r).unwrap();
+        let http = https_client(&c.tls.ca_pem).unwrap();
+        match http.post(format!("{}/v1/submit", c.agg_urls[0])).body(body).send().await {
+            Ok(resp) => assert_eq!(resp.status().as_u16(), 413, "legacy OpenFHE bytes"),
+            Err(e) => assert!(e.is_request() || e.is_body() || e.is_connect(), "unexpected error: {e}"),
+        }
+        // A fresh client, i.e. a new connection: after a 413 the server
+        // closes the refused connection, and a pooled client may race that
+        // close. The question here is only whether the leader still serves.
+        let fresh = https_client(&c.tls.ca_pem).unwrap();
+        let st: fhe_prio3_node::wire::StatusReply = http_get(&fresh, &format!("{}/v1/status", c.agg_urls[0]), None).await.unwrap();
+        assert_eq!((st.accepted, st.closed), (2, false));
+    }
+    let mut hostile: Vec<(&str, Vec<u8>)> = Vec::new();
+    let mut fp = good.chunks[0].clone();
+    fp[40] ^= 0x80;
+    hostile.push(("wrong fingerprint", fp));
+    let mut top = good.chunks[0].clone();
+    let last = top.len() - 1;
+    top[last] = 0xFF; // the last residue of the last tower: all ones, at or above its modulus
+    hostile.push(("residue above the modulus", top));
+    let mut short = good.chunks[0].clone();
+    short.pop();
+    hostile.push(("one byte short", short));
+    for (what, chunk) in hostile {
+        let mut r = good.clone();
+        r.chunks[0] = chunk;
+        r.report_id = fhe_prio3::Report::compute_id(&r.task_id, r.group, &r.chunks);
+        match client.submit_report(&r).await.unwrap() {
+            SubmitOutcome::Rejected(reason) => {
+                let expected = match what {
+                    "wrong fingerprint" => "WrongParameters",
+                    "residue above the modulus" => "ResidueOutOfRange",
+                    _ => "BadLength",
+                };
+                assert!(reason.contains(expected), "{what}: {reason}");
+            }
+            o => panic!("{what}: expected rejection, got {o:?}"),
+        }
+    }
+    assert_eq!(client.submit_report(&good).await.unwrap(), SubmitOutcome::Accepted);
+    let r = c.close().await.unwrap();
+    assert_eq!((r.aggregate, r.report_count, r.valid_count), (AggregateResult::Sum(47), 3, 3));
+    c.stop_all();
 }

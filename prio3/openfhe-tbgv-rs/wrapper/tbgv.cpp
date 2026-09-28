@@ -414,6 +414,123 @@ TbgvCiphertext tbgv_ciphertext_add_noise_for_tests(TbgvContext ctx, TbgvCipherte
     TBGV_CATCH(nullptr)
 }
 
+/* ---- raw residue transport ----------------------------------------------- */
+
+uint32_t tbgv_context_num_towers(TbgvContext ctx) {
+    return static_cast<uint32_t>(cc_of(ctx)->GetCryptoParameters()->GetElementParams()->GetParams().size());
+}
+
+int tbgv_context_moduli(TbgvContext ctx, uint64_t* out, size_t out_len) {
+    TBGV_TRY
+    const auto& towers = cc_of(ctx)->GetCryptoParameters()->GetElementParams()->GetParams();
+    if (out == nullptr || out_len != towers.size()) { set_error("moduli buffer has the wrong length"); return 0; }
+    for (size_t t = 0; t < towers.size(); ++t) out[t] = towers[t]->GetModulus().ConvertToInt<uint64_t>();
+    return 1;
+    TBGV_CATCH(0)
+}
+
+int tbgv_ciphertext_meta(TbgvCiphertext h, uint32_t* num_elements, uint32_t* num_towers,
+                         uint32_t* level, uint32_t* noise_scale_deg, uint64_t* scaling_factor_int) {
+    TBGV_TRY
+    const CT& ct = ct_of(h);
+    const auto& elems = ct->GetElements();
+    if (elems.empty()) { set_error("ciphertext has no elements"); return 0; }
+    const size_t towers = elems[0].GetNumOfElements();
+    for (const auto& e : elems) {
+        if (e.GetNumOfElements() != towers) { set_error("ciphertext elements disagree on their tower count"); return 0; }
+        if (e.GetFormat() != Format::EVALUATION) { set_error("ciphertext element is not in EVALUATION format"); return 0; }
+    }
+    *num_elements = static_cast<uint32_t>(elems.size());
+    *num_towers = static_cast<uint32_t>(towers);
+    *level = static_cast<uint32_t>(ct->GetLevel());
+    *noise_scale_deg = static_cast<uint32_t>(ct->GetNoiseScaleDeg());
+    *scaling_factor_int = ct->GetScalingFactorInt().ConvertToInt<uint64_t>();
+    return 1;
+    TBGV_CATCH(0)
+}
+
+int tbgv_ciphertext_export(TbgvCiphertext h, uint64_t* out, size_t out_len) {
+    TBGV_TRY
+    const CT& ct = ct_of(h);
+    const auto& elems = ct->GetElements();
+    if (elems.empty()) { set_error("ciphertext has no elements"); return 0; }
+    const size_t towers = elems[0].GetNumOfElements();
+    const size_t n = elems[0].GetRingDimension();
+    if (out == nullptr || out_len != elems.size() * towers * n) { set_error("residue buffer has the wrong length"); return 0; }
+    size_t k = 0;
+    for (const auto& e : elems) {
+        if (e.GetNumOfElements() != towers || e.GetFormat() != Format::EVALUATION) { set_error("inconsistent ciphertext elements"); return 0; }
+        for (size_t t = 0; t < towers; ++t) {
+            const auto& vals = e.GetElementAtIndex(t).GetValues();
+            if (vals.GetLength() != n) { set_error("tower has the wrong length"); return 0; }
+            for (size_t i = 0; i < n; ++i) out[k++] = vals[i].ConvertToInt<uint64_t>();
+        }
+    }
+    return 1;
+    TBGV_CATCH(0)
+}
+
+TbgvCiphertext tbgv_ciphertext_build(TbgvContext ctx, TbgvCiphertext reference, uint32_t num_elements,
+                                     uint32_t num_towers, uint32_t level, uint32_t noise_scale_deg,
+                                     uint64_t scaling_factor_int, const uint64_t* values, size_t len) {
+    TBGV_TRY
+    if (reference == nullptr || values == nullptr) { set_error("null argument"); return nullptr; }
+    const CT& ref = ct_of(reference);
+    if (ref->GetCryptoContext().get() != cc_of(ctx).get()) { set_error("reference belongs to a different context"); return nullptr; }
+    const auto& ref_elems = ref->GetElements();
+    if (ref_elems.empty()) { set_error("reference has no elements"); return nullptr; }
+    const DCRTPoly& full = ref_elems[0];
+    const size_t L = full.GetNumOfElements();
+    const size_t n = full.GetRingDimension();
+    if (L != cc_of(ctx)->GetCryptoParameters()->GetElementParams()->GetParams().size()) { set_error("reference is not a fresh full-chain ciphertext"); return nullptr; }
+    if (full.GetFormat() != Format::EVALUATION) { set_error("reference is not in EVALUATION format"); return nullptr; }
+    // Every metadata value is checked before any OpenFHE object is built.
+    if (num_elements < 1 || num_elements > 2) { set_error("num_elements must be 1 or 2"); return nullptr; }
+    if (num_towers < 1 || num_towers > L) { set_error("num_towers out of range"); return nullptr; }
+    if (static_cast<size_t>(level) + num_towers != L) { set_error("level is inconsistent with the tower count"); return nullptr; }
+    if (noise_scale_deg < 1 || noise_scale_deg > 2) { set_error("noise_scale_deg out of range"); return nullptr; }
+    const uint64_t t = cc_of(ctx)->GetCryptoParameters()->GetPlaintextModulus();
+    if (scaling_factor_int < 1 || scaling_factor_int >= t) { set_error("scaling_factor_int out of range"); return nullptr; }
+    if (len != static_cast<size_t>(num_elements) * num_towers * n) { set_error("residue count does not match the metadata"); return nullptr; }
+    for (size_t e = 0; e < num_elements; ++e)
+        for (size_t tw = 0; tw < num_towers; ++tw) {
+            const uint64_t q = full.GetElementAtIndex(tw).GetModulus().ConvertToInt<uint64_t>();
+            const uint64_t* v = values + (e * num_towers + tw) * n;
+            for (size_t i = 0; i < n; ++i)
+                if (v[i] >= q) { set_error("residue is not below its tower modulus"); return nullptr; }
+        }
+    if (ref_elems.size() < num_elements) { set_error("reference has fewer elements than requested"); return nullptr; }
+    for (const auto& re : ref_elems)
+        if (re.GetNumOfElements() != L || re.GetFormat() != Format::EVALUATION) { set_error("reference elements are inconsistent"); return nullptr; }
+    // Element e is built from the reference's own element e, so each
+    // element keeps its own tower-parameter objects exactly as OpenFHE lays
+    // them out (the rebuilt object then serializes byte for byte like the
+    // original, which the tests check).
+    std::vector<DCRTPoly> elems;
+    elems.reserve(num_elements);
+    for (size_t e = 0; e < num_elements; ++e) {
+        DCRTPoly x = ref_elems[e];
+        if (num_towers < L) x.DropLastElements(L - num_towers);
+        elems.push_back(std::move(x));
+    }
+    for (size_t e = 0; e < num_elements; ++e)
+        for (size_t tw = 0; tw < num_towers; ++tw) {
+            auto poly = elems[e].GetElementAtIndex(tw);
+            NativeVector vec(n, poly.GetModulus());
+            const uint64_t* v = values + (e * num_towers + tw) * n;
+            for (size_t i = 0; i < n; ++i) vec[i] = NativeInteger(v[i]);
+            poly.SetValues(std::move(vec), Format::EVALUATION);
+            elems[e].SetElementAtIndex(tw, std::move(poly));
+        }
+    CT out = ref->Clone();
+    out->SetElements(std::move(elems));
+    out->SetLevel(level);
+    out->SetNoiseScaleDeg(noise_scale_deg);
+    out->SetScalingFactorInt(NativeInteger(scaling_factor_int));
+    return new CT(out);
+    TBGV_CATCH(nullptr)
+}
+
 /* ---- threshold decryption ---------------------------------------------- */
 
 TbgvCiphertext tbgv_partial_decrypt(TbgvContext ctx, TbgvCiphertext ct, TbgvSecretKey sk, int is_lead) {

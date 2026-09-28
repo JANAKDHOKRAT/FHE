@@ -51,6 +51,11 @@ unsafe extern "C" {
     pub fn tbgv_context_install_rotkeys(ctx: TbgvContext, keys: TbgvRotKeys, tag: *const c_char) -> c_int;
     pub fn tbgv_context_merge_rotkeys(ctx: TbgvContext, keys: TbgvRotKeys, tag: *const c_char) -> c_int;
     pub fn tbgv_context_clear_rotkeys(ctx: TbgvContext, tag: *const c_char) -> c_int;
+    pub fn tbgv_context_num_towers(ctx: TbgvContext) -> u32;
+    pub fn tbgv_context_moduli(ctx: TbgvContext, out: *mut u64, out_len: usize) -> c_int;
+    pub fn tbgv_ciphertext_meta(ct: TbgvCiphertext, num_elements: *mut u32, num_towers: *mut u32, level: *mut u32, noise_scale_deg: *mut u32, scaling_factor_int: *mut u64) -> c_int;
+    pub fn tbgv_ciphertext_export(ct: TbgvCiphertext, out: *mut u64, out_len: usize) -> c_int;
+    pub fn tbgv_ciphertext_build(ctx: TbgvContext, reference: TbgvCiphertext, num_elements: u32, num_towers: u32, level: u32, noise_scale_deg: u32, scaling_factor_int: u64, values: *const u64, len: usize) -> TbgvCiphertext;
     pub fn tbgv_clear_keys_for_tag(tag: *const c_char) -> c_int;
     pub fn tbgv_rotkeys_free(keys: TbgvRotKeys);
     pub fn tbgv_rotkeys_serialize(keys: TbgvRotKeys, out: *mut *mut u8, out_len: *mut usize) -> c_int;

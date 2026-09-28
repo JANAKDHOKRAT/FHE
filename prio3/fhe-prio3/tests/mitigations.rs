@@ -17,9 +17,12 @@ fn verdict_cfg(seed: u8, t: MeasurementType) -> TaskConfig {
 fn forge_related(net: &Net, honest: &Report, delta_slots: &[u64]) -> Report {
     let ctx = openfhe_tbgv_rs::Context::deserialize(&net.material.context).unwrap();
     let pk = ctx.deserialize_public_key(&net.material.public_key).unwrap();
-    let ct = ctx.deserialize_ciphertext(&honest.chunks[0]).unwrap();
+    let codec = net.client.codec();
+    let ct = codec.decode(&honest.chunks[0], fhe_prio3::packed::Expect::Exactly(codec.fresh_meta())).unwrap();
+    // The forger needs no client identity: it holds the public key.
     let delta = ctx.encrypt(&pk, &ctx.plaintext(delta_slots).unwrap()).unwrap();
-    let chunks = vec![ctx.add(&ct, &delta).unwrap().serialize().unwrap()];
+    // the sum of two fresh ciphertexts has exactly the shape of a fresh one
+    let chunks = vec![codec.encode(&ctx.add(&ct, &delta).unwrap()).unwrap()];
     let report_id = Report::compute_id(&honest.task_id, 0, &chunks);
     Report { task_id: honest.task_id, report_id, group: 0, chunks, auth: None }
 }

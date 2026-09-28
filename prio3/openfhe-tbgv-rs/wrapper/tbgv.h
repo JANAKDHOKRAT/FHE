@@ -73,6 +73,34 @@ TbgvRotKeys tbgv_rotkeys_add(TbgvContext ctx, TbgvRotKeys a, TbgvRotKeys b, cons
 /* Installs `keys` under `joint_tag`, merging with keys already installed
  * for that tag (used to install per-index keys one at a time). */
 int tbgv_context_merge_rotkeys(TbgvContext ctx, TbgvRotKeys keys, const char* joint_tag);
+/* ---- raw residue transport ---------------------------------------------
+ * A ciphertext crosses the network as its RNS residues plus five metadata
+ * values; the receiver rebuilds it inside its own context. Outside bytes are
+ * never handed to OpenFHE's deserializer. */
+
+/* Number of RNS towers of the context's full modulus chain. */
+uint32_t tbgv_context_num_towers(TbgvContext ctx);
+/* Writes the moduli of towers 0..L-1 of the full chain; out_len must be L. */
+int tbgv_context_moduli(TbgvContext ctx, uint64_t* out, size_t out_len);
+/* Metadata needed to rebuild `ct`. Fails if the elements disagree on their
+ * tower count or are not in EVALUATION format. */
+int tbgv_ciphertext_meta(TbgvCiphertext ct, uint32_t* num_elements, uint32_t* num_towers,
+                         uint32_t* level, uint32_t* noise_scale_deg, uint64_t* scaling_factor_int);
+/* Writes the residues element-major, then tower, then coefficient index.
+ * out_len must equal num_elements * num_towers * ring_dim. */
+int tbgv_ciphertext_export(TbgvCiphertext ct, uint64_t* out, size_t out_len);
+/* Rebuilds a ciphertext from residues and metadata. `reference` is a fresh
+ * encryption made by the caller under the joint key: it supplies the key
+ * tag, the encoding and the tower parameters (the first `num_towers` towers
+ * of its chain). Every argument is validated before any OpenFHE object is
+ * touched: 1 <= num_elements <= 2, 1 <= num_towers <= L, level + num_towers
+ * == L, 1 <= noise_scale_deg <= 2, 1 <= scaling_factor_int < t,
+ * len == num_elements * num_towers * ring_dim, and every residue below the
+ * modulus of its tower. Returns NULL (with an error message) otherwise. */
+TbgvCiphertext tbgv_ciphertext_build(TbgvContext ctx, TbgvCiphertext reference, uint32_t num_elements,
+                                     uint32_t num_towers, uint32_t level, uint32_t noise_scale_deg,
+                                     uint64_t scaling_factor_int, const uint64_t* values, size_t len);
+
 /* Removes every rotation key installed under `joint_tag`. */
 int tbgv_context_clear_rotkeys(TbgvContext ctx, const char* joint_tag);
 /* Removes the evaluation-multiplication and rotation keys installed under

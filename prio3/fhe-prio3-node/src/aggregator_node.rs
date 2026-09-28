@@ -54,6 +54,7 @@ struct Inner {
     next_group: AtomicU32,
     groups: u32,
     max_report_bytes: usize,
+    max_message_bytes: usize,
 }
 
 #[derive(Clone)]
@@ -89,6 +90,7 @@ impl AggregatorNode {
         }
         let groups = agg.layout().groups as u32;
         let max_report_bytes = agg.max_report_bytes();
+        let max_message_bytes = agg.max_message_bytes();
         if cfg.collectors.len() != cfg.task.num_collectors() {
             anyhow::bail!("task has {} collector(s) but {} collector URL(s) were given", cfg.task.num_collectors(), cfg.collectors.len());
         }
@@ -106,6 +108,7 @@ impl AggregatorNode {
                 next_group: AtomicU32::new(0),
                 groups,
                 max_report_bytes,
+                max_message_bytes,
             }),
         })
     }
@@ -114,20 +117,26 @@ impl AggregatorNode {
         self.inner.index == 0
     }
 
+    /// Body limits: the public submit endpoint accepts at most one report
+    /// (its exact packed size plus 64 KiB for the envelope and signature);
+    /// internal endpoints, reachable only with the token, accept the largest
+    /// message another aggregator can legitimately send
+    /// (`Aggregator::max_message_bytes`, e.g. the masks of every other
+    /// aggregator in one request) plus the same slack.
     pub fn router(&self) -> Router {
-        let limit = self.inner.max_report_bytes + (64 << 10);
+        let public = DefaultBodyLimit::max(self.inner.max_report_bytes + (64 << 10));
+        let internal = DefaultBodyLimit::max(self.inner.max_message_bytes + (64 << 10));
         Router::new()
             .route("/v1/status", get(status))
             .route("/v1/group", get(group_ticket))
-            .route("/v1/submit", post(submit))
-            .route("/v1/close", post(close))
-            .route("/v1/report", post(internal_report))
-            .route("/v1/masks", post(internal_masks))
-            .route("/v1/verifiers", post(internal_verifiers))
-            .route("/v1/count-share", post(internal_count_share))
-            .route("/v1/count-finish", post(internal_count_finish))
-            .route("/v1/aggregate-share", post(internal_aggregate_share))
-            .layer(DefaultBodyLimit::max(limit))
+            .route("/v1/submit", post(submit).layer(public))
+            .route("/v1/close", post(close).layer(public))
+            .route("/v1/report", post(internal_report).layer(internal))
+            .route("/v1/masks", post(internal_masks).layer(internal))
+            .route("/v1/verifiers", post(internal_verifiers).layer(internal))
+            .route("/v1/count-share", post(internal_count_share).layer(internal))
+            .route("/v1/count-finish", post(internal_count_finish).layer(internal))
+            .route("/v1/aggregate-share", post(internal_aggregate_share).layer(internal))
             .with_state(self.clone())
     }
 

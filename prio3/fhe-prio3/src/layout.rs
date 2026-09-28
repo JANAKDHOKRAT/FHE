@@ -41,8 +41,9 @@ pub struct Layout {
     /// Elements per chunk (a power of two).
     pub block: usize,
     pub num_chunks: usize,
-    /// Second-moment accumulation enabled for a SumVec of (length, bits).
-    pub moments: Option<(usize, u32)>,
+    /// Second-moment accumulation enabled: the `(start, bits)` slot map of
+    /// the values (see `MeasurementType::value_slots`).
+    pub moments: Option<Vec<(usize, u32)>>,
 }
 
 impl Layout {
@@ -86,27 +87,38 @@ impl Layout {
         Ok(Self { kind, input_len, repetitions, classes, groups, row, block, num_chunks, moments: None })
     }
 
-    /// Rotations used by the second-moment computation: value sums over each
-    /// value's `bits` elements, and alignment of value `a` onto element 0.
+    /// Window of the rotate-and-add tree that sums a value's weighted bits:
+    /// the smallest power of two not below the widest value.
+    pub fn moment_window(&self) -> usize {
+        match &self.moments {
+            Some(map) => map.iter().map(|&(_, b)| b as usize).max().unwrap_or(1).next_power_of_two(),
+            None => 1,
+        }
+    }
+
+    /// Rotations used by the second-moment computation: the tree over the
+    /// window, and alignment of each value's start slot onto element 0.
     pub fn moment_rotations(&self) -> Vec<i32> {
-        let Some((length, bits)) = self.moments else { return Vec::new() };
+        let Some(map) = &self.moments else { return Vec::new() };
         let stride = self.element_stride();
         let mut v = Vec::new();
         let mut d = 1usize;
-        while d < bits as usize {
+        while d < self.moment_window() {
             v.push((stride * d) as i32);
             d *= 2;
         }
-        for a in 1..length {
-            v.push((a * bits as usize * stride) as i32);
+        for &(start, _) in map {
+            if start != 0 {
+                v.push((start * stride) as i32);
+            }
         }
         v
     }
 
     /// Number of (a <= b) value pairs whose products are accumulated.
     pub fn moment_pairs(&self) -> usize {
-        match self.moments {
-            Some((length, _)) => length * (length + 1) / 2,
+        match &self.moments {
+            Some(map) => map.len() * (map.len() + 1) / 2,
             None => 0,
         }
     }

@@ -10,6 +10,7 @@
 //!   simulate --type count --auth --reports 4
 //!   simulate --type histogram --length 64 --reports 4
 //!   simulate --type sumvec --length 1200 --bits 4 --reports 2
+//!   simulate --type bounded --bounds 100,255,5 --moments --reports 6
 
 use fhe_prio3::messages::{decode, encode};
 use fhe_prio3::*;
@@ -29,10 +30,11 @@ struct Args {
     auth: bool,
     groups: usize,
     moments: bool,
+    bounds: Vec<u64>,
 }
 
 fn parse() -> Args {
-    let mut a = Args { ty: "sum".into(), aggregators: 2, reports: 4, repetitions: 0, length: 8, bits: 4, max: 100, max_weight: 2, silent: false, auth: false, groups: 0, moments: false };
+    let mut a = Args { ty: "sum".into(), aggregators: 2, reports: 4, repetitions: 0, length: 8, bits: 4, max: 100, max_weight: 2, silent: false, auth: false, groups: 0, moments: false, bounds: vec![100, 255, 5] };
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
     while i < argv.len() {
@@ -52,6 +54,7 @@ fn parse() -> Args {
                 other => panic!("unknown mode {other}"),
             },
             "--groups" => a.groups = v.parse().expect("--groups"),
+            "--bounds" => a.bounds = v.split(',').map(|x| x.parse().expect("--bounds")).collect(),
             "--auth" => {
                 a.auth = true;
                 i -= 1; // flag without value
@@ -85,6 +88,9 @@ fn measurement(ty: &MeasurementType, i: usize) -> Measurement {
         MeasurementType::SumVec { length, bits } => {
             Measurement::SumVec((0..*length).map(|j| ((i * (2 * j + 3) + j * j + (i * j) % 5) as u64) % (1u64 << bits)).collect())
         }
+        MeasurementType::BoundedSumVec { bounds } => {
+            Measurement::SumVec(bounds.iter().enumerate().map(|(j, &b)| ((i * (2 * j + 3) + j * j + (i * j) % 5) as u64) % (b + 1)).collect())
+        }
         MeasurementType::Histogram { length } => Measurement::Histogram((i * 5) % length),
         MeasurementType::MultihotCountVec { length, max_weight } => {
             Measurement::MultihotCountVec((0..*length).map(|j| j % length < *max_weight && (i + j) % 2 == 0).collect())
@@ -98,6 +104,7 @@ fn main() {
         "count" => MeasurementType::Count,
         "sum" => MeasurementType::Sum { max_measurement: a.max },
         "sumvec" => MeasurementType::SumVec { length: a.length, bits: a.bits },
+        "bounded" => MeasurementType::BoundedSumVec { bounds: a.bounds.clone() },
         "histogram" => MeasurementType::Histogram { length: a.length },
         "multihot" => MeasurementType::MultihotCountVec { length: a.length, max_weight: a.max_weight },
         other => {

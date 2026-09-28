@@ -80,9 +80,10 @@ impl Collector {
         }
         self.cfg.measurement_type.check_aggregate_consistency(&slot_sums, valid)?;
         let aggregate = self.cfg.measurement_type.decode_aggregate(&slot_sums)?;
-        let regression = match self.layout.moments {
+        let regression = match &self.layout.moments {
             None => None,
-            Some((length, _)) => {
+            Some(map) => {
+                let length = map.len();
                 let pairs = self.layout.moment_pairs();
                 let mut second = vec![vec![0u128; length]; length];
                 let mut idx = 0;
@@ -107,15 +108,16 @@ impl Collector {
                     AggregateResult::SumVec(v) => v.clone(),
                     _ => return Err(Error::Protocol("moments require a SumVec aggregate".into())),
                 };
-                // Each second moment is a sum of `valid` products each below 2^(2 bits);
-                // anything larger means a corrupted contribution.
-                let bits = match self.cfg.measurement_type {
-                    crate::types::MeasurementType::SumVec { bits, .. } => bits,
-                    _ => unreachable!(),
-                };
-                let cap = (valid as u128) * ((1u128 << (2 * bits)) - 1);
-                if second.iter().flatten().any(|&s| s > cap) {
-                    return Err(Error::Protocol("aggregate inconsistent: a second moment exceeds its bound".into()));
+                // Each second moment (a, b) is a sum of `valid` products each at
+                // most (2^bits_a - 1)(2^bits_b - 1); anything larger means a
+                // corrupted contribution.
+                for a in 0..length {
+                    for b in 0..length {
+                        let cap = (valid as u128) * ((1u128 << map[a].1) - 1) * ((1u128 << map[b].1) - 1);
+                        if second[a][b] > cap {
+                            return Err(Error::Protocol(format!("aggregate inconsistent: second moment ({a},{b}) exceeds its bound")));
+                        }
+                    }
                 }
                 Some(RegressionResult::from_moments(valid, first, second))
             }

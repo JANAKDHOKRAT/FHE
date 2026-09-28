@@ -248,37 +248,39 @@ impl Circuit {
     /// Post-validation second moments for one report in `group`: for every
     /// value pair `a <= b` a ciphertext holding `v_a * v_b` at the group's
     /// element-0 slot and zero elsewhere. Depth 3: weighted bits (1),
-    /// alignment mask (2), product (3). Values are recomposed from the bits
-    /// with plaintext weights `2^t`, so nothing the client wrote outside its
-    /// bit slots enters.
+    /// alignment mask (2), product (3). Each value is recomposed from its
+    /// own bit slots with plaintext weights `2^t` and zero everywhere else,
+    /// so nothing the client wrote outside that value's bit slots enters,
+    /// whatever the widths of neighbouring values.
     pub fn moment_products(&self, ct: &Ciphertext, group: usize) -> Result<Vec<Ciphertext>> {
         let l = &self.layout;
-        let (length, bits) = l.moments.expect("moments enabled");
+        let map = l.moments.as_ref().expect("moments enabled");
         let stride = l.element_stride();
+        let window = l.moment_window();
         let ctx = &self.ctx;
-        let mut w = vec![0u64; l.row];
-        for a in 0..length {
-            for t in 0..bits as usize {
-                w[l.group_slot(group, a * bits as usize + t)] = 1u64 << t;
-            }
-        }
-        let mut z = ctx.mult_plain(ct, &ctx.plaintext(&w)?)?;
-        let mut d = 1usize;
-        while d < bits as usize {
-            z = ctx.add(&z, &ctx.rotate(&z, (stride * d) as i32)?)?;
-            d *= 2;
-        }
         let mut ind0 = vec![0u64; l.row];
         ind0[l.group_slot(group, 0)] = 1;
         let ind0 = ctx.plaintext(&ind0)?;
-        let mut values = Vec::with_capacity(length);
-        for a in 0..length {
-            let aligned = if a == 0 { z.try_clone()? } else { ctx.rotate(&z, (a * bits as usize * stride) as i32)? };
+        let mut values = Vec::with_capacity(map.len());
+        for &(start, bits) in map {
+            let mut w = vec![0u64; l.row];
+            for t in 0..bits as usize {
+                w[l.group_slot(group, start + t)] = 1u64 << t;
+            }
+            // z is zero outside this value's bit slots, so the tree's window
+            // may exceed the value's width without touching a neighbour.
+            let mut z = ctx.mult_plain(ct, &ctx.plaintext(&w)?)?;
+            let mut d = 1usize;
+            while d < window {
+                z = ctx.add(&z, &ctx.rotate(&z, (stride * d) as i32)?)?;
+                d *= 2;
+            }
+            let aligned = if start == 0 { z } else { ctx.rotate(&z, (start * stride) as i32)? };
             values.push(ctx.mult_plain(&aligned, &ind0)?);
         }
         let mut out = Vec::with_capacity(l.moment_pairs());
-        for a in 0..length {
-            for b in a..length {
+        for a in 0..values.len() {
+            for b in a..values.len() {
                 out.push(if a == b { ctx.square(&values[a])? } else { ctx.mult(&values[a], &values[b])? });
             }
         }

@@ -24,6 +24,13 @@ pub enum MeasurementType {
     Sum { max_measurement: u64 },
     /// `length` integers each in `[0, 2^bits)`; aggregate is the element-wise sum.
     SumVec { length: usize, bits: u32 },
+    /// One integer per bound, element `e` in `[0, bounds[e]]` exactly;
+    /// aggregate is the element-wise sum (`AggregateResult::SumVec`).
+    /// Each element uses the Prio3 `Sum` encoding: `bits_e` bits of the
+    /// value and `bits_e` bits of `value + offset_e`, with
+    /// `offset_e = 2^bits_e - 1 - bounds[e]`, plus one linear constraint per
+    /// element. Not a draft-13 type; an extension for per-element ranges.
+    BoundedSumVec { bounds: Vec<u64> },
     /// Bucket index in `[0, length)`; aggregate is the per-bucket count.
     Histogram { length: usize },
     /// Subset of `[0, length)` with at most `max_weight` elements; aggregate
@@ -184,6 +191,17 @@ impl MeasurementType {
                 }
                 Ok(())
             }
+            MeasurementType::BoundedSumVec { bounds } => {
+                if bounds.is_empty() {
+                    return Err(Error::Config("BoundedSumVec: need at least one bound".into()));
+                }
+                for (e, &b) in bounds.iter().enumerate() {
+                    if b == 0 || bit_length(b) > MAX_BITS {
+                        return Err(Error::Config(format!("BoundedSumVec: bound {e} must be in [1, 2^{MAX_BITS})")));
+                    }
+                }
+                Ok(())
+            }
             MeasurementType::Histogram { length } => {
                 if *length < 2 || (*length as u64) >= (1u64 << MAX_BITS) {
                     return Err(Error::Config("Histogram: need 2 <= length < 2^30".into()));
@@ -215,12 +233,34 @@ impl MeasurementType {
         (1u64 << Self::weight_bits(max_weight)) - 1 - max_weight as u64
     }
 
+    /// Slot map of the integer values a type carries, as `(start, bits)`
+    /// per value in encoding order: the value's bits are the `bits` slots
+    /// from `start`. `None` for types that carry no integer vector. Used by
+    /// the aggregate decoder, the second moments and the release policies.
+    pub fn value_slots(&self) -> Option<Vec<(usize, u32)>> {
+        match self {
+            MeasurementType::SumVec { length, bits } => Some((0..*length).map(|a| (a * *bits as usize, *bits)).collect()),
+            MeasurementType::BoundedSumVec { bounds } => {
+                let mut v = Vec::with_capacity(bounds.len());
+                let mut start = 0usize;
+                for &b in bounds {
+                    let bits = Self::sum_bits(b);
+                    v.push((start, bits));
+                    start += 2 * bits as usize;
+                }
+                Some(v)
+            }
+            _ => None,
+        }
+    }
+
     /// Number of field elements (all bits) in an encoded measurement.
     pub fn input_len(&self) -> usize {
         match self {
             MeasurementType::Count => 1,
             MeasurementType::Sum { max_measurement } => 2 * Self::sum_bits(*max_measurement) as usize,
             MeasurementType::SumVec { length, bits } => length * *bits as usize,
+            MeasurementType::BoundedSumVec { bounds } => bounds.iter().map(|&b| 2 * Self::sum_bits(b) as usize).sum(),
             MeasurementType::Histogram { length } => *length,
             MeasurementType::MultihotCountVec { length, max_weight } => length + Self::weight_bits(*max_weight) as usize,
         }
@@ -249,6 +289,21 @@ impl MeasurementType {
                         return Err(Error::Measurement(format!("SumVec: element {v} >= 2^{bits}")));
                     }
                     out.extend(encode_bits(v, *bits));
+                }
+                Ok(out)
+            }
+            (MeasurementType::BoundedSumVec { bounds }, Measurement::SumVec(vs)) => {
+                if vs.len() != bounds.len() {
+                    return Err(Error::Measurement(format!("BoundedSumVec: expected {} elements, got {}", bounds.len(), vs.len())));
+                }
+                let mut out = Vec::with_capacity(self.input_len());
+                for (e, (&v, &b)) in vs.iter().zip(bounds).enumerate() {
+                    if v > b {
+                        return Err(Error::Measurement(format!("BoundedSumVec: element {e} is {v} > bound {b}")));
+                    }
+                    let bits = Self::sum_bits(b);
+                    out.extend(encode_bits(v, bits));
+                    out.extend(encode_bits(v + Self::sum_offset(b), bits));
                 }
                 Ok(out)
             }
@@ -292,6 +347,25 @@ impl MeasurementType {
                 }
                 vec![LinearConstraint { coeffs, constant: Self::sum_offset(*max_measurement) }]
             }
+            MeasurementType::BoundedSumVec { bounds } => {
+                // per element e: value(x_e) + offset_e - value(y_e) == 0, each
+                // with its own challenge coefficient (see verify.rs)
+                let mut out = Vec::with_capacity(bounds.len());
+                let mut start = 0usize;
+                for &b in bounds {
+                    let bits = Self::sum_bits(b) as usize;
+                    let mut coeffs = Vec::with_capacity(2 * bits);
+                    for i in 0..bits {
+                        coeffs.push((start + i, 1u64 << i));
+                    }
+                    for i in 0..bits {
+                        coeffs.push((start + bits + i, f.neg(1u64 << i)));
+                    }
+                    out.push(LinearConstraint { coeffs, constant: Self::sum_offset(b) });
+                    start += 2 * bits;
+                }
+                out
+            }
             MeasurementType::Histogram { length } => {
                 // sum(x) - 1 == 0
                 vec![LinearConstraint { coeffs: (0..*length).map(|i| (i, 1u64)).collect(), constant: f.neg(1) }]
@@ -324,6 +398,10 @@ impl MeasurementType {
                 let b = *bits as usize;
                 AggregateResult::SumVec((0..*length).map(|i| decode_bits_u128(&slot_sums[i * b..(i + 1) * b])).collect())
             }
+            MeasurementType::BoundedSumVec { .. } => {
+                let map = self.value_slots().expect("vector type");
+                AggregateResult::SumVec(map.iter().map(|&(start, bits)| decode_bits_u128(&slot_sums[start..start + bits as usize])).collect())
+            }
             MeasurementType::Histogram { length } => AggregateResult::Histogram(slot_sums[..*length].to_vec()),
             MeasurementType::MultihotCountVec { length, .. } => AggregateResult::MultihotCountVec(slot_sums[..*length].to_vec()),
         })
@@ -348,6 +426,13 @@ impl MeasurementType {
             MeasurementType::Sum { max_measurement } => {
                 let bits = Self::sum_bits(*max_measurement) as usize;
                 value(&slot_sums[..bits]) + count as u128 * Self::sum_offset(*max_measurement) as u128 == value(&slot_sums[bits..2 * bits])
+            }
+            MeasurementType::BoundedSumVec { bounds } => {
+                let map = self.value_slots().expect("vector type");
+                map.iter().zip(bounds).all(|(&(start, bits), &b)| {
+                    let bits = bits as usize;
+                    value(&slot_sums[start..start + bits]) + count as u128 * Self::sum_offset(b) as u128 == value(&slot_sums[start + bits..start + 2 * bits])
+                })
             }
             MeasurementType::Histogram { length } => slot_sums[..*length].iter().map(|&s| s as u128).sum::<u128>() == count as u128,
             MeasurementType::MultihotCountVec { length, max_weight } => {
@@ -418,6 +503,57 @@ mod tests {
         let mut bad2 = encode_bits(101, 7);
         bad2.extend(encode_bits(127, 7));
         assert!(!is_valid_plain(&t, &f(), &bad2));
+    }
+
+    #[test]
+    fn bounded_sumvec_encoding_and_per_element_ranges() {
+        // bounds 100 (7 bits, offset 27), 255 (8 bits, offset 0), 5 (3 bits, offset 2), 1 (1 bit, offset 0)
+        let t = MeasurementType::BoundedSumVec { bounds: vec![100, 255, 5, 1] };
+        t.validate().unwrap();
+        assert_eq!(t.input_len(), 2 * (7 + 8 + 3 + 1));
+        assert_eq!(t.value_slots().unwrap(), vec![(0, 7), (14, 8), (30, 3), (36, 1)]);
+        assert_eq!(t.linear_constraints(&f()).len(), 4);
+        let e = t.encode(&Measurement::SumVec(vec![100, 255, 5, 1])).unwrap();
+        assert_eq!(&e[..7], &[0, 0, 1, 0, 0, 1, 1]); // 100
+        assert_eq!(&e[7..14], &[1, 1, 1, 1, 1, 1, 1]); // 127
+        assert_eq!(&e[30..33], &[1, 0, 1]); // 5
+        assert_eq!(&e[33..36], &[1, 1, 1]); // 7
+        assert!(is_valid_plain(&t, &f(), &e));
+        assert!(t.encode(&Measurement::SumVec(vec![101, 255, 5, 1])).is_err());
+        assert!(t.encode(&Measurement::SumVec(vec![100, 256, 5, 1])).is_err());
+        assert!(t.encode(&Measurement::SumVec(vec![100, 255, 6, 1])).is_err());
+        assert!(t.encode(&Measurement::SumVec(vec![100, 255, 5, 2])).is_err());
+        assert!(t.encode(&Measurement::SumVec(vec![100, 255, 5])).is_err());
+        assert!(t.encode(&Measurement::Sum(1)).is_err());
+        // element 2 = 6 (> 5) with any offset half: 6 + 2 = 8 does not fit in 3 bits
+        for y in 0..8u64 {
+            let mut bad = e.clone();
+            bad[30..33].copy_from_slice(&encode_bits(6, 3));
+            bad[33..36].copy_from_slice(&encode_bits(y, 3));
+            assert!(!is_valid_plain(&t, &f(), &bad), "y = {y}");
+        }
+        // value bits fine, offset bits inconsistent
+        let mut inc = e.clone();
+        inc[33] ^= 1;
+        assert!(!is_valid_plain(&t, &f(), &inc));
+        // aggregate over three records and consistency
+        let ms = vec![Measurement::SumVec(vec![100, 255, 5, 1]), Measurement::SumVec(vec![0, 0, 0, 0]), Measurement::SumVec(vec![50, 128, 3, 1])];
+        let agg = t.aggregate_plain(&ms).unwrap();
+        assert_eq!(agg, AggregateResult::SumVec(vec![150, 383, 8, 2]));
+        let mut sums = vec![0u64; t.input_len()];
+        for m in &ms {
+            for (s, b) in sums.iter_mut().zip(t.encode(m).unwrap()) {
+                *s += b;
+            }
+        }
+        t.check_aggregate_consistency(&sums, 3).unwrap();
+        let mut corrupt = sums.clone();
+        corrupt[33] += 1; // offset half of element 2 no longer matches value half + 3*offset
+        assert!(t.check_aggregate_consistency(&corrupt, 3).is_err());
+        // parameter validation
+        assert!(MeasurementType::BoundedSumVec { bounds: vec![] }.validate().is_err());
+        assert!(MeasurementType::BoundedSumVec { bounds: vec![0] }.validate().is_err());
+        assert!(MeasurementType::BoundedSumVec { bounds: vec![1u64 << MAX_BITS] }.validate().is_err());
     }
 
     #[test]

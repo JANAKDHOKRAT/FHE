@@ -99,12 +99,27 @@ impl TaskConfig {
 
     /// Largest batch for which every second-moment sum stays below `p`
     /// (each product is below `2^(2 bits)`). `None` when moments are off.
+    /// Bit widths of the two widest values, for the product bound.
+    fn widest_pair(&self) -> Option<(u32, u32)> {
+        let map = self.measurement_type.value_slots()?;
+        let mut w: Vec<u32> = map.iter().map(|&(_, b)| b).collect();
+        w.sort_unstable_by(|a, b| b.cmp(a));
+        match w.len() {
+            0 => None,
+            1 => Some((w[0], w[0])),
+            _ => Some((w[0], w[1])),
+        }
+    }
+
     pub fn moments_max_batch(&self) -> Option<u64> {
         if !self.moments {
             return None;
         }
         match self.measurement_type {
-            MeasurementType::SumVec { bits, .. } => Some((self.plain_mod - 1) >> (2 * bits)),
+            MeasurementType::SumVec { .. } | MeasurementType::BoundedSumVec { .. } => {
+                let (a, b) = self.widest_pair()?;
+                Some((self.plain_mod - 1) >> (a + b))
+            }
             _ => None,
         }
     }
@@ -148,20 +163,21 @@ impl TaskConfig {
             return Err(Error::Config("silent_batch_groups must be a power of two".into()));
         }
         if self.moments {
-            match self.measurement_type {
-                MeasurementType::SumVec { length, bits } => {
-                    if length < 2 || !bits.is_power_of_two() {
-                        return Err(Error::Config("moments need SumVec with length >= 2 (features + target) and a power-of-two bits".into()));
+            match self.measurement_type.value_slots() {
+                Some(map) => {
+                    if map.len() < 2 {
+                        return Err(Error::Config("moments need at least two values (features + target)".into()));
                     }
-                    if 2 * bits as u64 >= 64 - self.plain_mod.leading_zeros() as u64 {
-                        return Err(Error::Config("moments: 2*bits must be below log2(plain_mod) so products are exact".into()));
+                    let (a, b) = self.widest_pair().expect("two values");
+                    if (a + b) as u64 >= 64 - self.plain_mod.leading_zeros() as u64 {
+                        return Err(Error::Config("moments: the two widest values' bits must sum below log2(plain_mod) so products are exact".into()));
                     }
                     let cap = self.moments_max_batch().expect("checked");
                     if self.max_batch_size > cap {
-                        return Err(Error::Config(format!("moments: max_batch_size must be at most {cap} for {bits}-bit values under p = {}", self.plain_mod)));
+                        return Err(Error::Config(format!("moments: max_batch_size must be at most {cap} for {a}+{b}-bit products under p = {}", self.plain_mod)));
                     }
                 }
-                _ => return Err(Error::Config("moments are only defined for SumVec".into())),
+                None => return Err(Error::Config("moments are only defined for SumVec and BoundedSumVec".into())),
             }
         }
         if self.mode == VerificationMode::Silent && self.mult_depth() > 26 {
@@ -189,11 +205,11 @@ impl TaskConfig {
         let groups = if self.layout_kind() == LayoutKind::Batched { self.silent_batch_groups } else { 1 };
         let mut l = Layout::with_groups(self.layout_kind(), self.measurement_type.input_len(), self.repetitions, row, groups)?;
         if self.moments {
-            if let MeasurementType::SumVec { length, bits } = self.measurement_type {
+            if let Some(map) = self.measurement_type.value_slots() {
                 if l.num_chunks != 1 {
-                    return Err(Error::Config("moments need the whole SumVec in one chunk".into()));
+                    return Err(Error::Config("moments need the whole vector in one chunk".into()));
                 }
-                l.moments = Some((length, bits));
+                l.moments = Some(map);
             }
         }
         Ok(l)

@@ -99,6 +99,9 @@ pub struct PublicMaterial {
     /// the whole set.
     pub rotation_keys: Vec<Vec<u8>>,
     pub rotation_indices: Vec<i32>,
+    /// One signature per aggregator over the client-relevant part of this
+    /// material and the task digest (`attest.rs`); empty until attested.
+    pub attestations: Vec<crate::attest::MaterialAttestation>,
 }
 
 impl PublicMaterial {

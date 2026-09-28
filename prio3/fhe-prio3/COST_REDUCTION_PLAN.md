@@ -334,8 +334,10 @@ signature and share is bound to the task id, so nothing built for one
 shard is usable in another; each shard's argument is the single-set
 argument of the spec unchanged. Found and fixed while testing: a repeated
 close produced a second noise-flooded partial decryption of the same
-ciphertext; aggregators now release each partial decryption once and
-persist it. Check 3 (cost, measured with real processes and pinned
+ciphertext (aggregators now release each partial decryption once and
+persist it), and the sharded client trusted the router for the joint
+public key (material is now attested by every aggregator and clients pin
+the aggregators' identity keys). Check 3 (cost, measured with real processes and pinned
 threads, `fhe-prio3-node/tests/sharded.rs`): 2 shards at one thread each
 finish 16 reports 1.6–1.8× faster than 1 shard; under a fixed 4-thread budget
 only 1.1×, since one shard already uses all cores. Check 4: adopted, as

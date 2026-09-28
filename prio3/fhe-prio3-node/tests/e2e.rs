@@ -125,7 +125,7 @@ impl Cluster {
     }
 
     fn client(&self) -> NetworkClient {
-        NetworkClient::new(self.task.clone(), &self.material, None, self.agg_urls[0].clone(), &self.tls.ca_pem).unwrap()
+        NetworkClient::new(self.task.clone(), &self.material, None, self.agg_urls[0].clone(), &self.tls.ca_pem, None).unwrap()
     }
 
     async fn close(&self) -> anyhow::Result<BatchResult> {

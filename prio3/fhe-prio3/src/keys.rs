@@ -2,7 +2,7 @@
 //! so that it can run across processes. `run_local_ceremony` executes every
 //! step in one process for tests and simulations.
 
-use crate::config::{CIRCUIT_DEPTH, TaskConfig};
+use crate::config::TaskConfig;
 use crate::error::Result;
 use crate::messages::PublicMaterial;
 use openfhe_tbgv_rs::{Context, EvalMultKey, Params, PublicKey, RotationKeys, SecretShare, keygen_first, keygen_next};
@@ -11,7 +11,7 @@ use openfhe_tbgv_rs::{Context, EvalMultKey, Params, PublicKey, RotationKeys, Sec
 /// same configuration and checks the resulting parameters match.
 pub fn make_context(cfg: &TaskConfig) -> Result<Context> {
     cfg.validate()?;
-    let ctx = Context::new(Params { plain_mod: cfg.plain_mod, mult_depth: CIRCUIT_DEPTH, security_bits: cfg.security_bits })?;
+    let ctx = Context::new(Params { plain_mod: cfg.plain_mod, mult_depth: cfg.mult_depth(), security_bits: cfg.security_bits })?;
     // Fails loudly if p is not compatible with the chosen ring dimension.
     ctx.plaintext(&[1])?;
     Ok(ctx)
@@ -74,12 +74,20 @@ pub fn rotkeys_step(ctx: &Context, share: &SecretShare, prev: Option<&[u8]>, ind
     Ok(acc.serialize()?)
 }
 
-/// Installs joint evaluation keys into a context.
+/// Installs joint evaluation keys into a context, one rotation key at a
+/// time (each is ~126 MiB at ring dimension 65536).
 pub fn install(ctx: &Context, material: &PublicMaterial) -> Result<()> {
     let mk = ctx.deserialize_eval_mult_key(&material.eval_mult_key)?;
     ctx.install_eval_mult_key(&mk, &material.joint_tag)?;
-    let rk = ctx.deserialize_rotation_keys(&material.rotation_keys)?;
-    ctx.install_rotation_keys(&rk, &material.joint_tag)?;
+    drop(mk);
+    if material.rotation_keys.len() != material.rotation_indices.len() {
+        return Err(crate::Error::Config("rotation key list does not match index list".into()));
+    }
+    ctx.clear_rotation_keys(&material.joint_tag)?;
+    for bytes in &material.rotation_keys {
+        let rk = ctx.deserialize_rotation_keys(bytes)?;
+        ctx.merge_rotation_keys(&rk, &material.joint_tag)?;
+    }
     Ok(())
 }
 
@@ -111,9 +119,15 @@ pub fn run_local_ceremony(cfg: &TaskConfig) -> Result<(PublicMaterial, Vec<Vec<u
     let r2: Vec<Vec<u8>> = shares.iter().map(|s| multkey_round2(&ctx, s, &r1_sum, &joint_tag)).collect::<Result<_>>()?;
     let eval_mult_key = multkey_round2_sum(&ctx, &r2, &joint_tag)?;
 
-    let mut rot: Option<Vec<u8>> = None;
-    for s in &shares {
-        rot = Some(rotkeys_step(&ctx, s, rot.as_deref(), &indices, &joint_tag)?);
+    // One sequential ceremony per rotation index keeps the peak memory at a
+    // few keys instead of the whole set.
+    let mut rotation_keys = Vec::with_capacity(indices.len());
+    for &idx in &indices {
+        let mut rot: Option<Vec<u8>> = None;
+        for s in &shares {
+            rot = Some(rotkeys_step(&ctx, s, rot.as_deref(), &[idx], &joint_tag)?);
+        }
+        rotation_keys.push(rot.unwrap());
     }
 
     let material = PublicMaterial {
@@ -121,7 +135,7 @@ pub fn run_local_ceremony(cfg: &TaskConfig) -> Result<(PublicMaterial, Vec<Vec<u
         public_key: pk_bytes,
         joint_tag,
         eval_mult_key,
-        rotation_keys: rot.unwrap(),
+        rotation_keys,
         rotation_indices: indices,
     };
     let share_bytes = shares.iter().map(|s| s.serialize().map_err(Into::into)).collect::<Result<Vec<_>>>()?;

@@ -8,12 +8,14 @@
 //! Roles:
 //! * [`client::Client`] encodes a measurement and encrypts it once under
 //!   the joint public key.
-//! * [`aggregator::Aggregator`] (one per key share) verifies each report in
-//!   two message rounds and accumulates accepted reports.
+//! * [`aggregator::Aggregator`] (one per key share) verifies each report,
+//!   in two message rounds (verdict mode) or with no messages at all (silent
+//!   mode), and accumulates accepted reports.
 //! * [`collector::Collector`] fuses the aggregators' partial decryptions of
 //!   the batch sums; it holds no key.
 
 pub mod aggregator;
+pub mod auth;
 pub mod client;
 pub mod collector;
 pub mod config;
@@ -29,7 +31,8 @@ pub mod xof;
 pub use aggregator::{Aggregator, Verdict};
 pub use client::Client;
 pub use collector::Collector;
-pub use config::TaskConfig;
+pub use auth::{ClientIdentity, ClientRegistry, StaticRegistry};
+pub use config::{AuthPolicy, TaskConfig, VerificationMode};
 pub use error::{Error, RejectReason, Result};
-pub use messages::{AggregateShare, MaskMessage, PublicMaterial, Report, VerifierMessage};
-pub use types::{AggregateResult, Measurement, MeasurementType};
+pub use messages::{AggregateShare, CountShare, MaskMessage, PublicMaterial, Report, VerifierMessage};
+pub use types::{AggregateResult, BatchResult, Measurement, MeasurementType};

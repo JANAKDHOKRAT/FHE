@@ -1,11 +1,12 @@
-//! Collector: fuses the aggregators' partial decryptions of the batch sums.
-//! Holds no key material.
+//! Collector: fuses the aggregators' partial decryptions of the batch sums
+//! and checks the result is consistent with a batch of valid reports. Holds
+//! no key material.
 
-use crate::config::TaskConfig;
+use crate::config::{TaskConfig, VerificationMode};
 use crate::error::{Error, Result};
 use crate::layout::Layout;
 use crate::messages::{AggregateShare, PublicMaterial};
-use crate::types::AggregateResult;
+use crate::types::BatchResult;
 use openfhe_tbgv_rs::{Context, PartialDecryption};
 
 pub struct Collector {
@@ -22,8 +23,9 @@ impl Collector {
         Ok(Self { cfg, ctx, layout })
     }
 
-    /// Requires one share from every aggregator, all agreeing on the batch.
-    pub fn unshard(&self, shares: &[AggregateShare]) -> Result<(AggregateResult, u64)> {
+    /// Requires one share from every aggregator, all agreeing on the batch,
+    /// and a decrypted aggregate that passes the type's consistency check.
+    pub fn unshard(&self, shares: &[AggregateShare]) -> Result<BatchResult> {
         let n = self.cfg.num_aggregators;
         if shares.len() != n {
             return Err(Error::Protocol(format!("expected {n} aggregate shares, got {}", shares.len())));
@@ -44,7 +46,24 @@ impl Collector {
             }
         }
         let count = shares[0].report_count;
-        if count < self.cfg.min_batch_size as u64 {
+        let valid = match self.cfg.mode {
+            VerificationMode::Verdict => count,
+            VerificationMode::Silent => {
+                let partials: Vec<PartialDecryption> = shares
+                    .iter()
+                    .map(|s| {
+                        let b = s.valid_count_partial.as_ref().ok_or_else(|| Error::Protocol("silent mode share lacks the valid-count partial".into()))?;
+                        PartialDecryption::deserialize(&self.ctx, b, s.aggregator == 0).map_err(Into::into)
+                    })
+                    .collect::<Result<_>>()?;
+                let refs: Vec<&PartialDecryption> = partials.iter().collect();
+                self.ctx.fuse(&refs, 1)?[0]
+            }
+        };
+        if valid > count {
+            return Err(Error::Protocol("aggregate inconsistent: valid count exceeds report count".into()));
+        }
+        if valid < self.cfg.min_batch_size as u64 {
             return Err(Error::Protocol("batch below minimum size".into()));
         }
         let mut slot_sums = Vec::with_capacity(self.layout.input_len);
@@ -54,10 +73,12 @@ impl Collector {
                 .map(|s| PartialDecryption::deserialize(&self.ctx, &s.partials[c], s.aggregator == 0))
                 .collect::<std::result::Result<_, _>>()?;
             let refs: Vec<&PartialDecryption> = partials.iter().collect();
-            let len = self.layout.chunk_len(c);
-            let fused = self.ctx.fuse(&refs, len)?;
-            slot_sums.extend_from_slice(&fused[..len]);
+            let fused = self.ctx.fuse(&refs, self.layout.chunk_span(c))?;
+            for i in 0..self.layout.chunk_len(c) {
+                slot_sums.push(fused[self.layout.client_slot(i)]);
+            }
         }
-        Ok((self.cfg.measurement_type.decode_aggregate(&slot_sums)?, count))
+        self.cfg.measurement_type.check_aggregate_consistency(&slot_sums, valid)?;
+        Ok(BatchResult { aggregate: self.cfg.measurement_type.decode_aggregate(&slot_sums)?, report_count: count, valid_count: valid })
     }
 }

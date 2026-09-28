@@ -49,6 +49,8 @@ unsafe extern "C" {
     pub fn tbgv_rotkeys_next(ctx: TbgvContext, sk: TbgvSecretKey, prev: TbgvRotKeys, idx: *const i32, n: usize, tag: *const c_char) -> TbgvRotKeys;
     pub fn tbgv_rotkeys_add(ctx: TbgvContext, a: TbgvRotKeys, b: TbgvRotKeys, tag: *const c_char) -> TbgvRotKeys;
     pub fn tbgv_context_install_rotkeys(ctx: TbgvContext, keys: TbgvRotKeys, tag: *const c_char) -> c_int;
+    pub fn tbgv_context_merge_rotkeys(ctx: TbgvContext, keys: TbgvRotKeys, tag: *const c_char) -> c_int;
+    pub fn tbgv_context_clear_rotkeys(ctx: TbgvContext, tag: *const c_char) -> c_int;
     pub fn tbgv_rotkeys_free(keys: TbgvRotKeys);
     pub fn tbgv_rotkeys_serialize(keys: TbgvRotKeys, out: *mut *mut u8, out_len: *mut usize) -> c_int;
     pub fn tbgv_rotkeys_deserialize(ctx: TbgvContext, buf: *const u8, len: usize) -> TbgvRotKeys;
@@ -71,6 +73,8 @@ unsafe extern "C" {
     pub fn tbgv_eval_sub_plain(ctx: TbgvContext, a: TbgvCiphertext, b: TbgvPlaintext) -> TbgvCiphertext;
     pub fn tbgv_eval_mult_plain(ctx: TbgvContext, a: TbgvCiphertext, b: TbgvPlaintext) -> TbgvCiphertext;
     pub fn tbgv_eval_rotate(ctx: TbgvContext, a: TbgvCiphertext, index: i32) -> TbgvCiphertext;
+    pub fn tbgv_eval_negate(ctx: TbgvContext, a: TbgvCiphertext) -> TbgvCiphertext;
+    pub fn tbgv_ciphertext_add_noise_for_tests(ctx: TbgvContext, ct: TbgvCiphertext, log2_magnitude: u32, seed: u64) -> TbgvCiphertext;
 
     pub fn tbgv_partial_decrypt(ctx: TbgvContext, ct: TbgvCiphertext, sk: TbgvSecretKey, is_lead: c_int) -> TbgvCiphertext;
     pub fn tbgv_fuse(ctx: TbgvContext, partials: *const TbgvCiphertext, n: usize, out: *mut i64, out_len: usize) -> usize;

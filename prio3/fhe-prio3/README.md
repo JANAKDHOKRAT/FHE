@@ -34,6 +34,25 @@ cargo run --release --bin simulate -- --type sumvec --length 1200 --bits 4
 Both crates are standalone Cargo workspaces (the parent `prio3` workspace
 references a vendored `libprio-rs` that is not in git).
 
+## Modes and authentication
+
+```rust
+// Verdict mode (default): two rounds per report, aggregators learn accept/reject.
+let cfg = TaskConfig::new(task_id, MeasurementType::Sum { max_measurement: 100 }, 2);
+// Silent mode: no per-report messages or decryption; invalid reports add zero.
+let cfg = TaskConfig::new_silent(task_id, MeasurementType::Sum { max_measurement: 100 }, 2);
+// Require signed reports, one per registered client per batch.
+let mut cfg = cfg; cfg.auth = AuthPolicy::Required { max_reports_per_client_per_batch: 1 };
+let registry = StaticRegistry::new(enrolled_client_public_keys);
+let agg = Aggregator::new(cfg.clone(), &material, 0, &shares[0], Some(registry))?;
+let client = Client::new(cfg, &material.context, &material.public_key)?.with_identity(identity);
+```
+
+```sh
+cargo run --release --bin simulate -- --type sum --max 100 --mode silent --reports 2
+cargo run --release --bin simulate -- --type count --auth --reports 4
+```
+
 ## Library use
 
 ```rust
@@ -47,8 +66,8 @@ let (material, shares) = keys::run_local_ceremony(&cfg)?;
 let client = Client::new(cfg.clone(), &material.context, &material.public_key)?;
 let report = client.shard(&Measurement::Sum(51))?;          // same bytes to every aggregator
 
-let mut a0 = Aggregator::new(cfg.clone(), &material, 0, &shares[0])?;
-let mut a1 = Aggregator::new(cfg.clone(), &material, 1, &shares[1])?;
+let mut a0 = Aggregator::new(cfg.clone(), &material, 0, &shares[0], None)?;
+let mut a1 = Aggregator::new(cfg.clone(), &material, 1, &shares[1], None)?;
 let m0 = a0.prepare_init(&report)?;  let m1 = a1.prepare_init(&report)?;   // broadcast masks
 let v0 = a0.prepare_masks(&report.report_id, &[m1])?;
 let v1 = a1.prepare_masks(&report.report_id, &[m0])?;                       // broadcast partials

@@ -12,6 +12,8 @@ pub struct Report {
     pub task_id: [u8; 32],
     pub report_id: ReportId,
     pub chunks: Vec<Vec<u8>>,
+    /// Present when the task's `AuthPolicy` requires it.
+    pub auth: Option<crate::auth::ReportAuth>,
 }
 
 impl Report {
@@ -26,6 +28,11 @@ impl Report {
             h.update(c);
         }
         h.finalize().into()
+    }
+
+    /// Serialized size of the ciphertexts alone.
+    pub fn ciphertext_bytes(&self) -> usize {
+        self.chunks.iter().map(|c| c.len()).sum()
     }
 }
 
@@ -45,16 +52,32 @@ pub struct VerifierMessage {
     pub partial: Vec<u8>,
 }
 
+/// Silent mode: an aggregator's partial decryption of the encrypted count
+/// of valid reports in the batch. Exchanged among aggregators before any
+/// sum is released, so that `min_batch_size` applies to *valid* reports.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct CountShare {
+    pub task_id: [u8; 32],
+    pub aggregator: usize,
+    pub batch_digest: [u8; 32],
+    pub report_count: u64,
+    pub partial: Vec<u8>,
+}
+
 /// Aggregator's contribution to the collector: partial decryptions of the
-/// per-chunk sums over the accepted batch.
+/// per-chunk sums over the batch.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct AggregateShare {
     pub task_id: [u8; 32],
     pub aggregator: usize,
-    /// SHA-256 over the sorted accepted report identifiers.
+    /// SHA-256 over the sorted identifiers of the reports in the batch.
     pub batch_digest: [u8; 32],
+    /// Reports in the batch (verdict mode: accepted; silent mode: admitted).
     pub report_count: u64,
     pub partials: Vec<Vec<u8>>,
+    /// Silent mode: partial decryption of the encrypted valid-report count,
+    /// so the collector can verify it rather than trust it.
+    pub valid_count_partial: Option<Vec<u8>>,
 }
 
 /// Output of the key ceremony that every party may hold.
@@ -64,8 +87,17 @@ pub struct PublicMaterial {
     pub public_key: Vec<u8>,
     pub joint_tag: String,
     pub eval_mult_key: Vec<u8>,
-    pub rotation_keys: Vec<u8>,
+    /// One serialized key map per entry of `rotation_indices`, so that a
+    /// party can install them one at a time and never hold two copies of
+    /// the whole set.
+    pub rotation_keys: Vec<Vec<u8>>,
     pub rotation_indices: Vec<i32>,
+}
+
+impl PublicMaterial {
+    pub fn rotation_key_bytes(&self) -> usize {
+        self.rotation_keys.iter().map(|k| k.len()).sum()
+    }
 }
 
 pub fn batch_digest(mut ids: Vec<ReportId>) -> [u8; 32] {

@@ -27,6 +27,13 @@ evaluation of the same circuit** under an **n-of-n threshold BGV key**:
 | Aggregate shares sent to the collector | Partial decryptions of the sum ciphertext |
 | Trust: at least one honest aggregator | Trust: at least one honest aggregator (no party ever holds the secret key) |
 
+Two verification modes are implemented (Section 3.6): **verdict mode**
+(two message rounds per report, the aggregators learn accept/reject) and
+**silent mode** (no messages and no decryption per report; an invalid report
+contributes zero to the batch). On top of either, **client authentication
+with per-client quotas** (Section 3.7) and **admission control** bound what
+an adversary can do before any homomorphic work is spent.
+
 Supported types, encoded exactly as in the draft (Section 7.4):
 
 | Type | Encoded slots `m` | Linear constraints | Aggregate |
@@ -165,6 +172,102 @@ collector requires one share from every aggregator, identical digests and
 counts, fuses per chunk, and decodes with the type's `decode_aggregate`.
 The collector holds no key material.
 
+### 3.6 Silent mode
+
+Configured with `TaskConfig::new_silent`: `p = 786433` (`p - 1 = 3 * 2^18`,
+the smallest prime `≡ 1 mod 2^17`), `k = 4` repetitions in `classes = 4`
+residue classes, multiplicative depth 25, ring dimension 65536. Soundness
+is `p^-4 = 2^-78`, which is lower than verdict mode's `2^-124` and higher
+than the `≈ 2^-62` of Prio3's own Field64 instantiations (Count, Sum). Five
+to seven repetitions give up to `2^-137` at depth 26, but for that chain
+OpenFHE selects ring dimension 131072 (measured: 60 MiB ciphertexts, 228 MiB
+per key), roughly four times the cost of every number below; it is allowed
+by the configuration and not the default.
+
+*Layout.* Repetition `j` uses the residue class `j (mod 4)`: the client
+places element `i` of a chunk at slot `4i`, and the aggregator rotates the
+coefficient-multiplied copy by `-j` to move it onto class `j`. Summing a
+class with rotations by `4 * 2^t` (`t = 0..12`) wraps around the whole row,
+so *every* slot of class `j` ends up holding `E_j`. There are no junk slots
+and therefore no selector and no mask.
+
+*Circuit* (all on the aggregator, per report, no messages):
+
+    S      = check_sum(x)                         // depth 2, class j holds E_j
+    F      = S^(p-1)                              // Fermat: E^3, then 18 squarings; depth +20
+    G      = 1 - F                                // 1 iff E_j = 0
+    for d in [1, 2]: G = G * rotate(G, d)         // product over the 4 classes; depth +2
+    y_c    = x_c * G                              // every slot of G holds `valid`; depth +1
+    sums_c += y_c;  count += G
+
+`valid = prod_j (1 - E_j^(p-1))` is 1 iff every `E_j` is 0, so an invalid
+report adds exactly zero to every slot, and `count` is an encryption of the
+number of valid reports. At batch close the aggregators first exchange
+partial decryptions of `count` (`count_share` / `count_finish`), which
+reveals only that number, and release the sums only if it reaches
+`min_batch_size`. So the minimum batch applies to *valid* reports, as in
+Prio3, even though nobody knows which reports were valid. The collector
+receives the counter's partial decryptions too and verifies the count
+itself.
+
+*What changes.* Nothing about an individual report is ever revealed, not
+even to the aggregators, so the malleability oracle of Section 4.3 item 1
+disappears: a forged related report either adds `x + δ` (if valid) or `0`
+to a sum the adversary cannot isolate without controlling the rest of the
+batch, which is exactly DAP's Sybil bound. The price is the cost in Section 5, and one new
+weakness: a report that is not a proper encryption cannot be rejected, and
+its garbage contribution corrupts the batch total. The collector detects
+this (Section 3.8) and refuses the batch, but cannot attribute it; with
+authentication on, the set of identities in the batch is known, which
+bounds the search. In verdict mode the same report is simply rejected.
+
+### 3.7 Client authentication and admission control
+
+With `AuthPolicy::Required { max_reports_per_client_per_batch }` every
+report carries an Ed25519 signature over
+`"fhe-prio3/1 report-auth" || task_id || report_id` by a key that the
+aggregator's `ClientRegistry` accepts (an enrolment database in production,
+`StaticRegistry` in tests). Because `report_id` hashes every ciphertext
+byte, the signature is bound to exactly those ciphertexts.
+
+Admission runs in this order, and everything before the last step costs
+microseconds and touches no ciphertext: batch still open; total ciphertext
+bytes at most `num_chunks * (fresh ciphertext size + 1 KiB)` (or the
+configured cap, if smaller); task id; signature valid; key registered; the
+key's quota for this batch not exhausted (the attempt is charged now, so a
+rejected probe still costs the identity its quota); `report_id`
+recomputes; not a replay; right chunk count; batch not full. Only then are
+the ciphertexts deserialized and compared structurally with a fresh
+encryption, and only then is any homomorphic work done.
+
+Consequences, all exercised by `tests/mitigations.rs`:
+
+* A party without a registered key, in particular a malicious aggregator
+  forging a related report, is refused with `Unauthenticated` or
+  `UnknownClient` before any FHE operation.
+* A signature cannot be transplanted from an honest report onto a forged
+  one: it is bound to the report id.
+* An identity gets exactly `max_reports_per_client_per_batch` verified
+  reports per batch; a second attempt is `QuotaExceeded` whatever it
+  contains. In verdict mode this bounds the oracle of Section 4.3 item 1 to
+  one bit per adversary-controlled identity per batch, and every probe is
+  attributable to the identity that signed it.
+* `aggregate_share` closes the batch; further reports are `BatchClosed`.
+  Running one key ceremony per batch (about 2 s in verdict mode) therefore
+  bounds the number of decryptions ever performed under one key to
+  `max_batch_size + 1`.
+
+### 3.8 Batch consistency check
+
+Before decoding, the collector checks the fused per-slot sums against
+`count`: every slot sum is at most `count` (every slot is a bit), and the
+type's linear constraint holds over the integers for the batch
+(`value(x_sums) + count * offset = value(y_sums)` for Sum,
+`sum = count` for Histogram, the weight relation for MultihotCountVec). A
+batch that fails is refused. In verdict mode this is defence in depth; in
+silent mode it is what catches a contribution that was not a proper
+encryption.
+
 ## 4. Security
 
 ### 4.1 Robustness against malicious clients
@@ -217,39 +320,56 @@ it did not compute. The selector `Sel` makes every slot of `u` other than
 the `k` result slots identically zero, so partial block sums (which do
 depend on honest inputs) are never decrypted.
 
-### 4.3 What is **not** guaranteed (differences from Prio3)
+### 4.3 What is **not** guaranteed, and what the additions do about it
 
 1. **Ciphertext malleability gives a malicious aggregator a validity
-   oracle.** Because every aggregator receives the same ciphertext, a
-   malicious aggregator can add an encryption of a chosen `δ` to an honest
-   client's report and submit the result as a *new* report. The honest
-   aggregator then reveals whether `x + δ` is valid: one bit about `x` per
-   forged report. Prio3 does not have this problem because a single
-   aggregator holds only a uniformly random share and cannot form a related
-   report. Countermeasures, none implemented here: authenticate clients
-   (registered signing keys or anonymous tokens, and one report per client
-   per batch), or a zero-knowledge proof of plaintext knowledge attached to
-   each ciphertext (which also closes item 2), or never revealing per-report
-   verdicts (multiply each report by a homomorphically computed validity bit,
-   as the thesis prototype does; this costs the depth-20 Fermat circuit and
-   only leaks through the aggregate, i.e. the same Sybil-class leakage as
-   DAP).
-2. **Ciphertext well-formedness.** Soundness in 4.1 is about the plaintext
-   the ciphertext *decrypts to*. A client that sends a ciphertext with noise
-   beyond the correctness bound (not a real encryption) makes the check and
-   the sum decrypt inconsistently. The structural validation rejects the
-   obvious cases (wrong key, wrong level, wrong shape) but cannot bound
-   noise without the secret key. Preventing this needs a proof of
-   plaintext knowledge or a bootstrapping step that re-normalises inputs;
-   OpenFHE offers neither for BGV. This is a standard assumption in
-   threshold-FHE protocols and is stated here as one.
+   oracle (verdict mode).** Every aggregator receives the same ciphertext,
+   so a malicious aggregator can add an encryption of a chosen `δ` to an
+   honest client's report and submit the result as a *new* report; the
+   honest aggregator then reveals whether `x + δ` is valid. Prio3 does not
+   have this problem because a single aggregator holds only a uniformly
+   random share and cannot form a related report.
+   *Silent mode removes it*: no per-report value is ever decrypted, so the
+   only channel left is the batch sum, which is DAP's own Sybil-class
+   leakage. *Authentication bounds it in verdict mode*: a forgery must be
+   signed by a registered identity, each identity gets a fixed number of
+   verified reports per batch, and the identity is recorded. What remains in
+   verdict mode is one bit per adversary-controlled registered identity per
+   batch, attributable after the fact. The complete fix for verdict mode is
+   a zero-knowledge proof of plaintext knowledge attached to each
+   ciphertext, for which no production library exists for OpenFHE's RNS-BGV;
+   it is not implemented and not claimed.
+2. **Ciphertext well-formedness.** The soundness bound is about the
+   plaintext a ciphertext *decrypts to*; a ciphertext whose noise is beyond
+   the correctness bound makes homomorphic evaluation inconsistent with
+   decryption. Nothing short of a proof of plaintext knowledge (or
+   bootstrapping, which OpenFHE lacks for BGV) can reject such a ciphertext
+   with certainty. What holds, and is tested (`verdict_mode_noise_ordering`):
+   the depth-3 check multiplies the input by itself and by 32-bit
+   coefficients, while the aggregate is a plain sum at level 0, so any noise
+   that leaves the check exact leaves the sum exact by a margin of more than
+   `2^100`; and a check evaluation that was *not* exact is accepted only if
+   `E_j * rho_j` still comes out zero for all `j`, where `rho_j` involves the
+   honest aggregator's uniformly random mask and fresh encryption noise. We
+   do not have a proof that this is `2^-124`; we state it as the heuristic it
+   is. The decrypted output of such a check is, in the language of the
+   threshold-FHE literature, a decryption-oracle query on an
+   adversarially formed ciphertext. The masks randomise it, the quotas
+   bound the number of queries per identity, and closing the batch bounds
+   the number of queries per key. In silent mode nothing per report is
+   decrypted; the malformed contribution corrupts the batch sum, which the
+   consistency check detects and refuses.
 3. **Robustness against a malicious aggregator** (dropping reports, sending
    a wrong partial decryption to force rejection or a garbage aggregate) is
    not provided. Prio3 does not provide it either.
 4. **Batch privacy** relies on `min_batch_size` and on the deployment's
-   Sybil resistance, exactly as in DAP.
-5. **Denial of service**: a report costs an aggregator about 0.5 s of CPU
-   and 3.5 MiB of bandwidth; rate limiting is the deployment's job.
+   Sybil resistance, exactly as in DAP. Authentication with quotas is the
+   Sybil-resistance hook; it is only as good as the enrolment process.
+5. **Denial of service.** Unauthenticated or over-quota traffic is refused
+   before deserialization. An admitted report still costs about 0.5 s of
+   CPU in verdict mode and about 25 s in silent mode; the quota is the
+   rate limit per identity, and transport-level limits remain the
+   deployment's job.
 
 ## 5. Measured performance
 
@@ -319,3 +439,6 @@ encrypted inputs, which Prio3's linear aggregation cannot do.
 | Collector decodes without validation | collector checks every aggregator's batch digest and count |
 | Panics on odd totals; partial-count crash | no rescaling; per-report accept/reject before summation |
 | Sum and Histogram only, ad hoc encodings | all five draft-13 types with the draft's encodings |
+| Any party can submit anything | Ed25519-authenticated reports, registry, per-identity quota, size cap, batch close |
+| Per-report validity computed but result unused; nothing about the leakage of the aggregate | silent mode with the same "invalid contributes zero" semantics, soundly, with a documented leakage profile |
+| Collector decodes blindly | collector verifies batch consistency and refuses corrupted batches |

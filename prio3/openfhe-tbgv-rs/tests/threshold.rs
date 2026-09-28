@@ -7,6 +7,9 @@ use std::sync::Mutex;
 
 /// OpenFHE's key store is process-global and unsynchronised: tests run one at a time.
 static SERIAL: Mutex<()> = Mutex::new(());
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 const P: u64 = 4_293_918_721; // prime, p ≡ 1 (mod 2^17)
 
@@ -83,7 +86,7 @@ fn threshold_decrypt(ctx: &Context, parties: &[Party], ct: &Ciphertext, n: usize
 }
 
 fn check_arith(n_parties: usize) {
-    let _g = SERIAL.lock().unwrap();
+    let _g = serial();
     let (ctx, pk, parties) = ceremony(n_parties, &[1, 4, -8], 3);
     assert_eq!(ctx.plain_mod(), P);
     let a: Vec<u64> = (0..64).map(|i| (i * 7919 + 13) % P).collect();
@@ -148,7 +151,7 @@ fn three_party_arithmetic_and_threshold_decryption() {
 
 #[test]
 fn fuse_requires_exactly_one_lead() {
-    let _g = SERIAL.lock().unwrap();
+    let _g = serial();
     let (ctx, pk, parties) = ceremony(2, &[1], 1);
     let ct = ctx.encrypt(&pk, &ctx.plaintext(&[5, 6]).unwrap()).unwrap();
     let p0 = parties[0].share.partial_decrypt(&ct, true).unwrap();
@@ -160,7 +163,7 @@ fn fuse_requires_exactly_one_lead() {
 
 #[test]
 fn context_and_key_serialization_roundtrip() {
-    let _g = SERIAL.lock().unwrap();
+    let _g = serial();
     let (ctx, pk, parties) = ceremony(2, &[1], 1);
     let ctx2 = Context::deserialize(&ctx.serialize().unwrap()).unwrap();
     assert_eq!(ctx2.plain_mod(), P);
@@ -176,8 +179,27 @@ fn context_and_key_serialization_roundtrip() {
 
 #[test]
 fn plaintext_rejects_unreduced_values() {
-    let _g = SERIAL.lock().unwrap();
+    let _g = serial();
     let ctx = Context::new(Params { plain_mod: P, mult_depth: 1, security_bits: 128 }).unwrap();
     assert!(ctx.plaintext(&[P]).is_err());
     assert!(ctx.plaintext(&[P - 1]).is_ok());
+}
+
+#[test]
+fn injected_noise_keeps_plaintext_until_it_overflows() {
+    let _g = serial();
+    let (ctx, pk, parties) = ceremony(2, &[1], 3);
+    let v: Vec<u64> = vec![1, 0, 1, 1];
+    let ct = ctx.encrypt(&pk, &ctx.plaintext(&v).unwrap()).unwrap();
+    // Small extra noise: still a correct encryption of v.
+    let small = ctx.add_noise_for_tests(&ct, 40, 1).unwrap();
+    assert_eq!(threshold_decrypt(&ctx, &parties, &small, 4), v);
+    assert_eq!(small.info().unwrap(), ct.info().unwrap(), "structure is indistinguishable from a fresh ciphertext");
+    // Noise far beyond the modulus: no longer decrypts to v.
+    let huge = ctx.add_noise_for_tests(&ct, 340, 2).unwrap();
+    assert_eq!(huge.info().unwrap(), ct.info().unwrap());
+    assert_ne!(threshold_decrypt(&ctx, &parties, &huge, 4), v);
+    // negate
+    let neg = ctx.negate(&ct).unwrap();
+    assert_eq!(threshold_decrypt(&ctx, &parties, &neg, 4), vec![P - 1, 0, P - 1, P - 1]);
 }

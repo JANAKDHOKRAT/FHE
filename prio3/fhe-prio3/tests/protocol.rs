@@ -202,10 +202,19 @@ fn structural_rejections_and_replay() {
     bad_id.report_id[0] ^= 1;
     net.expect_reject(&bad_id, RejectReason::ReportIdMismatch);
 
+    // Too many chunks trips the size cap before the chunk-count check ...
     let mut two_chunks = net.client.shard(&Measurement::Count(true)).unwrap();
     two_chunks.chunks.push(two_chunks.chunks[0].clone());
     two_chunks.report_id = Report::compute_id(&two_chunks.task_id, &two_chunks.chunks);
-    net.expect_reject(&two_chunks, RejectReason::WrongChunkCount { expected: 1, got: 2 });
+    match &net.run_report(&two_chunks)[0] {
+        Verdict::Rejected(RejectReason::TooLarge { .. }) => {}
+        v => panic!("expected TooLarge, got {v:?}"),
+    }
+    // ... and too few chunks is a chunk-count rejection.
+    let mut no_chunks = net.client.shard(&Measurement::Count(true)).unwrap();
+    no_chunks.chunks.clear();
+    no_chunks.report_id = Report::compute_id(&no_chunks.task_id, &no_chunks.chunks);
+    net.expect_reject(&no_chunks, RejectReason::WrongChunkCount { expected: 1, got: 0 });
 
     let mut garbage = net.client.shard(&Measurement::Count(true)).unwrap();
     garbage.chunks[0].truncate(100);
@@ -245,7 +254,7 @@ fn collector_needs_every_aggregator_and_agreement() {
     let _g = serial();
     let mut net = Net::new(cfg(14, MeasurementType::Count, 2));
     net.expect_accept(&net.client.shard(&Measurement::Count(true)).unwrap());
-    let shares: Vec<AggregateShare> = net.aggs.iter().map(|a| a.aggregate_share().unwrap()).collect();
+    let shares: Vec<AggregateShare> = net.aggs.iter_mut().map(|a| a.aggregate_share().unwrap()).collect();
     assert!(net.collector.unshard(&shares[..1]).is_err());
     let mut tampered = shares.clone();
     tampered[1].report_count += 1;
@@ -253,7 +262,8 @@ fn collector_needs_every_aggregator_and_agreement() {
     let mut dup = shares.clone();
     dup[1] = dup[0].clone();
     assert!(net.collector.unshard(&dup).is_err());
-    assert_eq!(net.collector.unshard(&shares).unwrap(), (AggregateResult::Count(1), 1));
+    let r = net.collector.unshard(&shares).unwrap();
+    assert_eq!((r.aggregate, r.report_count, r.valid_count), (AggregateResult::Count(1), 1, 1));
 }
 
 #[test]

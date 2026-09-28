@@ -58,9 +58,11 @@ Measured on 4 vCPUs (see the spec for the full tables): verdict mode
 4.7 s per report per aggregator with 64-report batching (16–17 s
 unbatched), 29 MiB reports and 2.1 GiB of keys per aggregator. The
 regression pilot adds about 0.4 s per report in verdict mode.
-`cargo test --release` takes about 45 minutes because of the silent-mode
-tests and needs about 12 GiB of RAM. Network deployment lives in
-`../fhe-prio3-node`.
+`cargo test --release` takes about 30 minutes because of the silent-mode
+tests; evaluation keys are released when the last aggregator for a task
+drops, so the peak is that of one three-aggregator silent test. Network deployment lives in
+`../fhe-prio3-node`, including sharding across independent aggregator
+sets (`src/sharding.rs` here, router and `keygen-shards` there).
 
 ## Library use
 

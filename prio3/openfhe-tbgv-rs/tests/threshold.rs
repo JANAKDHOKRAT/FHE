@@ -137,6 +137,15 @@ fn check_arith(n_parties: usize) {
     // a single share does not decrypt (n >= 2)
     let alone = parties[0].share.decrypt_alone_for_tests(&sum, 64).unwrap();
     assert_ne!(alone, threshold_decrypt(&ctx, &parties, &sum, 64));
+
+    // Installed keys are process-global: clearing them by tag makes
+    // multiplication and rotation fail (an error, not a crash) while
+    // key-free operations still work.
+    Context::clear_keys_for_tag(&pk.tag().unwrap()).unwrap();
+    assert!(ctx.mult(&ca, &cb).is_err(), "mult must fail without the relinearization key");
+    assert!(ctx.rotate(&ca, 1).is_err(), "rotate must fail without rotation keys");
+    let s2 = threshold_decrypt(&ctx, &parties, &ctx.add(&ca, &cb).unwrap(), 64);
+    assert_eq!(s2[0], (a[0] + b[0]) % ctx.plain_mod());
 }
 
 #[test]

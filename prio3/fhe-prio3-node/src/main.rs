@@ -130,6 +130,55 @@ enum Cmd {
         #[arg(long)]
         out: PathBuf,
     },
+    /// Derive `shards` independent tasks from a base task and run each
+    /// ceremony; writes `shard-<i>/{task.bin,material.bin,share-<j>.sealed}`.
+    KeygenShards {
+        #[arg(long)]
+        task: PathBuf,
+        #[arg(long)]
+        shards: usize,
+        #[arg(long)]
+        out_dir: PathBuf,
+    },
+    /// Router for a sharded deployment.
+    Router {
+        /// Directory written by `keygen-shards`.
+        #[arg(long)]
+        shards_dir: PathBuf,
+        /// Leader base URLs, one per shard, comma separated.
+        #[arg(long)]
+        leaders: String,
+        #[arg(long)]
+        listen: std::net::SocketAddr,
+        #[arg(long)]
+        token: String,
+        #[arg(long)]
+        tls_cert: PathBuf,
+        #[arg(long)]
+        tls_key: PathBuf,
+        #[arg(long)]
+        ca: PathBuf,
+    },
+    /// Submit one measurement through a router.
+    SubmitSharded {
+        #[arg(long)]
+        router: String,
+        #[arg(long)]
+        ca: PathBuf,
+        #[arg(long)]
+        value: String,
+        #[arg(long)]
+        identity: Option<PathBuf>,
+    },
+    /// Close every shard through the router and print the combined result.
+    CloseAll {
+        #[arg(long)]
+        router: String,
+        #[arg(long)]
+        ca: PathBuf,
+        #[arg(long)]
+        token: String,
+    },
 }
 
 fn parse_type(s: &str) -> anyhow::Result<MeasurementType> {
@@ -267,6 +316,55 @@ async fn main() -> anyhow::Result<()> {
         Cmd::Close { leader, ca, token } => {
             let http = fhe_prio3_node::wire::https_client(&std::fs::read(&ca)?)?;
             let r: BatchResult = fhe_prio3_node::wire::http_post(&http, &format!("{leader}/v1/close"), Some(&token), &()).await?;
+            println!("{r:?}");
+        }
+        Cmd::KeygenShards { task, shards, out_dir } => {
+            let base: TaskConfig = read(&task)?;
+            let cfgs = fhe_prio3::sharding::shard_configs(&base, shards)?;
+            for (i, cfg) in cfgs.iter().enumerate() {
+                let dir = out_dir.join(format!("shard-{i}"));
+                std::fs::create_dir_all(&dir)?;
+                let (material, shares) = keys::run_local_ceremony(cfg)?;
+                std::fs::write(dir.join("task.bin"), encode(cfg)?)?;
+                std::fs::write(dir.join("material.bin"), encode(&material)?)?;
+                for (j, s) in shares.iter().enumerate() {
+                    let sealed = secret::seal(format!("share:{j}:{}", hex::encode(cfg.task_id)).as_bytes(), s)?;
+                    std::fs::write(dir.join(format!("share-{j}.sealed")), sealed)?;
+                }
+                println!("shard {i}: task {} written to {}", hex::encode(cfg.task_id), dir.display());
+            }
+        }
+        Cmd::Router { shards_dir, leaders, listen, token, tls_cert, tls_key, ca } => {
+            let leaders: Vec<String> = leaders.split(',').map(|s| s.trim().to_string()).collect();
+            let mut shards = Vec::with_capacity(leaders.len());
+            for (i, leader) in leaders.iter().enumerate() {
+                let dir = shards_dir.join(format!("shard-{i}"));
+                let task: TaskConfig = read(&dir.join("task.bin"))?;
+                let material: PublicMaterial = read(&dir.join("material.bin"))?;
+                shards.push(fhe_prio3_node::router::ShardInfo { task, client_material: fhe_prio3_node::router::client_material(&material), leader: leader.clone() });
+            }
+            let node = fhe_prio3_node::router::RouterNode::new(fhe_prio3_node::router::RouterNodeConfig { shards, token, ca_pem: std::fs::read(&ca)? })?;
+            node.verify_leaders(std::time::Duration::from_secs(120)).await?;
+            let handle = axum_server::Handle::new();
+            tracing::info!(%listen, "router listening");
+            let tls = fhe_prio3_node::router::RouterNode::tls_config(tls_cert, tls_key).await?;
+            node.serve(listen, Some(tls), handle).await?;
+        }
+        Cmd::SubmitSharded { router, ca, value, identity } => {
+            let id = match identity {
+                Some(p) => {
+                    let b = hex::decode(std::fs::read_to_string(p)?.trim())?;
+                    Some(ClientIdentity::from_secret_bytes(b.as_slice().try_into().map_err(|_| anyhow::anyhow!("identity must be 32 bytes"))?))
+                }
+                None => None,
+            };
+            let c = fhe_prio3_node::client::ShardedClient::new(router, &std::fs::read(&ca)?, id.as_ref())?;
+            let (out, shard) = c.submit(&parse_measurement(&value)?).await?;
+            println!("shard {shard}: {out:?}");
+        }
+        Cmd::CloseAll { router, ca, token } => {
+            let http = fhe_prio3_node::wire::https_client(&std::fs::read(&ca)?)?;
+            let r: BatchResult = fhe_prio3_node::wire::http_post(&http, &format!("{router}/v1/close-all"), Some(&token), &()).await?;
             println!("{r:?}");
         }
     }

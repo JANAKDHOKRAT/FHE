@@ -288,6 +288,18 @@ impl Context {
         }
         Ok(())
     }
+    /// Removes the evaluation-multiplication and rotation keys installed
+    /// under `joint_tag` from the process-global tables. Installed keys
+    /// belong to the process, not to a `Context`: they stay alive after
+    /// every context is dropped until this is called. Must not run
+    /// concurrently with evaluation under the same tag.
+    pub fn clear_keys_for_tag(joint_tag: &str) -> Result<()> {
+        let t = c_tag(joint_tag)?;
+        if unsafe { ffi::tbgv_clear_keys_for_tag(t.as_ptr()) } == 0 {
+            return Err(last_error());
+        }
+        Ok(())
+    }
     /// Removes every rotation key installed under `joint_tag`.
     pub fn clear_rotation_keys(&self, joint_tag: &str) -> Result<()> {
         let t = c_tag(joint_tag)?;

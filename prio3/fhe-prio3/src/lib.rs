@@ -24,6 +24,7 @@ pub mod field;
 pub mod keys;
 pub mod layout;
 pub mod messages;
+pub mod sharding;
 pub mod types;
 pub mod verify;
 pub mod xof;

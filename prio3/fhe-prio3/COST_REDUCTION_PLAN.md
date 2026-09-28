@@ -321,6 +321,26 @@ report, so overlapping them is worth up to 5 %. Only after B2 is settled.
 15. Optionally halve the class-sum keys by composition (A13) if memory
     per aggregator has to drop below 2 GiB.
 
+## Part D. Added after the plan: horizontal sharding — **implemented, measured**
+
+Not in the fifteen approaches or twelve ideas above; requested afterwards
+as the deployment-level lever left once per-set cost was measured.
+
+Check 1 (math): a shard is a whole task with its own id and joint key;
+the only cross-shard operation is adding released plaintext results, which
+is exact in the integers (`sharding::combine_results`, unit-tested
+including regression refit). Check 2 (crypto): every report, challenge,
+signature and share is bound to the task id, so nothing built for one
+shard is usable in another; each shard's argument is the single-set
+argument of the spec unchanged. Found and fixed while testing: a repeated
+close produced a second noise-flooded partial decryption of the same
+ciphertext; aggregators now release each partial decryption once and
+persist it. Check 3 (cost, measured with real processes and pinned
+threads, `fhe-prio3-node/tests/sharded.rs`): 2 shards at one thread each
+finish 16 reports 1.6–1.8× faster than 1 shard; under a fixed 4-thread budget
+only 1.1×, since one shard already uses all cores. Check 4: adopted, as
+the scaling path across machines; it does not make one machine faster.
+
 ## What this plan does not claim
 
 * The 2–3 s estimate for A1 is derived from operation counts and will be

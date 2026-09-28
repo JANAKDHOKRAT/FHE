@@ -269,6 +269,13 @@ int tbgv_context_merge_rotkeys(TbgvContext ctx, TbgvRotKeys keys, const char* ta
     return 1;
     TBGV_CATCH(0)
 }
+int tbgv_clear_keys_for_tag(const char* tag) {
+    TBGV_TRY
+    CryptoContextImpl<DCRTPoly>::ClearEvalMultKeys(std::string(tag));
+    CryptoContextImpl<DCRTPoly>::ClearEvalAutomorphismKeys(std::string(tag));
+    return 1;
+    TBGV_CATCH(0)
+}
 int tbgv_context_clear_rotkeys(TbgvContext ctx, const char* tag) {
     TBGV_TRY
     (void)ctx;

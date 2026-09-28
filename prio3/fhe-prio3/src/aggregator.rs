@@ -62,6 +62,12 @@ pub struct AggregatorState {
     pub admitted: u64,
     pub valid_count: Option<u64>,
     pub closed: bool,
+    /// The count share released for this batch, if any. Released once:
+    /// a repeated close returns these same bytes rather than a fresh
+    /// partial decryption of the same ciphertext.
+    pub released_count_share: Option<CountShare>,
+    /// The aggregate share released for this batch, if any (same rule).
+    pub released_aggregate_share: Option<AggregateShare>,
 }
 
 struct Pending {
@@ -95,6 +101,8 @@ pub struct Aggregator {
     ctx: Context,
     pk: PublicKey,
     joint_tag: String,
+    /// Keeps the joint evaluation keys installed while this aggregator lives.
+    _keys: keys::KeyLease,
     index: usize,
     share: SecretShare,
     circuit: Circuit,
@@ -119,6 +127,8 @@ pub struct Aggregator {
     /// Silent mode: decrypted valid count, once the count round has run.
     valid_count: Option<u64>,
     closed: bool,
+    released_count_share: Option<CountShare>,
+    released_aggregate_share: Option<AggregateShare>,
     rng: OsRng,
 }
 
@@ -142,7 +152,7 @@ impl Aggregator {
         if ctx.plain_mod() != cfg.plain_mod || ctx.mult_depth() < cfg.mult_depth() {
             return Err(Error::Config("context parameters do not match the task".into()));
         }
-        keys::install(&ctx, material)?;
+        let key_lease = keys::install(&ctx, material)?;
         let pk = ctx.deserialize_public_key(&material.public_key)?;
         let joint_tag = pk.tag()?;
         if joint_tag != material.joint_tag {
@@ -165,6 +175,7 @@ impl Aggregator {
             ctx,
             pk,
             joint_tag,
+            _keys: key_lease,
             index,
             share,
             circuit,
@@ -182,6 +193,8 @@ impl Aggregator {
             silent_batch: SilentBatch::new(),
             valid_count: None,
             closed: false,
+            released_count_share: None,
+            released_aggregate_share: None,
             rng: OsRng,
         })
     }
@@ -498,6 +511,8 @@ impl Aggregator {
             admitted: self.admitted,
             valid_count: self.valid_count,
             closed: self.closed,
+            released_count_share: self.released_count_share.clone(),
+            released_aggregate_share: self.released_aggregate_share.clone(),
         })
     }
 
@@ -547,6 +562,8 @@ impl Aggregator {
         self.admitted = st.admitted;
         self.valid_count = st.valid_count;
         self.closed = st.closed;
+        self.released_count_share = st.released_count_share;
+        self.released_aggregate_share = st.released_aggregate_share;
         self.pending.clear();
         Ok(())
     }
@@ -554,9 +571,19 @@ impl Aggregator {
     /// Silent mode, batch close step 1: partial decryption of the encrypted
     /// valid-report counter. Requires at least `min_batch_size` admitted
     /// reports; reveals only the count.
+    ///
+    /// Released once per batch: a second call returns the share released
+    /// the first time. Each partial decryption carries fresh flooding noise,
+    /// and every extra noisy partial decryption of the same ciphertext is
+    /// an extra sample an adversary could average, so the aggregator never
+    /// produces two of them for one ciphertext. This also makes a retried
+    /// close (network failure, leader restart) idempotent.
     pub fn count_share(&mut self) -> Result<CountShare> {
         if self.cfg.mode != VerificationMode::Silent {
             return Err(Error::Protocol("count_share is only used in silent mode".into()));
+        }
+        if let Some(s) = &self.released_count_share {
+            return Ok(s.clone());
         }
         let count = self.accepted_ids.len();
         if count < self.cfg.min_batch_size {
@@ -565,13 +592,15 @@ impl Aggregator {
         self.flush_silent_batch()?;
         self.closed = true;
         let ct = self.valid_count_sum.as_ref().expect("count >= 1");
-        Ok(CountShare {
+        let share = CountShare {
             task_id: self.cfg.task_id,
             aggregator: self.index,
             batch_digest: batch_digest(self.accepted_ids.clone()),
             report_count: count as u64,
             partial: self.share.partial_decrypt(ct, self.index == 0)?.serialize()?,
-        })
+        };
+        self.released_count_share = Some(share.clone());
+        Ok(share)
     }
 
     /// Silent mode, batch close step 2: fuses every aggregator's count share
@@ -607,7 +636,12 @@ impl Aggregator {
     /// closes the batch: no further reports are admitted under this key.
     /// Refuses batches with fewer than `min_batch_size` valid reports (in
     /// silent mode this requires the count round to have run).
+    ///
+    /// Released once per batch, for the reason given at [`Self::count_share`].
     pub fn aggregate_share(&mut self) -> Result<AggregateShare> {
+        if let Some(s) = &self.released_aggregate_share {
+            return Ok(s.clone());
+        }
         let count = self.accepted_ids.len();
         let valid = match self.cfg.mode {
             VerificationMode::Verdict => count as u64,
@@ -634,7 +668,7 @@ impl Aggregator {
                 moment_partials.push(self.share.partial_decrypt(m, self.index == 0)?.serialize()?);
             }
         }
-        Ok(AggregateShare {
+        let share = AggregateShare {
             task_id: self.cfg.task_id,
             aggregator: self.index,
             batch_digest: batch_digest(self.accepted_ids.clone()),
@@ -642,6 +676,8 @@ impl Aggregator {
             partials,
             valid_count_partial,
             moment_partials,
-        })
+        };
+        self.released_aggregate_share = Some(share.clone());
+        Ok(share)
     }
 }

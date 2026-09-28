@@ -51,6 +51,7 @@ unsafe extern "C" {
     pub fn tbgv_context_install_rotkeys(ctx: TbgvContext, keys: TbgvRotKeys, tag: *const c_char) -> c_int;
     pub fn tbgv_context_merge_rotkeys(ctx: TbgvContext, keys: TbgvRotKeys, tag: *const c_char) -> c_int;
     pub fn tbgv_context_clear_rotkeys(ctx: TbgvContext, tag: *const c_char) -> c_int;
+    pub fn tbgv_clear_keys_for_tag(tag: *const c_char) -> c_int;
     pub fn tbgv_rotkeys_free(keys: TbgvRotKeys);
     pub fn tbgv_rotkeys_serialize(keys: TbgvRotKeys, out: *mut *mut u8, out_len: *mut usize) -> c_int;
     pub fn tbgv_rotkeys_deserialize(ctx: TbgvContext, buf: *const u8, len: usize) -> TbgvRotKeys;

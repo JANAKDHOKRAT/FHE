@@ -560,6 +560,59 @@ stay below `p`, so `2·bits < log2 p` and the batch is capped at
 4-bit values in silent mode. This is the honest reach of a 20-bit plaintext
 modulus, and the reason the regression pilot is a pilot.
 
+### Horizontal sharding (`sharding.rs`, node `router`)
+
+Throughput beyond one aggregator set comes from running several sets in
+parallel. `shard_configs(base, S)` derives `S` shard tasks from a base
+task: identical parameters, task id `SHA-256("fhe-prio3/1 shard" || base
+task id || i)`. Each shard runs its own key ceremony, so shards hold
+different joint keys, and its own aggregators and collector; nothing is
+shared. Every object of the protocol is bound to a task id (report id,
+challenge derivation, signature, count and aggregate shares), so a report
+built for one shard is rejected by every other with `WrongTask` before any
+homomorphic work, and the security argument of sections 4.1 and 4.2 holds
+for each shard exactly as for a single set. The client is assigned a shard
+before encrypting because it must encrypt under that shard's key; the
+router that does the assignment holds no key and never sees a ciphertext.
+
+`combine_results` adds the shard results after each shard has released its
+own: aggregates (same type and length), report and valid counts, and the
+regression moments, from which the fit is recomputed. Each shard applies
+`min_batch_size` to its own valid reports, so the combined result is the
+sum of `S` results each of which was releasable on its own; the combined
+release therefore reveals no more than the union of the shard releases.
+This is a weaker property than a single batch of the same total size, and
+the deployer chooses `min_batch_size` per shard accordingly.
+
+Evaluation-key lifetime (found while testing this). OpenFHE keeps
+installed evaluation keys in process-global tables keyed by the joint tag;
+they belong to no context and survive every `Context` drop. A process that
+serves several tasks in sequence, or a test binary, therefore accumulated
+the keys of every task it had ever installed (2.1 GiB per silent-mode
+task) until the kernel killed it. `keys::install` now returns a
+reference-counted `KeyLease` held by each `Aggregator`; the last lease for
+a tag to drop clears that tag's multiplication and rotation keys
+(`Context::clear_keys_for_tag`, verified in the FFI tests to make
+multiplication and rotation fail afterwards while key-free operations
+still work). A second aggregator for the same tag in one process shares
+the installed keys instead of deserializing them again.
+
+Release-once rule (added while testing this). An aggregator's partial
+decryptions of its batch sums and of the valid counter are computed once
+per batch, stored in its persisted state, and returned unchanged on every
+later `count_share`/`aggregate_share` call. A partial decryption carries
+fresh flooding noise, and issuing a second one for the same ciphertext
+would give an observer a second independent sample of the same
+secret-dependent quantity; the number of noisy releases per ciphertext is
+now exactly one, and a retried close is idempotent by construction.
+
+Measured (node README, `tests/sharded.rs`, 4 vCPUs, verdict Sum, 16
+concurrent reports, real processes): with one OpenMP thread per aggregator
+process, two shards on four cores finish in 1.6–1.8× less wall time than one
+shard on two cores; with a fixed budget of four threads the gain is 1.1×,
+because one shard already saturates the machine. Sharding scales with
+machines added, which is the deployment it is for.
+
 ## 7. Changes relative to `fhe-vdaf-1` / `fhe-vdaf-2`
 
 | Prototype | Here |

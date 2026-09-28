@@ -104,6 +104,14 @@ fn batch_closes_after_aggregate_share_and_size_cap_holds() {
     assert_eq!(net.collect().unwrap(), (AggregateResult::Count(1), 1));
     assert!(net.aggs.iter().all(|a| a.is_closed()));
     net.expect_reject(&net.client.shard(&Measurement::Count(true)).unwrap(), RejectReason::BatchClosed);
+    // Partial decryptions are released once: a repeated close returns the
+    // same bytes, not a fresh noisy partial decryption of the same sums, and
+    // the released share survives a snapshot/restore.
+    let first = encode(&net.aggs[0].aggregate_share().unwrap()).unwrap();
+    assert_eq!(encode(&net.aggs[0].aggregate_share().unwrap()).unwrap(), first);
+    let st = net.aggs[0].snapshot().unwrap();
+    net.aggs[0].restore(st, &[]).unwrap();
+    assert_eq!(encode(&net.aggs[0].aggregate_share().unwrap()).unwrap(), first);
 }
 
 /// Injected noise below the point where the depth-3 check overflows leaves
@@ -195,6 +203,9 @@ fn silent_mode_min_batch_counts_valid_reports_only() {
     // refuse to release the sum.
     let err = net.collect().err().expect("one valid report is below the minimum");
     assert!(err.to_string().contains("valid reports"), "{err}");
+    // The count share was released once; asking again returns the same bytes.
+    let first = encode(&net.aggs[1].count_share().unwrap()).unwrap();
+    assert_eq!(encode(&net.aggs[1].count_share().unwrap()).unwrap(), first);
 }
 
 #[test]

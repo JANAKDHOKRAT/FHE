@@ -49,9 +49,15 @@ let client = Client::new(cfg, &material.context, &material.public_key)?.with_ide
 ```
 
 ```sh
-cargo run --release --bin simulate -- --type sum --max 100 --mode silent --reports 2
+cargo run --release --bin simulate -- --type sum --max 100 --mode silent --reports 2   # ~2 min, ~10 GiB RAM
 cargo run --release --bin simulate -- --type count --auth --reports 4
 ```
+
+Measured on 4 vCPUs (see the spec for the full tables): verdict mode
+0.5–0.7 s per report per aggregator with 3.5 MiB reports; silent mode
+16–17 s per report per aggregator with 29 MiB reports and 2.1 GiB of keys
+per aggregator. `cargo test --release` takes about 20 minutes because of
+the silent-mode tests and needs about 12 GiB of RAM.
 
 ## Library use
 

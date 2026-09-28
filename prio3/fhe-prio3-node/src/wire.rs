@@ -43,6 +43,8 @@ pub struct CountFinishRequest {
 #[derive(Serialize, Deserialize)]
 pub struct StatusReply {
     pub index: usize,
+    /// Task id served by this node, hex.
+    pub task_id: String,
     pub accepted: usize,
     pub closed: bool,
     pub mode: String,

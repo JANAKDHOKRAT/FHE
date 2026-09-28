@@ -41,3 +41,46 @@ impl NetworkClient {
         &self.client
     }
 }
+
+/// Client of a sharded deployment: asks the router for a shard, fetches that
+/// shard's task and public material (cached per shard), encrypts under its
+/// key and submits to its leader.
+pub struct ShardedClient {
+    http: reqwest::Client,
+    router: String,
+    ca_pem: Vec<u8>,
+    identity_secret: Option<[u8; 32]>,
+    cache: tokio::sync::Mutex<std::collections::HashMap<u32, std::sync::Arc<NetworkClient>>>,
+}
+
+impl ShardedClient {
+    pub fn new(router: String, ca_pem: &[u8], identity: Option<&ClientIdentity>) -> anyhow::Result<Self> {
+        Ok(Self {
+            http: https_client(ca_pem)?,
+            router,
+            ca_pem: ca_pem.to_vec(),
+            identity_secret: identity.map(|i| i.secret_bytes()),
+            cache: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+        })
+    }
+
+    async fn client_for(&self, shard: u32, leader: &str) -> anyhow::Result<std::sync::Arc<NetworkClient>> {
+        let mut cache = self.cache.lock().await;
+        if let Some(c) = cache.get(&shard) {
+            return Ok(c.clone());
+        }
+        let task: TaskConfig = http_get(&self.http, &format!("{}/v1/shard/{shard}/task", self.router), None).await?;
+        let material: PublicMaterial = http_get(&self.http, &format!("{}/v1/shard/{shard}/material", self.router), None).await?;
+        let identity = self.identity_secret.map(|s| ClientIdentity::from_secret_bytes(&s));
+        let c = std::sync::Arc::new(NetworkClient::new(task, &material, identity, leader.to_string(), &self.ca_pem)?);
+        cache.insert(shard, c.clone());
+        Ok(c)
+    }
+
+    /// Returns the outcome and the shard that handled the report.
+    pub async fn submit(&self, m: &Measurement) -> anyhow::Result<(SubmitOutcome, u32)> {
+        let a: crate::router::Assignment = http_get(&self.http, &format!("{}/v1/assign", self.router), None).await?;
+        let c = self.client_for(a.shard, &a.leader).await?;
+        Ok((c.submit(m).await?, a.shard))
+    }
+}

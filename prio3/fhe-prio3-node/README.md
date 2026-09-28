@@ -16,6 +16,8 @@ shares sealed at rest.
   key.
 * **Client** (`fhe-prio3-node submit`): fetches a group ticket when the task
   batches, encrypts, signs if the task requires it, submits to the leader.
+* **Router** (`fhe-prio3-node router`, optional): front of a *sharded*
+  deployment, see below. Holds no key, sees no ciphertext.
 
 All node-to-node calls carry a bearer token in `x-fhe-prio3-token` over TLS
 and are refused otherwise. Bodies are bincode, capped at the size of a fresh
@@ -37,6 +39,11 @@ report plus 64 KiB; the collector caps at 256 MiB.
 | `POST /v1/aggregate-share` | leader → helper | token | `()` → `AggregateShare` |
 | `POST /v1/aggregate-share` | leader → collector | token | `ShareEnvelope` → `Option<BatchResult>` |
 | `GET /v1/result` | operator → collector | token | → `Option<BatchResult>` |
+| `GET /v1/assign` | client → router | none | → `Assignment { shard, leader }` |
+| `GET /v1/shard/{i}/task` | client → router | none | → `TaskConfig` of shard `i` |
+| `GET /v1/shard/{i}/material` | client → router | none | → `PublicMaterial` of shard `i`, evaluation keys stripped |
+| `GET /v1/shards` | anyone | none | → `Vec<Assignment>` |
+| `POST /v1/close-all` | operator → router | token | `()` → combined `BatchResult` |
 
 ## Persistence and restart
 
@@ -60,7 +67,76 @@ OpenFHE work is CPU-bound and shares process-global key tables, so each node
 holds one `Aggregator` behind a mutex and runs every homomorphic step on the
 blocking pool under that lock. Throughput per node is therefore one report
 at a time (0.5–0.7 s in verdict mode); scale by running more aggregator
-*sets* under different tasks or keys, not by threads inside one node.
+*sets* under different tasks or keys, not by threads inside one node. That
+is what sharding below does.
+
+## Sharding: many aggregator sets in parallel
+
+A base task is split into `S` *shard tasks* (`keygen-shards --shards S`),
+each an independent `TaskConfig` with its own task id
+(`SHA-256("fhe-prio3/1 shard" || base id || i)`), its own key ceremony and
+therefore its own joint key, and its own aggregator set and collector. The
+shards never talk to each other. A report encrypted for shard `i` is
+accepted only by shard `i`: its task id is bound into the report id, the
+Fiat–Shamir challenge and the signature, and its ciphertexts are under a
+key no other shard holds. Every shard runs exactly the single-set protocol,
+so the security argument of the spec applies to each shard unchanged; a
+malicious client that could beat one shard could beat one set, and cannot
+do more damage by being sharded.
+
+The **router** is the only public address. `GET /v1/assign` hands a client
+a shard (round robin) and that shard's leader URL; the client fetches the
+shard's task and client material once per shard, encrypts under that
+shard's key and submits to that shard's leader. `POST /v1/close-all` closes
+every shard through its leader and returns the combined result
+(`fhe_prio3::sharding::combine_results`): aggregates and counts are added,
+regression moments are added and the fit is recomputed. The router never
+holds a key share, a ciphertext or a partial decryption; compromising it
+lets an attacker steer clients between shards and nothing else. At startup
+the router checks every leader's `/v1/status` and refuses to run if leader
+`i` does not serve shard `i`'s task as aggregator 0. A shard below its
+minimum batch fails the whole close; nothing partial is returned, the
+shards already closed stay closed, and the operator retries `close-all`
+once the short shard has reached its minimum (the closed shards return
+their released result again).
+
+Closing is idempotent. Each aggregator releases its partial decryptions
+**once** per batch and stores them in its persisted state; a repeated
+`close` (retry after a network failure, a leader restart, a second
+`close-all`) returns the same bytes. Without this a repeated close would
+have handed out a fresh noise-flooded partial decryption of the same
+ciphertext each time, giving an observer more samples of the same
+secret-dependent value to average; this was found by the sharded test and
+fixed in the protocol crate.
+
+```sh
+fhe-prio3-node keygen-shards --task task.bin --shards 2 --out-dir shards/
+# per shard i: start its collector and aggregators from shards/shard-i/ as above
+fhe-prio3-node router --shards-dir shards/ --leaders https://l0:8443,https://l1:8443 \
+    --listen 0.0.0.0:9443 --token "$TOKEN" --tls-cert r.pem --tls-key r.key --ca ca.pem
+fhe-prio3-node submit-sharded --router https://router:9443 --ca ca.pem --value sum:42
+fhe-prio3-node close-all --router https://router:9443 --ca ca.pem --token "$TOKEN"
+```
+
+Measured on this machine (4 vCPUs, verdict-mode Sum, 16 reports submitted
+concurrently, each shard = 2 aggregator processes + 1 collector process,
+`OMP_NUM_THREADS` pinned per process, `tests/sharded.rs`):
+
+| shards × threads per aggregator process | wall time for 16 reports, run 1 | run 2 |
+| --- | --- | --- |
+| 1 × 1 | 24.2 s | 19.1 s |
+| 2 × 1 | 13.3 s | 11.8 s |
+| 1 × 4 | 19.1 s | 15.6 s |
+| 2 × 2 | 17.0 s | 14.0 s |
+
+With one thread per process the two shards run on four cores instead of
+two and finish in 1.6–1.8× less time (1.82× and 1.62× in the two runs):
+the shards are independent and parallelise. With the thread budget fixed
+at four, sharding gains only 1.1×, because a single shard's OpenMP threads
+already occupy every core.
+Sharding therefore buys throughput in proportion to the *machines* added,
+not from splitting one saturated machine; on one 4-core box the
+single-set numbers in the spec are what it delivers.
 
 ## Setup
 
@@ -95,3 +171,13 @@ verdict-mode Count with an invalid report, a replay, a wrong internal token,
 a leader restart from its database mid-batch, batch close, and post-close
 rejection; and a silent batched Sum with an out-of-range report. It needs
 `FHE_PRIO3_SEAL_KEY` set only for the CLI, not for the tests.
+
+`cargo test --release --test sharded -- --nocapture` launches the built
+binary as separate processes (`keygen-shards`, per shard two aggregators
+and a collector, one router) for each of the four configurations in the
+table above, submits 16 reports concurrently through the router, checks
+the combined result against the plaintext sum, checks that a second
+`close-all` returns byte-identical output, a wrong token gets 401, an
+unknown shard gets 404, and clients receive no evaluation keys. Timings
+are printed and written to `$TMPDIR/fhe_prio3_sharding_timing.txt`; they
+are not asserted, since they depend on the machine.

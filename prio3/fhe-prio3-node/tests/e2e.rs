@@ -175,8 +175,25 @@ async fn verdict_count_over_tls_with_leader_restart() {
     let out: SubmitOutcome = fhe_prio3::messages::decode(&resp.bytes().await.unwrap()).unwrap();
     assert!(matches!(out, SubmitOutcome::Rejected(ref r) if r.contains("WrongTask")), "{out:?}");
     let cap = 4 << 20; // above one fresh ciphertext (3.5 MiB) plus slack
-    let resp = http.post(format!("{}/v1/submit", c.agg_urls[0])).body(vec![0u8; cap]).send().await.unwrap();
-    assert_eq!(resp.status().as_u16(), 413, "oversized body");
+    // The server answers 413 as soon as the declared length exceeds the cap,
+    // while the client may still be uploading; the client then sees either
+    // the 413 or a reset connection. Both mean the upload was refused.
+    let mut refused = false;
+    for _ in 0..5 {
+        match http.post(format!("{}/v1/submit", c.agg_urls[0])).body(vec![0u8; cap]).send().await {
+            Ok(resp) => {
+                assert_eq!(resp.status().as_u16(), 413, "oversized body");
+                refused = true;
+                break;
+            }
+            Err(e) => assert!(e.is_request() || e.is_body() || e.is_connect(), "unexpected error on oversized upload: {e}"),
+        }
+    }
+    if !refused {
+        // Five resets in a row: the server closed on us each time; it must still be up.
+        let st: fhe_prio3_node::wire::StatusReply = http_get(&http, &format!("{}/v1/status", c.agg_urls[0]), None).await.unwrap();
+        assert_eq!(st.accepted, 3);
+    }
     // a helper refuses client submissions and group tickets
     let resp = http.get(format!("{}/v1/group", c.agg_urls[1])).send().await.unwrap();
     assert_eq!(resp.status().as_u16(), 404);

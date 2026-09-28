@@ -74,21 +74,56 @@ pub fn rotkeys_step(ctx: &Context, share: &SecretShare, prev: Option<&[u8]>, ind
     Ok(acc.serialize()?)
 }
 
-/// Installs joint evaluation keys into a context, one rotation key at a
-/// time (each is ~126 MiB at ring dimension 65536).
-pub fn install(ctx: &Context, material: &PublicMaterial) -> Result<()> {
-    let mk = ctx.deserialize_eval_mult_key(&material.eval_mult_key)?;
-    ctx.install_eval_mult_key(&mk, &material.joint_tag)?;
-    drop(mk);
+/// Installed evaluation keys live in OpenFHE's process-global tables, keyed
+/// by the joint tag, and are not tied to any `Context`. Without bookkeeping
+/// they outlive every aggregator that used them (gigabytes per task in
+/// silent mode; a process that serves several tasks in sequence, or a test
+/// binary, runs out of memory). `LEASES` counts the live holders per tag.
+static LEASES: std::sync::Mutex<std::collections::BTreeMap<String, usize>> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// Holds the evaluation keys of one joint tag installed. Dropping the last
+/// lease for a tag removes its keys from the process-global tables.
+pub struct KeyLease {
+    tag: String,
+}
+
+impl Drop for KeyLease {
+    fn drop(&mut self) {
+        let mut leases = LEASES.lock().unwrap_or_else(|e| e.into_inner());
+        let n = leases.get_mut(&self.tag).expect("lease exists");
+        *n -= 1;
+        if *n == 0 {
+            leases.remove(&self.tag);
+            // A failure here can only be a malformed tag, which install() already accepted.
+            let _ = Context::clear_keys_for_tag(&self.tag);
+        }
+    }
+}
+
+/// Installs joint evaluation keys into the process, one rotation key at a
+/// time (each is ~126 MiB at ring dimension 65536), and returns a lease.
+/// A tag names one joint key, so when a lease for it is already held the
+/// keys are installed already and are not deserialized again. Key
+/// installation mutates process-global tables and is serialised here.
+pub fn install(ctx: &Context, material: &PublicMaterial) -> Result<KeyLease> {
     if material.rotation_keys.len() != material.rotation_indices.len() {
         return Err(crate::Error::Config("rotation key list does not match index list".into()));
     }
+    let mut leases = LEASES.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(n) = leases.get_mut(&material.joint_tag) {
+        *n += 1;
+        return Ok(KeyLease { tag: material.joint_tag.clone() });
+    }
+    let mk = ctx.deserialize_eval_mult_key(&material.eval_mult_key)?;
+    ctx.install_eval_mult_key(&mk, &material.joint_tag)?;
+    drop(mk);
     ctx.clear_rotation_keys(&material.joint_tag)?;
     for bytes in &material.rotation_keys {
         let rk = ctx.deserialize_rotation_keys(bytes)?;
         ctx.merge_rotation_keys(&rk, &material.joint_tag)?;
     }
-    Ok(())
+    leases.insert(material.joint_tag.clone(), 1);
+    Ok(KeyLease { tag: material.joint_tag.clone() })
 }
 
 /// Runs the whole ceremony in-process. Every inter-party value crosses a

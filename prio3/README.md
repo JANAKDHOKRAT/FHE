@@ -89,6 +89,7 @@ and a randomised validity check whose soundness is proved in
 also explains why the `sum x_i(x_i-1) = 0` check used by `fhe-vdaf-1` and
 `fhe-vdaf-2` can be bypassed and what the redesign still does not guarantee.
 `fhe-prio3-node/` is the network deployment (HTTPS nodes, SQLite
-persistence, sealed key shares) and
+persistence, sealed key shares, and a router that shards a task across
+independent aggregator sets and combines their results) and
 [fhe-prio3/COST_REDUCTION_PLAN.md](./fhe-prio3/COST_REDUCTION_PLAN.md)
 records which cost reductions were feasible, implemented and measured.

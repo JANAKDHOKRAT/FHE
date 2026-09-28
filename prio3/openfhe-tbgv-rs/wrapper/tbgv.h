@@ -75,6 +75,9 @@ TbgvRotKeys tbgv_rotkeys_add(TbgvContext ctx, TbgvRotKeys a, TbgvRotKeys b, cons
 int tbgv_context_merge_rotkeys(TbgvContext ctx, TbgvRotKeys keys, const char* joint_tag);
 /* Removes every rotation key installed under `joint_tag`. */
 int tbgv_context_clear_rotkeys(TbgvContext ctx, const char* joint_tag);
+/* Removes the evaluation-multiplication and rotation keys installed under
+ * `joint_tag` from the process-global tables (they belong to no context). */
+int tbgv_clear_keys_for_tag(const char* joint_tag);
 int tbgv_context_install_rotkeys(TbgvContext ctx, TbgvRotKeys keys, const char* joint_tag);
 void tbgv_rotkeys_free(TbgvRotKeys keys);
 int tbgv_rotkeys_serialize(TbgvRotKeys keys, uint8_t** out, size_t* out_len);

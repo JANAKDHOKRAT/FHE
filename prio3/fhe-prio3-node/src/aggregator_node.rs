@@ -309,7 +309,7 @@ async fn status(State(node): State<AggregatorNode>) -> std::result::Result<axum:
     })
     .await
     .map_err(|e| HttpError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    reply(&StatusReply { index: node.inner.index, accepted, closed, mode: format!("{:?}", node.inner.task.mode) })
+    reply(&StatusReply { index: node.inner.index, task_id: hex::encode(node.inner.task.task_id), accepted, closed, mode: format!("{:?}", node.inner.task.mode) })
 }
 
 async fn group_ticket(State(node): State<AggregatorNode>) -> std::result::Result<axum::response::Response, HttpError> {

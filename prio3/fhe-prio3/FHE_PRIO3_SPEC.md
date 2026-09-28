@@ -457,6 +457,75 @@ encrypted inputs, which Prio3's linear aggregation cannot do.
   transport, persistence of `seen` report ids and of key shares, and client
   authentication are deliberately out of scope.
 
+## 6b. Additions: batched silent mode, transport, persistence, regression
+
+### Batched silent mode (`silent_batch_groups > 1`, the default is 64)
+
+Several reports share one verification ciphertext so that the Fermat
+chain, the dominant cost, runs once per batch of `R` reports instead of once
+per report. Layout `Batched`: report `r` (its *group*), repetition `j`,
+element `i` at slot `j + 4r + 4R·i`. The client is told its group by the
+leader before encrypting (`GET /v1/group`) and packs at that group's slots;
+the group is bound by the report id and the signature. Class sums use
+rotations by `4R·2^t` and wrap the whole row, so every slot of class
+`(r, j)` holds `E_{r,j}`; the product over `j` (rotations by 1, 2) lands
+`valid_r` on the class-0 slots of group `r`.
+
+Two details carry the security argument:
+
+* **Group masking before the final multiply.** Each report's ciphertext is
+  multiplied by the 0/1 indicator of its own group's element slots (one
+  plaintext multiplication at level 1) before it meets `G`. A client that
+  writes into another group's slots therefore neither changes that group's
+  check (coefficients are placed only at the assigned group) nor gets its
+  values multiplied by another report's validity bit nor reaches the sum.
+  Tested by `batched_silent_cross_group_injection_is_ignored`, which puts a
+  one-hot vote in the attacker's group plus values in three other groups'
+  slots, class-1 slots and the row's tail: the aggregate is exactly the
+  honest histogram.
+* **Fold at the cheap level, no selector.** `y_r = x_masked · G` is non-zero
+  only at group `r`'s slots and is rotated left by `4r` (composed from the
+  power-of-two fold keys) onto group 0 at level 25, where a rotation costs
+  a 4-limb key switch. Every report's contribution then occupies the same
+  slots, so the sum has no junk and needs no selector. The circuit stays at
+  depth 25; no operation beyond the configured depth is used. The count is
+  handled the same way (`G` times the indicator of the group's element-0
+  slot, folded).
+
+A report that reuses a group already present in the current sub-batch
+flushes the sub-batch first, so group assignment only affects efficiency,
+never correctness; a batch close flushes the last partial sub-batch.
+`batched_silent_worst_case_inputs_gate` runs three chains with half the
+reports set to `p−1` in every slot of the row and checks exact results.
+
+### Transport and persistence (`fhe-prio3-node`)
+
+HTTPS nodes with bincode bodies, a bearer token on every node-to-node call,
+body-size caps derived from the fresh-ciphertext size, a leader that drives
+the rounds, a collector that holds no key, SQLite persistence committed
+after every state-changing step, restart from the database, and key shares
+sealed at rest with AES-256-GCM under an environment-supplied key bound to
+the aggregator index and task id. See `fhe-prio3-node/README.md`. The
+end-to-end test exercises all of it over real sockets, including a leader
+restart mid-batch and a wrong internal token.
+
+### Post-validation computation: regression (`moments = true`)
+
+For a `SumVec` task whose last value is the target, the aggregators also
+accumulate `sum v_a v_b` for every pair over valid reports: values are
+recomposed from their bits with plaintext weights `2^t` (so nothing outside
+the bit slots enters), aligned onto one slot, masked, multiplied (depth 3),
+gated by the validity bit in silent mode, and folded. The collector fuses
+the pair sums, checks each against its bound `valid · (2^(2 bits) − 1)`, and
+solves the normal equations with an intercept. `regression.rs` checks the
+first and second moments and the coefficients against the plaintext
+computation on the same records in both modes, with an out-of-range record
+rejected (verdict) or contributing nothing (silent). Limit: products must
+stay below `p`, so `2·bits < log2 p` and the batch is capped at
+`(p−1)/2^(2 bits)` records: 65536 for 8-bit values in verdict mode, 3072 for
+4-bit values in silent mode. This is the honest reach of a 20-bit plaintext
+modulus, and the reason the regression pilot is a pilot.
+
 ## 7. Changes relative to `fhe-vdaf-1` / `fhe-vdaf-2`
 
 | Prototype | Here |

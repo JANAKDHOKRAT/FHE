@@ -28,11 +28,11 @@ pub mod types;
 pub mod verify;
 pub mod xof;
 
-pub use aggregator::{Aggregator, Verdict};
+pub use aggregator::{Aggregator, AggregatorState, Verdict};
 pub use client::Client;
 pub use collector::Collector;
 pub use auth::{ClientIdentity, ClientRegistry, StaticRegistry};
 pub use config::{AuthPolicy, TaskConfig, VerificationMode};
 pub use error::{Error, RejectReason, Result};
 pub use messages::{AggregateShare, CountShare, MaskMessage, PublicMaterial, Report, VerifierMessage};
-pub use types::{AggregateResult, BatchResult, Measurement, MeasurementType};
+pub use types::{AggregateResult, BatchResult, Measurement, MeasurementType, RegressionResult};

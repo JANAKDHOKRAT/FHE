@@ -74,6 +74,7 @@ unsafe extern "C" {
     pub fn tbgv_eval_mult_plain(ctx: TbgvContext, a: TbgvCiphertext, b: TbgvPlaintext) -> TbgvCiphertext;
     pub fn tbgv_eval_rotate(ctx: TbgvContext, a: TbgvCiphertext, index: i32) -> TbgvCiphertext;
     pub fn tbgv_eval_negate(ctx: TbgvContext, a: TbgvCiphertext) -> TbgvCiphertext;
+    pub fn tbgv_eval_square(ctx: TbgvContext, a: TbgvCiphertext) -> TbgvCiphertext;
     pub fn tbgv_ciphertext_add_noise_for_tests(ctx: TbgvContext, ct: TbgvCiphertext, log2_magnitude: u32, seed: u64) -> TbgvCiphertext;
 
     pub fn tbgv_partial_decrypt(ctx: TbgvContext, ct: TbgvCiphertext, sk: TbgvSecretKey, is_lead: c_int) -> TbgvCiphertext;

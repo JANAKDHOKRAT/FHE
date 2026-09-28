@@ -199,6 +199,11 @@ fn injected_noise_keeps_plaintext_until_it_overflows() {
     let huge = ctx.add_noise_for_tests(&ct, 340, 2).unwrap();
     assert_eq!(huge.info().unwrap(), ct.info().unwrap());
     assert_ne!(threshold_decrypt(&ctx, &parties, &huge, 4), v);
+    // square equals mult(a, a)
+    let sq = ctx.square(&ct).unwrap();
+    let mm = ctx.mult(&ct, &ct).unwrap();
+    assert_eq!(threshold_decrypt(&ctx, &parties, &sq, 4), threshold_decrypt(&ctx, &parties, &mm, 4));
+    assert_eq!(sq.info().unwrap().level, mm.info().unwrap().level);
     // negate
     let neg = ctx.negate(&ct).unwrap();
     assert_eq!(threshold_decrypt(&ctx, &parties, &neg, 4), vec![P - 1, 0, P - 1, P - 1]);

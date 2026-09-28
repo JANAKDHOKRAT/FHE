@@ -17,8 +17,19 @@ the security argument survive unchanged; (2) can it be built with OpenFHE
 1.3.1 and the code in this repository; (3) what does it change, counted in
 operations, levels or bytes, with measured numbers where we have them and
 labelled estimates where we do not; (4) verdict. Ideas that fail a check
-are dropped and the reason is stated. Nothing here has been implemented
-yet; the verdicts say what would be implemented.
+are dropped and the reason is stated.
+
+**Status after implementation.** A1 (batched chain) and A2 (`EvalSquare`)
+are implemented; see the spec, section 6b, for the final A1 design, which
+differs from the sketch below in one important way: each report is masked
+to its own group *before* the final multiply and folded onto group 0 at the
+cheap level, so no selector and no operation past the configured depth is
+needed. The "gate" C5 is therefore an ordinary worst-case correctness test
+at depth 25 (`batched_silent_worst_case_inputs_gate`), which passes. B1,
+B6 (policy), B7 (one key per batch is the node default) and B8
+(persistence) are implemented in `fhe-prio3-node`. B3 (native build) is
+measured in the spec's performance section. Measured numbers replace the
+estimates in the spec, not here.
 
 Facts established by experiment for this plan:
 

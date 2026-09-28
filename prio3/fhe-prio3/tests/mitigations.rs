@@ -20,8 +20,8 @@ fn forge_related(net: &Net, honest: &Report, delta_slots: &[u64]) -> Report {
     let ct = ctx.deserialize_ciphertext(&honest.chunks[0]).unwrap();
     let delta = ctx.encrypt(&pk, &ctx.plaintext(delta_slots).unwrap()).unwrap();
     let chunks = vec![ctx.add(&ct, &delta).unwrap().serialize().unwrap()];
-    let report_id = Report::compute_id(&honest.task_id, &chunks);
-    Report { task_id: honest.task_id, report_id, chunks, auth: None }
+    let report_id = Report::compute_id(&honest.task_id, 0, &chunks);
+    Report { task_id: honest.task_id, report_id, group: 0, chunks, auth: None }
 }
 
 #[test]
@@ -96,7 +96,7 @@ fn batch_closes_after_aggregate_share_and_size_cap_holds() {
     let cap = net.aggs[0].max_report_bytes();
     let mut fat = net.client.shard(&Measurement::Count(true)).unwrap();
     fat.chunks[0].extend(vec![0u8; cap]); // oversize payload
-    fat.report_id = Report::compute_id(&fat.task_id, &fat.chunks);
+    fat.report_id = Report::compute_id(&fat.task_id, fat.group, &fat.chunks);
     match &net.run_report(&fat)[0] {
         Verdict::Rejected(RejectReason::TooLarge { .. }) => {}
         v => panic!("expected TooLarge, got {v:?}"),
@@ -196,8 +196,99 @@ fn silent_mode_min_batch_counts_valid_reports_only() {
 #[test]
 fn messages_roundtrip_with_auth() {
     let id = ClientIdentity::generate();
-    let r = Report { task_id: [1; 32], report_id: [2; 32], chunks: vec![vec![1, 2, 3]], auth: Some(id.sign(&[1; 32], &[2; 32])) };
+    let r = Report { task_id: [1; 32], report_id: [2; 32], group: 0, chunks: vec![vec![1, 2, 3]], auth: Some(id.sign(&[1; 32], &[2; 32])) };
     let back: Report = decode(&encode(&r).unwrap()).unwrap();
     assert_eq!(back.auth, r.auth);
     assert_eq!(back.chunks, r.chunks);
+}
+
+/// Batched silent mode: several reports share one verification ciphertext.
+/// Valid reports are summed, invalid ones contribute zero, the count is
+/// exact, and a report that reuses a group simply starts a new sub-batch.
+#[test]
+fn batched_silent_sum_shares_one_chain() {
+    let _g = serial();
+    let t = MeasurementType::Sum { max_measurement: 100 };
+    let mut cfg = TaskConfig::new_silent(task_id(40), t.clone(), 2);
+    cfg.silent_batch_groups = 4;
+    let mut net = Net::new(cfg.clone());
+    let l = net.aggs[0].layout().clone();
+    assert_eq!((l.groups, l.classes), (4, 4));
+    let honest = [51u64, 49, 100, 0, 7];
+    // groups 0,1,2,3 fill one sub-batch (flushed automatically); the fifth
+    // report reuses group 0 and starts another.
+    for (i, v) in honest.iter().enumerate() {
+        let r = net.client.shard_in_group(&Measurement::Sum(*v), (i % 4) as u32).unwrap();
+        net.expect_accept(&r);
+    }
+    assert_eq!(net.aggs[0].pending_silent_reports(), 1);
+    // an invalid report in group 1 of the second sub-batch
+    let bits = |v: u64| -> Vec<u64> { (0..7).map(|i| (v >> i) & 1).collect() };
+    let mut bad = bits(101);
+    bad.extend(bits(127));
+    net.expect_accept(&net.client.shard_raw_elements_in_group(&[bad], 1).unwrap());
+    let r = net.collect_full().unwrap();
+    assert_eq!(r.aggregate, AggregateResult::Sum(207));
+    assert_eq!((r.report_count, r.valid_count), (6, 5));
+}
+
+/// A client assigned to group 1 that writes into group 0's slots (or any
+/// other slot) must not change group 0's validity nor reach the aggregate.
+#[test]
+fn batched_silent_cross_group_injection_is_ignored() {
+    let _g = serial();
+    let t = MeasurementType::Histogram { length: 4 };
+    let mut cfg = TaskConfig::new_silent(task_id(41), t.clone(), 2);
+    cfg.silent_batch_groups = 4;
+    let mut net = Net::new(cfg.clone());
+    let l = net.aggs[0].layout().clone();
+    // honest report in group 0: bucket 2
+    net.expect_accept(&net.client.shard_in_group(&Measurement::Histogram(2), 0).unwrap());
+    // attacker in group 1: a valid one-hot in its own slots, plus garbage in
+    // group 0's slots (would make group 0 look two-hot if it were counted),
+    // plus large values in group 2's and 3's slots and in the class-1..3 slots.
+    let mut slots = vec![0u64; l.row];
+    slots[l.group_slot(1, 3)] = 1; // its own vote: bucket 3
+    slots[l.group_slot(0, 0)] = 1; // into group 0 (would add bucket 0)
+    slots[l.group_slot(2, 1)] = 5; // into group 2
+    slots[l.group_slot(3, 2)] = cfg.plain_mod - 1;
+    slots[1 + l.classes * 1] = 9; // class 1 of its own group
+    slots[l.row - 1] = 3;
+    net.expect_accept(&net.client.shard_raw_in_group(&[slots], 1).unwrap());
+    // honest report in group 2: bucket 1
+    net.expect_accept(&net.client.shard_in_group(&Measurement::Histogram(1), 2).unwrap());
+    let r = net.collect_full().unwrap();
+    assert_eq!(r.aggregate, AggregateResult::Histogram(vec![0, 1, 1, 1]));
+    assert_eq!((r.report_count, r.valid_count), (3, 3));
+}
+
+/// Correctness gate for the depth-25 batched circuit on worst-case inputs:
+/// invalid reports whose every slot is `p-1` (the largest magnitude the
+/// plaintext multiplications can see) mixed with valid ones, over several
+/// independent chains. Every decryption must be exact.
+#[test]
+fn batched_silent_worst_case_inputs_gate() {
+    let _g = serial();
+    let t = MeasurementType::Count;
+    let mut cfg = TaskConfig::new_silent(task_id(42), t.clone(), 2);
+    cfg.silent_batch_groups = 4;
+    let mut net = Net::new(cfg.clone());
+    let l = net.aggs[0].layout().clone();
+    let chains = 3;
+    let mut expected = 0u64;
+    for chain in 0..chains {
+        for g in 0..4u32 {
+            if (chain + g as usize) % 2 == 0 {
+                // worst case: every slot of the row holds p-1
+                let slots = vec![cfg.plain_mod - 1; l.row];
+                net.expect_accept(&net.client.shard_raw_in_group(&[slots], g).unwrap());
+            } else {
+                net.expect_accept(&net.client.shard_in_group(&Measurement::Count(true), g).unwrap());
+                expected += 1;
+            }
+        }
+    }
+    let r = net.collect_full().unwrap();
+    assert_eq!(r.aggregate, AggregateResult::Count(expected));
+    assert_eq!((r.report_count, r.valid_count), (4 * chains as u64, expected));
 }

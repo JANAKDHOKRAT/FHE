@@ -47,7 +47,15 @@ Facts established by experiment for this plan:
 
 ## Part A. Fifteen approaches at the circuit and parameter level
 
-### A1. Share the Fermat chain across a batch of R reports — **implement**
+### A1. Share the Fermat chain across a batch of R reports — **implemented; measured 3.5×**
+
+Measured with `R = 64`: 4.75 s (Count) and 4.66 s (Sum) per report per
+aggregator against 16.8 s, including the batch close. The estimate below
+(2–3 s) was optimistic: the un-amortised per-report work is a larger share
+than the operation count suggested. The final design (spec, section 6b)
+masks each report to its group before the final multiply and folds at the
+last level, so it needs neither the selector nor the extra level discussed
+below; that text is kept as the record of the analysis.
 
 The 20 Fermat multiplications and the class product act slot-wise and do not
 depend on the report. If the check values of R reports occupy disjoint slot
@@ -101,13 +109,14 @@ not promised. Capacity: `R ≤ row/(4·next_pow2(m))`, i.e. 512 for Sum(100),
 
 *Check 4.* Implement, gated on C5.
 
-### A2. `EvalSquare` for the 18 squarings — **implement**
+### A2. `EvalSquare` for the 18 squarings — **implemented, no measurable gain**
 
-Check 1: identical arithmetic. Check 2: `EvalSquare` exists; one shim
-function. Check 3: a squaring skips half of the tensor product (`c0c1` is
-computed once); the key switch, which dominates, is unchanged, so the gain
-is bounded by the tensor share; measure, expect 5–15 % of the chain.
-Check 4: implement; trivial, no risk.
+Check 1: identical arithmetic (tested equal to `mult(a, a)`). Check 2:
+`EvalSquare` exists; one shim function. Check 3: a squaring skips half of
+the tensor product; the key switch, which dominates, is unchanged.
+Measured: 16.8 s per report with `EvalSquare` against 16.2–16.8 s without,
+i.e. within run-to-run noise. Kept because it is free and correct; it is
+not a cost reduction.
 
 ### A3. Smaller plaintext prime for a shorter Fermat chain — **drop**
 
@@ -212,11 +221,13 @@ uses the cores partly; the gain is unknown. Check 4: write the test (two
 threads, two reports, compare with serial results and check for crashes
 over 100 runs); enable only if it passes. Do not assume.
 
-### B3. Build OpenFHE with `WITH_NATIVEOPT=ON` — **measure**
+### B3. Build OpenFHE with `WITH_NATIVEOPT=ON` — **measured, no gain, not adopted**
 
-Check 2: the option exists and the CPU has AVX-512. Check 3: unknown until
-measured; NTT kernels benefit from wider vectors. Check 4: rebuild, rerun
-`simulate`, keep if faster. No correctness risk.
+Check 2: the option exists and the CPU has AVX-512. Check 3, measured:
+4.75 s against 4.75 s per batched silent report and 690 ms against 598 ms
+per verdict report (default build faster, within noise). OpenFHE 1.3.1's
+NTT does not vectorise further with `-march=native` here. Check 4: keep
+the default build.
 
 ### B4. Intel HEXL — **drop**
 

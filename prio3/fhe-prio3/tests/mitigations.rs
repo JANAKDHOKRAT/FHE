@@ -168,6 +168,10 @@ fn silent_mode_histogram_three_aggregators_and_noisy_report_detected() {
     net.expect_accept(&net.client.shard_raw_elements(&[vec![1, 1, 0, 0]]).unwrap()); // two-hot: contributes zero
     let r = net.collect_full().unwrap();
     assert_eq!((r.aggregate, r.report_count, r.valid_count), (AggregateResult::Histogram(vec![0, 0, 1, 0]), 2, 1));
+    // Release the three aggregators (and their 2 GiB of keys each) before
+    // building the next network; two complete silent-mode key sets in one
+    // process exceed a 16 GiB machine.
+    drop(net);
 
     // A second batch containing a ciphertext with overflowing noise: the
     // decrypted sums are inconsistent and the collector refuses the batch.

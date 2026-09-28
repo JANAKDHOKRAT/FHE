@@ -407,7 +407,33 @@ homomorphic work.
 
 Batch close: 330 ms per aggregator for the count and sum partials
 (4.5 MiB each), 400 ms at the collector. Aggregator start-up (installing
-the keys) 13 s. The simulator process, which runs the ceremony and both
+the keys) 13 s.
+
+**Batched silent mode** (`silent_batch_groups = 64`, 64 reports, same
+parameters; the per-report figure includes the batch close, i.e. the last
+shared chain):
+
+| Type | `process_silent` per report per aggregator | before batching |
+| --- | --- | --- |
+| Count | **4.75 s** | 16.8 s |
+| Sum(100) | **4.66 s** | 16.8 s |
+
+A 3.5× reduction, less than the operation count predicted (about 9× fewer
+heavy operations): the per-report work that remains, one full
+multiplication, eight coefficient multiplications with their plaintext
+encodings, three full-size rotations and the group mask, is a larger share
+of the time than the count suggested, and the remaining 8 plaintext
+encodings per report are not amortised. Report size and key material are
+unchanged. `EvalSquare` for the 18 squarings made no measurable difference
+(16.8 s against 16.2–16.8 s), so key switching, not the tensor product,
+dominates a squaring. Rebuilding OpenFHE with `WITH_NATIVEOPT=ON` on this
+AVX-512 machine changed nothing either: 4.75 s (native) against 4.75 s
+(default) per batched silent report, and 690 ms against 598 ms in verdict
+mode, i.e. noise. The default build is kept.
+
+**Regression pilot** (verdict mode, SumVec(3, 4 bits), `moments = true`):
+1.00–1.08 s per report per aggregator against 0.64 s without moments, i.e.
+the six pair products and their alignment cost about 0.4 s per report. The simulator process, which runs the ceremony and both
 aggregators, peaked at 9.6 GiB resident; an aggregator on its own holds the
 2.1 GiB of keys plus a few 29 MiB ciphertexts. The test suite with three
 aggregators in one process peaked at 11.5 GiB. Silent mode is therefore
@@ -506,8 +532,16 @@ the rounds, a collector that holds no key, SQLite persistence committed
 after every state-changing step, restart from the database, and key shares
 sealed at rest with AES-256-GCM under an environment-supplied key bound to
 the aggregator index and task id. See `fhe-prio3-node/README.md`. The
-end-to-end test exercises all of it over real sockets, including a leader
-restart mid-batch and a wrong internal token.
+end-to-end tests exercise all of it over real sockets: verdict-mode Count
+with an invalid report, a replay, an undecodable body (400), an oversized
+body (413), a helper refusing client endpoints (404), wrong tokens (401), a
+leader restart from its database mid-batch, batch close and post-close
+rejection, in 12 s including the ceremony; and a silent batched Sum with an
+out-of-range report in 234 s. Two production gaps remain in the node and
+are stated in its README: the ceremony runs in one process (the
+per-party steps exist as library functions; moving their messages between
+machines is an operational procedure), and the leader is a single point of
+coordination (a helper never initiates anything).
 
 ### Post-validation computation: regression (`moments = true`)
 

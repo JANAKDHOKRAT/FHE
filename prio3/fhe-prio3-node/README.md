@@ -11,9 +11,10 @@ shares sealed at rest.
   drives the per-report rounds (verdict mode) or forwards reports (silent
   mode) to the helpers, then drives the batch close. Helpers only answer
   authenticated calls from the leader.
-* **Collector** (`fhe-prio3-node collector`): receives one aggregate share
-  per aggregator, unshards when all are present, serves the result. Holds no
-  key.
+* **Collector** (`fhe-prio3-node collector --id c`): receives one aggregate
+  share per aggregator, unshards when all are present, serves the result.
+  Holds no key share. With release policies (below) it holds its own X25519
+  sealing key and receives only what the task's policy `c` names.
 * **Client** (`fhe-prio3-node submit`): fetches a group ticket when the task
   batches, encrypts, signs if the task requires it, submits to the leader.
 * **Router** (`fhe-prio3-node router`, optional): front of a *sharded*
@@ -30,14 +31,14 @@ report plus 64 KiB; the collector caps at 256 MiB.
 | `GET /v1/status` | anyone | none | → `StatusReply` |
 | `GET /v1/group` | client → leader | none | → `GroupTicket` (silent batched tasks) |
 | `POST /v1/submit` | client → leader | none | `Report` → `SubmitOutcome` |
-| `POST /v1/close` | operator → leader | token | `()` → `BatchResult` |
+| `POST /v1/close` | operator → leader | token | `()` → `CloseReply{result (no policies), released_to}` |
 | `POST /v1/report` | leader → helper | token | `Report` → `Result<MaskMessage,String>` (verdict) / `SubmitOutcome` (silent) |
 | `POST /v1/masks` | leader → helper | token | `MasksRequest` → `VerifierMessage` |
 | `POST /v1/verifiers` | leader → helper | token | `VerifiersRequest` → `SubmitOutcome` |
 | `POST /v1/count-share` | leader → helper | token | `()` → `CountShare` |
 | `POST /v1/count-finish` | leader → helper | token | `CountFinishRequest` → `u64` |
-| `POST /v1/aggregate-share` | leader → helper | token | `()` → `AggregateShare` |
-| `POST /v1/aggregate-share` | leader → collector | token | `ShareEnvelope` → `Option<BatchResult>` |
+| `POST /v1/aggregate-share` | leader → helper | token | `ShareRequest{collector}` → `ShareReply::Plain` (no policies) / `::Sealed` |
+| `POST /v1/aggregate-share` | leader → collector | token | `ShareEnvelope` (no policies) / `SealedEnvelope` → `ShareReceipt{complete, result}` |
 | `GET /v1/result` | operator → collector | token | → `Option<BatchResult>` |
 | `GET /v1/assign` | client → router | none | → `Assignment { shard, leader }` |
 | `GET /v1/shard/{i}/task` | client → router | none | → `TaskConfig` of shard `i` |
@@ -69,6 +70,61 @@ blocking pool under that lock. Throughput per node is therefore one report
 at a time (0.5–0.7 s in verdict mode); scale by running more aggregator
 *sets* under different tasks or keys, not by threads inside one node. That
 is what sharding below does.
+
+## Release policies: several collectors, each seeing only its elements
+
+A task may declare `collectors`, each with the elements of the aggregate
+it receives, whether it receives the second moments of those elements, and
+an X25519 sealing key (`fhe-prio3-node collector-identity`). The policy is
+part of the task, hence of its digest and of the attested material: it
+cannot change after the batch opens, and every aggregator enforces it on
+its own.
+
+*How it is enforced.* The report's slots are cut into chunks (one
+ciphertext each) at every point where the set of collectors allowed to see
+a slot changes, so a chunk lies entirely inside one visibility class.
+Releasing to collector `c` is then partially decrypting the chunks whose
+class includes `c`, and the second-moment accumulators of pairs inside
+`c`'s elements. Nothing that no policy names is ever partially decrypted,
+and no extra multiplication level is used in either mode (the alternative,
+a plaintext selector before decryption, would not fit silent mode's
+25-level budget). A helper answers a release request for collector `c`
+with what *its* copy of the task allows for `c`; a leader asking for an
+unknown collector gets 400 and cannot widen a release.
+
+*Sealing.* Each aggregator seals its share for collector `c` to `c`'s key
+(ephemeral X25519, HKDF-SHA256, AES-256-GCM, associated data = task,
+collector id, aggregator index; `fhe_prio3::seal`). The leader relays
+opaque envelopes and `close` returns no result on such tasks; each
+collector serves its own result to its own operator. Without policies the
+leader relays plain shares and returns the result, as before, and could
+read every released aggregate; with policies it reads none. Slots serving
+a constraint over every element (the weight bits of `MultihotCountVec`)
+go only to collectors that see every element; a restricted collector runs
+the consistency check on the constraints its slots cover.
+
+*Bounded releases.* Each aggregator releases once per (batch, collector),
+persisted, so the number of noisy partial decryptions per batch is the
+number of declared collectors plus the valid count, fixed in the task.
+What a deployment reveals is the union of its policies; overlapping
+policies reveal nothing beyond that union.
+
+```sh
+fhe-prio3-node collector-identity --out col0.sealed    # prints hex public key K0
+fhe-prio3-node collector-identity --out col1.sealed    # K1
+fhe-prio3-node task-config --out task.bin --type bounded:100,5,15,15 --moments \
+    --collector "$K0:0,1" --collector "$K1:2,3:moments"
+fhe-prio3-node collector --id 0 --seal-secret col0.sealed ... ; fhe-prio3-node collector --id 1 --seal-secret col1.sealed ...
+fhe-prio3-node aggregator ... --collectors https://col0:8444,https://col1:8445
+```
+
+`tests/e2e.rs::two_collectors_with_policies_over_tls` runs two collector
+nodes with disjoint policies (the second with moments) over TLS: each
+serves exactly its elements, the regression is fitted on collector 1's
+columns only, a helper refuses an unknown collector id, an envelope sealed
+for collector 1 is refused by collector 0 and cannot be opened with its
+key, a repeated close is idempotent, and a collector started with a key
+the task does not declare, or with none, refuses to start.
 
 ## Sharding: many aggregator sets in parallel
 

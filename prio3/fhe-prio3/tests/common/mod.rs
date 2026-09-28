@@ -117,6 +117,57 @@ impl Net {
         Ok((r.aggregate, r.valid_count))
     }
 
+    /// Runs the count round in silent mode (idempotent per batch).
+    pub fn count_round(&mut self) -> Result<()> {
+        if self.cfg.mode == VerificationMode::Silent {
+            let counts: Vec<CountShare> = self
+                .aggs
+                .iter_mut()
+                .map(|a| a.count_share())
+                .collect::<Result<Vec<_>>>()?
+                .into_iter()
+                .map(|c| decode(&encode(&c).unwrap()).unwrap())
+                .collect();
+            let mut seen = None;
+            for a in self.aggs.iter_mut() {
+                let v = a.count_finish(&counts)?;
+                assert!(seen.is_none() || seen == Some(v), "aggregators must agree on the valid count");
+                seen = Some(v);
+            }
+        }
+        Ok(())
+    }
+
+    /// Release to collector `c` through the sealed path: every aggregator
+    /// seals its share to the collector's key, the collector opens and
+    /// unshards. `key` must be the collector's declared sealing key.
+    pub fn collect_sealed_for(&mut self, c: usize, key: &CollectorSealKey) -> Result<BatchResult> {
+        self.count_round()?;
+        let sealed: Vec<SealedShare> = self
+            .aggs
+            .iter_mut()
+            .map(|a| a.sealed_share_for(c))
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .map(|s| decode(&encode(&s).unwrap()).unwrap())
+            .collect();
+        self.collector.unshard_sealed(c, key, &sealed)
+    }
+
+    /// Release to collector `c` unsealed (library-level tests of policies).
+    pub fn collect_for(&mut self, c: usize) -> Result<BatchResult> {
+        self.count_round()?;
+        let shares: Vec<AggregateShare> = self
+            .aggs
+            .iter_mut()
+            .map(|a| a.aggregate_share_for(c))
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .map(|s| decode(&encode(&s).unwrap()).unwrap())
+            .collect();
+        self.collector.unshard_for(c, &shares)
+    }
+
     pub fn collect_full(&mut self) -> Result<BatchResult> {
         if self.cfg.mode == VerificationMode::Silent {
             let counts: Vec<CountShare> = self

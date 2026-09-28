@@ -38,9 +38,12 @@ pub struct Layout {
     /// Batched only: reports per verification ciphertext (a power of two). 1 otherwise.
     pub groups: usize,
     pub row: usize,
-    /// Elements per chunk (a power of two).
+    /// Largest number of elements per chunk (a power of two).
     pub block: usize,
     pub num_chunks: usize,
+    /// Global input range of each chunk, in order and contiguous. Cut at
+    /// `block` boundaries and at the task's visibility-class boundaries.
+    pub chunks: Vec<std::ops::Range<usize>>,
     /// Second-moment accumulation enabled: the `(start, bits)` slot map of
     /// the values (see `MeasurementType::value_slots`).
     pub moments: Option<Vec<(usize, u32)>>,
@@ -52,6 +55,13 @@ impl Layout {
     }
 
     pub fn with_groups(kind: LayoutKind, input_len: usize, repetitions: usize, row: usize, groups: usize) -> Result<Self> {
+        Self::with_cuts(kind, input_len, repetitions, row, groups, &[])
+    }
+
+    /// As [`Self::with_groups`], with chunk boundaries forced at `cuts`
+    /// (ascending input indices in `(0, input_len)`), in addition to the
+    /// `block`-size boundaries.
+    pub fn with_cuts(kind: LayoutKind, input_len: usize, repetitions: usize, row: usize, groups: usize, cuts: &[usize]) -> Result<Self> {
         if input_len == 0 || repetitions == 0 || !row.is_power_of_two() {
             return Err(Error::Config("layout: input_len and repetitions must be >= 1; row must be a power of two".into()));
         }
@@ -83,8 +93,27 @@ impl Layout {
                 row / (classes * groups)
             }
         };
-        let num_chunks = input_len.div_ceil(block);
-        Ok(Self { kind, input_len, repetitions, classes, groups, row, block, num_chunks, moments: None })
+        if cuts.windows(2).any(|w| w[0] >= w[1]) || cuts.iter().any(|&c| c == 0 || c >= input_len) {
+            return Err(Error::Config("layout: cuts must be ascending and strictly inside the input".into()));
+        }
+        let mut chunks = Vec::new();
+        let mut start = 0usize;
+        for &end in cuts.iter().chain(std::iter::once(&input_len)) {
+            let mut s = start;
+            while s < end {
+                let e = (s + block).min(end);
+                chunks.push(s..e);
+                s = e;
+            }
+            start = end;
+        }
+        let num_chunks = chunks.len();
+        Ok(Self { kind, input_len, repetitions, classes, groups, row, block, num_chunks, chunks, moments: None })
+    }
+
+    /// Chunk holding global input index `i`.
+    pub fn chunk_of(&self, i: usize) -> usize {
+        self.chunks.iter().position(|r| r.contains(&i)).expect("index inside the input")
     }
 
     /// Window of the rotate-and-add tree that sums a value's weighted bits:
@@ -108,8 +137,9 @@ impl Layout {
             d *= 2;
         }
         for &(start, _) in map {
-            if start != 0 {
-                v.push((start * stride) as i32);
+            let local = start - self.chunk_range(self.chunk_of(start)).start;
+            if local != 0 {
+                v.push((local * stride) as i32);
             }
         }
         v
@@ -156,14 +186,12 @@ impl Layout {
 
     /// Number of encoded elements carried by chunk `c`.
     pub fn chunk_len(&self, c: usize) -> usize {
-        let start = c * self.block;
-        (self.input_len - start).min(self.block)
+        self.chunks[c].len()
     }
 
     /// Global input indices carried by chunk `c`.
     pub fn chunk_range(&self, c: usize) -> std::ops::Range<usize> {
-        let start = c * self.block;
-        start..start + self.chunk_len(c)
+        self.chunks[c].clone()
     }
 
     /// Slot in which a client places element `i` of a chunk (group 0 for Batched).

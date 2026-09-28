@@ -252,7 +252,7 @@ impl Circuit {
     /// own bit slots with plaintext weights `2^t` and zero everywhere else,
     /// so nothing the client wrote outside that value's bit slots enters,
     /// whatever the widths of neighbouring values.
-    pub fn moment_products(&self, ct: &Ciphertext, group: usize) -> Result<Vec<Ciphertext>> {
+    pub fn moment_products(&self, chunks: &[Ciphertext], group: usize) -> Result<Vec<Ciphertext>> {
         let l = &self.layout;
         let map = l.moments.as_ref().expect("moments enabled");
         let stride = l.element_stride();
@@ -263,19 +263,22 @@ impl Circuit {
         let ind0 = ctx.plaintext(&ind0)?;
         let mut values = Vec::with_capacity(map.len());
         for &(start, bits) in map {
+            // the value's bits live in one chunk (checked by the config)
+            let k = l.chunk_of(start);
+            let local = start - l.chunk_range(k).start;
             let mut w = vec![0u64; l.row];
             for t in 0..bits as usize {
-                w[l.group_slot(group, start + t)] = 1u64 << t;
+                w[l.group_slot(group, local + t)] = 1u64 << t;
             }
             // z is zero outside this value's bit slots, so the tree's window
             // may exceed the value's width without touching a neighbour.
-            let mut z = ctx.mult_plain(ct, &ctx.plaintext(&w)?)?;
+            let mut z = ctx.mult_plain(&chunks[k], &ctx.plaintext(&w)?)?;
             let mut d = 1usize;
             while d < window {
                 z = ctx.add(&z, &ctx.rotate(&z, (stride * d) as i32)?)?;
                 d *= 2;
             }
-            let aligned = if start == 0 { z } else { ctx.rotate(&z, (start * stride) as i32)? };
+            let aligned = if local == 0 { z } else { ctx.rotate(&z, (local * stride) as i32)? };
             values.push(ctx.mult_plain(&aligned, &ind0)?);
         }
         let mut out = Vec::with_capacity(l.moment_pairs());

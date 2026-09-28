@@ -589,6 +589,61 @@ inconsistent offset bits fail; the tail element fails; opposite violations
 fail across twelve fresh challenges; silent mode contributes zero;
 mixed-width moments match the plaintext fit; the bounds are bound.
 
+### Per-collector release policies (`TaskConfig::collectors`, `seal.rs`)
+
+A task may name several collectors, each with the elements it receives,
+whether it receives the second moments of those elements, and an X25519
+sealing key. Policies are part of the task binding and digest, hence of
+the attestation, and every aggregator enforces them independently.
+
+*Mechanism.* Encoded slots are assigned a visibility class, the set of
+collectors allowed to see them (an element's slots go to the collectors
+naming that element; slots that serve a constraint over every element,
+the weight bits of `MultihotCountVec`, go to collectors that see every
+element). The report is chunked at every class change, so each chunk is
+one ciphertext inside one class. Releasing to collector `c` is partially
+decrypting the chunks of classes containing `c` and the second-moment
+accumulators of pairs within `c`'s elements (`aggregate_share_for`).
+Nothing outside the union of the policies is ever partially decrypted.
+Cost: no extra depth in either mode; one chunk per run of equal
+visibility, so interleaved policies cost more ciphertexts per report and
+per-chunk coefficient work in the check. A plaintext selector before
+decryption would have been simpler for verdict mode but does not fit
+silent mode's level budget, so chunking is used for both.
+
+*Consistency and results.* A restricted collector checks the per-slot
+bound on its slots and every linear constraint whose slots it holds; the
+result carries its element list, the other elements being zero; a
+regression is fitted on its elements only, the last being the target.
+
+*Sealing.* Each aggregator seals its share for `c` to `c`'s key: ephemeral
+X25519 with the collector's static key, HKDF-SHA256 over the shared secret
+with both public keys in the info, AES-256-GCM with a fresh nonce, and
+associated data binding task id, collector id and aggregator index; the
+opened share must agree with the envelope header. The leader that relays
+shares therefore learns nothing from them. Without policies the leader
+relays plain shares and, holding its own partial decryption, can read the
+released aggregate; that pre-existing exposure is closed for every task
+with policies.
+
+*Release bound.* Each aggregator releases once per (batch, collector) and
+persists the release, so the number of noisy partial decryptions per batch
+is the number of declared collectors plus one for the valid count, fixed
+by the task. The deployment reveals the union of its policies; overlapping
+policies reveal nothing beyond it.
+
+*Tests* (`tests/policy.rs`, node `e2e.rs`): two collectors with disjoint
+elements, one with moments, in verdict mode over the sealed path, each
+receiving exactly its elements and the right moments; shares released to
+one collector refused by the other's unshard; unknown collector refused;
+release-once per collector across snapshot and restore; a sealed envelope
+unopenable with another key and refused under an undeclared key;
+overlapping and full-view policies on a histogram; the multihot weight
+chunk only to the full-view collector; interleaved policies laid out as
+four chunks; policy validation (coverage, ordering, moments, digest);
+silent batched mode with an invalid report contributing to neither
+collector; and the same over TLS with two collector processes.
+
 ### Horizontal sharding (`sharding.rs`, node `router`)
 
 Throughput beyond one aggregator set comes from running several sets in

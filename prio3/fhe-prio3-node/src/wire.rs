@@ -3,7 +3,7 @@
 use axum::body::Bytes;
 use axum::http::{HeaderMap, StatusCode, header};
 use fhe_prio3::messages::{decode, encode};
-use fhe_prio3::{AggregateShare, CountShare, MaskMessage, Report, VerifierMessage};
+use fhe_prio3::{AggregateShare, BatchResult, CountShare, MaskMessage, Report, SealedShare, VerifierMessage};
 use fhe_prio3::messages::ReportId;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -50,9 +50,49 @@ pub struct StatusReply {
     pub mode: String,
 }
 
+/// Leader -> collector, tasks without release policies: a plain share.
 #[derive(Serialize, Deserialize)]
 pub struct ShareEnvelope {
     pub share: AggregateShare,
+}
+
+/// Leader -> collector, tasks with release policies: a share sealed by its
+/// aggregator to the collector's key; the leader cannot read it.
+#[derive(Serialize, Deserialize)]
+pub struct SealedEnvelope {
+    pub sealed: SealedShare,
+}
+
+/// Collector's answer to a share: whether every aggregator's share is now
+/// present. The result itself is returned only on tasks without policies
+/// (where the leader relays it to the operator); with policies it is read
+/// from the collector by its own operator.
+#[derive(Serialize, Deserialize)]
+pub struct ShareReceipt {
+    pub complete: bool,
+    pub result: Option<BatchResult>,
+}
+
+/// Leader -> helper: release for this collector.
+#[derive(Serialize, Deserialize)]
+pub struct ShareRequest {
+    pub collector: u32,
+}
+
+/// Helper -> leader.
+#[derive(Serialize, Deserialize)]
+pub enum ShareReply {
+    Plain(AggregateShare),
+    Sealed(SealedShare),
+}
+
+/// Answer to `/v1/close`.
+#[derive(Serialize, Deserialize)]
+pub struct CloseReply {
+    /// Tasks without policies: the batch result from the collector.
+    pub result: Option<BatchResult>,
+    /// Collectors whose release is complete.
+    pub released_to: Vec<u32>,
 }
 
 /// A protocol error carried back to the caller as HTTP 4xx/5xx with a body.

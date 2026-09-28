@@ -18,12 +18,19 @@ use std::sync::{Arc, Mutex};
 pub struct CollectorNodeConfig {
     pub task: TaskConfig,
     pub material: PublicMaterial,
+    /// This collector's id in the task's policies (0 without policies).
+    pub collector_id: u32,
+    /// This collector's sealing key; required when the task has policies
+    /// and must be the key the task declares for `collector_id`.
+    pub seal_key: Option<CollectorSealKey>,
     pub token: String,
     pub db: PathBuf,
 }
 
 struct Inner {
     task: TaskConfig,
+    collector_id: u32,
+    seal_key: Option<CollectorSealKey>,
     collector: Mutex<Collector>,
     store: Mutex<Store>,
     shares: Mutex<BTreeMap<usize, AggregateShare>>,
@@ -39,6 +46,18 @@ pub struct CollectorNode {
 impl CollectorNode {
     pub fn new(cfg: CollectorNodeConfig) -> anyhow::Result<Self> {
         let collector = Collector::new(cfg.task.clone(), &cfg.material)?;
+        let c = cfg.collector_id as usize;
+        if cfg.task.collectors.is_empty() {
+            if c != 0 {
+                anyhow::bail!("task has a single collector, id 0");
+            }
+        } else {
+            let declared = cfg.task.collectors.get(c).map(|p| p.seal_key).ok_or_else(|| anyhow::anyhow!("no collector {c} in the task"))?;
+            let key = cfg.seal_key.as_ref().ok_or_else(|| anyhow::anyhow!("task has release policies: this collector needs its sealing key"))?;
+            if key.public_key() != declared {
+                anyhow::bail!("sealing key is not the one the task declares for collector {c}");
+            }
+        }
         let store = Store::open(&cfg.db)?;
         let mut shares = BTreeMap::new();
         for i in 0..cfg.task.num_aggregators {
@@ -51,7 +70,16 @@ impl CollectorNode {
             None => None,
         };
         Ok(Self {
-            inner: Arc::new(Inner { task: cfg.task, collector: Mutex::new(collector), store: Mutex::new(store), shares: Mutex::new(shares), result: Mutex::new(result), token: cfg.token }),
+            inner: Arc::new(Inner {
+                task: cfg.task,
+                collector_id: cfg.collector_id,
+                seal_key: cfg.seal_key,
+                collector: Mutex::new(collector),
+                store: Mutex::new(store),
+                shares: Mutex::new(shares),
+                result: Mutex::new(result),
+                token: cfg.token,
+            }),
         })
     }
 
@@ -79,30 +107,47 @@ impl CollectorNode {
     }
 }
 
-/// Stores the share; returns the batch result once every aggregator's share
-/// is present (and `None` before that).
+/// Stores a share and, once every aggregator's share is present, unshards.
+/// Without policies the body is a plain `ShareEnvelope` and the result is
+/// returned to the leader; with policies the body is a `SealedEnvelope`
+/// that only this collector can open, the share must be released to this
+/// collector's id, and the result is served to this collector's operator
+/// only.
 async fn receive_share(State(node): State<CollectorNode>, headers: HeaderMap, body: Bytes) -> std::result::Result<axum::response::Response, HttpError> {
     check_token(&headers, &node.inner.token)?;
-    let env: ShareEnvelope = parse_body(&body)?;
     let inner = node.inner.clone();
-    let out: Option<BatchResult> = tokio::task::spawn_blocking(move || -> std::result::Result<Option<BatchResult>, HttpError> {
+    let share: AggregateShare = if inner.task.collectors.is_empty() {
+        let env: ShareEnvelope = parse_body(&body)?;
+        env.share
+    } else {
+        let env: SealedEnvelope = parse_body(&body)?;
+        let key = inner.seal_key.as_ref().expect("checked at construction");
+        if env.sealed.collector != inner.collector_id {
+            return Err(HttpError(StatusCode::BAD_REQUEST, format!("share sealed for collector {}, this is collector {}", env.sealed.collector, inner.collector_id)));
+        }
+        fhe_prio3::seal::open(&env.sealed, key)?
+    };
+    if share.collector != inner.collector_id {
+        return Err(HttpError(StatusCode::BAD_REQUEST, "share released to another collector".into()));
+    }
+    let out: ShareReceipt = tokio::task::spawn_blocking(move || -> std::result::Result<ShareReceipt, HttpError> {
         let n = inner.task.num_aggregators;
-        if env.share.aggregator >= n {
+        if share.aggregator >= n {
             return Err(HttpError(StatusCode::BAD_REQUEST, "aggregator index out of range".into()));
         }
         let mut shares = inner.shares.lock().unwrap();
         let mut store = inner.store.lock().unwrap();
-        store.put(&format!("share:{}", env.share.aggregator), &encode(&env.share)?)?;
-        shares.insert(env.share.aggregator, env.share);
+        store.put(&format!("share:{}", share.aggregator), &encode(&share)?)?;
+        shares.insert(share.aggregator, share);
         if shares.len() < n {
-            return Ok(None);
+            return Ok(ShareReceipt { complete: false, result: None });
         }
         let all: Vec<AggregateShare> = shares.values().cloned().collect();
         let collector = inner.collector.lock().unwrap();
-        let r = collector.unshard(&all)?;
+        let r = collector.unshard_for(inner.collector_id as usize, &all)?;
         store.put("result", &encode(&r)?)?;
         *inner.result.lock().unwrap() = Some(r.clone());
-        Ok(Some(r))
+        Ok(ShareReceipt { complete: true, result: if inner.task.collectors.is_empty() { Some(r) } else { None } })
     })
     .await
     .map_err(|e| HttpError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;

@@ -74,6 +74,10 @@ pub struct CountShare {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct AggregateShare {
     pub task_id: [u8; 32],
+    /// Collector this share is released to; `partials` covers exactly the
+    /// chunks `TaskConfig::collector_chunks` lists for it and
+    /// `moment_partials` exactly `TaskConfig::collector_moment_pairs`.
+    pub collector: u32,
     pub aggregator: usize,
     /// SHA-256 over the sorted identifiers of the reports in the batch.
     pub batch_digest: [u8; 32],

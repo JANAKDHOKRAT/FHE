@@ -267,7 +267,7 @@ fn main() {
     let shares: Vec<AggregateShare> = aggs.iter_mut().map(|ag| decode(&encode(&ag.aggregate_share().expect("share")).unwrap()).unwrap()).collect();
     let t_share = t0.elapsed();
     let t0 = Instant::now();
-    let BatchResult { aggregate: agg, report_count: count, valid_count, regression } = collector.unshard(&shares).expect("unshard");
+    let BatchResult { aggregate: agg, report_count: count, valid_count, regression, .. } = collector.unshard(&shares).expect("unshard");
     if let Some(r) = &regression {
         println!("regression: n={} beta={:?}", r.n, r.beta);
     }

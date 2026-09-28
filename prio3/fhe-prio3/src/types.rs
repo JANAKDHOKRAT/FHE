@@ -1,0 +1,327 @@
+//! Prio3 measurement types, encoded exactly as in draft-irtf-cfrg-vdaf-13
+//! (Section 7.4): Count, Sum, SumVec, Histogram and MultihotCountVec.
+//!
+//! Every type maps a measurement to a vector of field elements that are all
+//! bits, plus zero or more linear constraints. A report is valid iff every
+//! slot `x_i` satisfies `x_i(x_i - 1) = 0` and every linear constraint
+//! `sum_i c_i x_i + c_0 = 0` holds. That is the same validity circuit Prio3's
+//! FLP proves; here it is evaluated homomorphically instead.
+
+use crate::error::{Error, Result};
+use crate::field::Field;
+use serde::{Deserialize, Serialize};
+
+/// Largest bit width for any bit-decomposed integer. Keeps every decoded
+/// integer, and sums of two of them, below the 32-bit plaintext modulus so
+/// that equality modulo `p` implies equality over the integers.
+pub const MAX_BITS: u32 = 30;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MeasurementType {
+    /// Measurement in {0, 1}; aggregate is the number of ones.
+    Count,
+    /// Integer in `[0, max_measurement]`; aggregate is the sum.
+    Sum { max_measurement: u64 },
+    /// `length` integers each in `[0, 2^bits)`; aggregate is the element-wise sum.
+    SumVec { length: usize, bits: u32 },
+    /// Bucket index in `[0, length)`; aggregate is the per-bucket count.
+    Histogram { length: usize },
+    /// Subset of `[0, length)` with at most `max_weight` elements; aggregate
+    /// is the per-position count.
+    MultihotCountVec { length: usize, max_weight: usize },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Measurement {
+    Count(bool),
+    Sum(u64),
+    SumVec(Vec<u64>),
+    Histogram(usize),
+    MultihotCountVec(Vec<bool>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AggregateResult {
+    Count(u64),
+    Sum(u128),
+    SumVec(Vec<u128>),
+    Histogram(Vec<u64>),
+    MultihotCountVec(Vec<u64>),
+}
+
+/// `sum_i coeffs[i].1 * x[coeffs[i].0] + constant == 0` in F_p.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinearConstraint {
+    pub coeffs: Vec<(usize, u64)>,
+    pub constant: u64,
+}
+
+fn bit_length(v: u64) -> u32 {
+    64 - v.leading_zeros()
+}
+
+fn encode_bits(v: u64, bits: u32) -> Vec<u64> {
+    (0..bits).map(|i| (v >> i) & 1).collect()
+}
+
+fn decode_bits_u128(slot_sums: &[u64]) -> u128 {
+    slot_sums.iter().enumerate().map(|(i, &s)| (s as u128) << i).sum()
+}
+
+impl MeasurementType {
+    /// Rejects parameter sets that the field cannot represent soundly.
+    pub fn validate(&self) -> Result<()> {
+        match self {
+            MeasurementType::Count => Ok(()),
+            MeasurementType::Sum { max_measurement } => {
+                if *max_measurement == 0 {
+                    return Err(Error::Config("Sum: max_measurement must be >= 1".into()));
+                }
+                if bit_length(*max_measurement) > MAX_BITS {
+                    return Err(Error::Config(format!("Sum: max_measurement must be < 2^{MAX_BITS}")));
+                }
+                Ok(())
+            }
+            MeasurementType::SumVec { length, bits } => {
+                if *length == 0 || *bits == 0 || *bits > MAX_BITS {
+                    return Err(Error::Config(format!("SumVec: need length >= 1 and 1 <= bits <= {MAX_BITS}")));
+                }
+                Ok(())
+            }
+            MeasurementType::Histogram { length } => {
+                if *length < 2 || (*length as u64) >= (1u64 << MAX_BITS) {
+                    return Err(Error::Config("Histogram: need 2 <= length < 2^30".into()));
+                }
+                Ok(())
+            }
+            MeasurementType::MultihotCountVec { length, max_weight } => {
+                if *length == 0 || (*length as u64) >= (1u64 << MAX_BITS) {
+                    return Err(Error::Config("MultihotCountVec: need 1 <= length < 2^30".into()));
+                }
+                if *max_weight == 0 || max_weight > length {
+                    return Err(Error::Config("MultihotCountVec: need 1 <= max_weight <= length".into()));
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn sum_bits(max_measurement: u64) -> u32 {
+        bit_length(max_measurement)
+    }
+    fn sum_offset(max_measurement: u64) -> u64 {
+        (1u64 << Self::sum_bits(max_measurement)) - 1 - max_measurement
+    }
+    fn weight_bits(max_weight: usize) -> u32 {
+        bit_length(max_weight as u64)
+    }
+    fn weight_offset(max_weight: usize) -> u64 {
+        (1u64 << Self::weight_bits(max_weight)) - 1 - max_weight as u64
+    }
+
+    /// Number of field elements (all bits) in an encoded measurement.
+    pub fn input_len(&self) -> usize {
+        match self {
+            MeasurementType::Count => 1,
+            MeasurementType::Sum { max_measurement } => 2 * Self::sum_bits(*max_measurement) as usize,
+            MeasurementType::SumVec { length, bits } => length * *bits as usize,
+            MeasurementType::Histogram { length } => *length,
+            MeasurementType::MultihotCountVec { length, max_weight } => length + Self::weight_bits(*max_weight) as usize,
+        }
+    }
+
+    /// Encodes a measurement into bits, checking it is in range.
+    pub fn encode(&self, m: &Measurement) -> Result<Vec<u64>> {
+        match (self, m) {
+            (MeasurementType::Count, Measurement::Count(b)) => Ok(vec![*b as u64]),
+            (MeasurementType::Sum { max_measurement }, Measurement::Sum(v)) => {
+                if v > max_measurement {
+                    return Err(Error::Measurement(format!("Sum: {v} > max_measurement {max_measurement}")));
+                }
+                let bits = Self::sum_bits(*max_measurement);
+                let mut out = encode_bits(*v, bits);
+                out.extend(encode_bits(v + Self::sum_offset(*max_measurement), bits));
+                Ok(out)
+            }
+            (MeasurementType::SumVec { length, bits }, Measurement::SumVec(vs)) => {
+                if vs.len() != *length {
+                    return Err(Error::Measurement(format!("SumVec: expected {length} elements, got {}", vs.len())));
+                }
+                let mut out = Vec::with_capacity(self.input_len());
+                for &v in vs {
+                    if v >= (1u64 << bits) {
+                        return Err(Error::Measurement(format!("SumVec: element {v} >= 2^{bits}")));
+                    }
+                    out.extend(encode_bits(v, *bits));
+                }
+                Ok(out)
+            }
+            (MeasurementType::Histogram { length }, Measurement::Histogram(idx)) => {
+                if idx >= length {
+                    return Err(Error::Measurement(format!("Histogram: bucket {idx} >= length {length}")));
+                }
+                let mut out = vec![0u64; *length];
+                out[*idx] = 1;
+                Ok(out)
+            }
+            (MeasurementType::MultihotCountVec { length, max_weight }, Measurement::MultihotCountVec(set)) => {
+                if set.len() != *length {
+                    return Err(Error::Measurement(format!("MultihotCountVec: expected {length} entries, got {}", set.len())));
+                }
+                let weight = set.iter().filter(|b| **b).count();
+                if weight > *max_weight {
+                    return Err(Error::Measurement(format!("MultihotCountVec: weight {weight} > max_weight {max_weight}")));
+                }
+                let mut out: Vec<u64> = set.iter().map(|&b| b as u64).collect();
+                out.extend(encode_bits(weight as u64 + Self::weight_offset(*max_weight), Self::weight_bits(*max_weight)));
+                Ok(out)
+            }
+            _ => Err(Error::Measurement("measurement does not match the task's type".into())),
+        }
+    }
+
+    /// Linear constraints in addition to the per-slot bit checks.
+    pub fn linear_constraints(&self, f: &Field) -> Vec<LinearConstraint> {
+        match self {
+            MeasurementType::Count | MeasurementType::SumVec { .. } => vec![],
+            MeasurementType::Sum { max_measurement } => {
+                // value(x) + offset - value(y) == 0
+                let bits = Self::sum_bits(*max_measurement) as usize;
+                let mut coeffs = Vec::with_capacity(2 * bits);
+                for i in 0..bits {
+                    coeffs.push((i, 1u64 << i));
+                }
+                for i in 0..bits {
+                    coeffs.push((bits + i, f.neg(1u64 << i)));
+                }
+                vec![LinearConstraint { coeffs, constant: Self::sum_offset(*max_measurement) }]
+            }
+            MeasurementType::Histogram { length } => {
+                // sum(x) - 1 == 0
+                vec![LinearConstraint { coeffs: (0..*length).map(|i| (i, 1u64)).collect(), constant: f.neg(1) }]
+            }
+            MeasurementType::MultihotCountVec { length, max_weight } => {
+                // sum(x) + offset - value(w) == 0
+                let wb = Self::weight_bits(*max_weight) as usize;
+                let mut coeffs: Vec<(usize, u64)> = (0..*length).map(|i| (i, 1u64)).collect();
+                for j in 0..wb {
+                    coeffs.push((length + j, f.neg(1u64 << j)));
+                }
+                vec![LinearConstraint { coeffs, constant: Self::weight_offset(*max_weight) }]
+            }
+        }
+    }
+
+    /// Decodes per-slot sums over all accepted reports. Sums are exact
+    /// integers because every slot is a bit and the batch is smaller than `p`.
+    pub fn decode_aggregate(&self, slot_sums: &[u64]) -> Result<AggregateResult> {
+        if slot_sums.len() < self.input_len() {
+            return Err(Error::Protocol("aggregate has too few slots".into()));
+        }
+        Ok(match self {
+            MeasurementType::Count => AggregateResult::Count(slot_sums[0]),
+            MeasurementType::Sum { max_measurement } => {
+                let bits = Self::sum_bits(*max_measurement) as usize;
+                AggregateResult::Sum(decode_bits_u128(&slot_sums[..bits]))
+            }
+            MeasurementType::SumVec { length, bits } => {
+                let b = *bits as usize;
+                AggregateResult::SumVec((0..*length).map(|i| decode_bits_u128(&slot_sums[i * b..(i + 1) * b])).collect())
+            }
+            MeasurementType::Histogram { length } => AggregateResult::Histogram(slot_sums[..*length].to_vec()),
+            MeasurementType::MultihotCountVec { length, .. } => AggregateResult::MultihotCountVec(slot_sums[..*length].to_vec()),
+        })
+    }
+
+    /// Plaintext reference aggregation, for tests and for the collector's
+    /// documentation of what the aggregate means.
+    pub fn aggregate_plain(&self, ms: &[Measurement]) -> Result<AggregateResult> {
+        let mut sums = vec![0u64; self.input_len()];
+        for m in ms {
+            for (s, b) in sums.iter_mut().zip(self.encode(m)?) {
+                *s += b;
+            }
+        }
+        self.decode_aggregate(&sums)
+    }
+}
+
+/// Evaluates the validity predicate on a plaintext vector. Used by tests and
+/// by the soundness discussion in the spec; never by the protocol itself.
+pub fn is_valid_plain(t: &MeasurementType, f: &Field, x: &[u64]) -> bool {
+    if x.len() != t.input_len() {
+        return false;
+    }
+    if x.iter().any(|&v| v != 0 && v != 1) {
+        return false;
+    }
+    t.linear_constraints(f).iter().all(|c| {
+        let mut acc = c.constant;
+        for &(i, coef) in &c.coeffs {
+            acc = f.add(acc, f.mul(coef, x[i]));
+        }
+        acc == 0
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn f() -> Field {
+        Field::new(4_293_918_721).unwrap()
+    }
+
+    #[test]
+    fn sum_encoding_matches_draft() {
+        // max_measurement = 100 -> bits = 7, offset = 27
+        let t = MeasurementType::Sum { max_measurement: 100 };
+        assert_eq!(t.input_len(), 14);
+        let e = t.encode(&Measurement::Sum(100)).unwrap();
+        assert_eq!(&e[..7], &[0, 0, 1, 0, 0, 1, 1]); // 100
+        assert_eq!(&e[7..], &[1, 1, 1, 1, 1, 1, 1]); // 127
+        assert!(t.encode(&Measurement::Sum(101)).is_err());
+        assert!(is_valid_plain(&t, &f(), &e));
+        // 101 encoded "by hand" with a consistent second half fails the range check
+        let mut bad = encode_bits(101, 7);
+        bad.extend(encode_bits(101 + 27 - 128, 7)); // wraps: not representable
+        assert!(!is_valid_plain(&t, &f(), &bad));
+        // and 101 with y = 127 (max) violates value(y) == value(x) + offset
+        let mut bad2 = encode_bits(101, 7);
+        bad2.extend(encode_bits(127, 7));
+        assert!(!is_valid_plain(&t, &f(), &bad2));
+    }
+
+    #[test]
+    fn histogram_and_multihot() {
+        let h = MeasurementType::Histogram { length: 4 };
+        assert!(is_valid_plain(&h, &f(), &[0, 0, 1, 0]));
+        assert!(!is_valid_plain(&h, &f(), &[0, 1, 1, 0]));
+        assert!(!is_valid_plain(&h, &f(), &[0, 0, 0, 0]));
+        let m = MeasurementType::MultihotCountVec { length: 5, max_weight: 2 };
+        // weight bits = 2, offset = 1
+        assert_eq!(m.input_len(), 7);
+        let e = m.encode(&Measurement::MultihotCountVec(vec![true, false, false, true, false])).unwrap();
+        assert_eq!(e, vec![1, 0, 0, 1, 0, 1, 1]); // weight 2 + 1 = 3
+        assert!(is_valid_plain(&m, &f(), &e));
+        assert!(!is_valid_plain(&m, &f(), &[1, 1, 1, 0, 0, 1, 1]));
+        assert!(m.encode(&Measurement::MultihotCountVec(vec![true, true, true, false, false])).is_err());
+    }
+
+    #[test]
+    fn aggregate_roundtrip() {
+        let t = MeasurementType::SumVec { length: 3, bits: 4 };
+        let ms = vec![Measurement::SumVec(vec![15, 0, 7]), Measurement::SumVec(vec![1, 2, 3])];
+        assert_eq!(t.aggregate_plain(&ms).unwrap(), AggregateResult::SumVec(vec![16, 2, 10]));
+        let c = MeasurementType::Count;
+        assert_eq!(c.aggregate_plain(&[Measurement::Count(true), Measurement::Count(false), Measurement::Count(true)]).unwrap(), AggregateResult::Count(2));
+    }
+
+    #[test]
+    fn parameter_validation() {
+        assert!(MeasurementType::Sum { max_measurement: 1 << 30 }.validate().is_err());
+        assert!(MeasurementType::Sum { max_measurement: (1 << 30) - 1 }.validate().is_ok());
+        assert!(MeasurementType::SumVec { length: 1, bits: 31 }.validate().is_err());
+        assert!(MeasurementType::Histogram { length: 1 }.validate().is_err());
+        assert!(MeasurementType::MultihotCountVec { length: 3, max_weight: 4 }.validate().is_err());
+    }
+}

@@ -1,0 +1,198 @@
+//! End-to-end simulation with timings and message sizes.
+//!
+//! Runs the key ceremony, `--reports` honest clients, the two-round
+//! verification on every aggregator and the collector's unsharding, all over
+//! serialized messages, then checks the aggregate against the plaintext sum.
+//!
+//! Example:
+//!   simulate --type sum --max 100 --reports 8 --aggregators 2
+//!   simulate --type histogram --length 64 --reports 4
+//!   simulate --type sumvec --length 1200 --bits 4 --reports 2
+
+use fhe_prio3::messages::{decode, encode};
+use fhe_prio3::*;
+use std::time::{Duration, Instant};
+
+struct Args {
+    ty: String,
+    aggregators: usize,
+    reports: usize,
+    repetitions: usize,
+    length: usize,
+    bits: u32,
+    max: u64,
+    max_weight: usize,
+}
+
+fn parse() -> Args {
+    let mut a = Args { ty: "sum".into(), aggregators: 2, reports: 4, repetitions: 4, length: 8, bits: 4, max: 100, max_weight: 2 };
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    let mut i = 0;
+    while i < argv.len() {
+        let v = argv.get(i + 1).map(|s| s.as_str()).unwrap_or("");
+        match argv[i].as_str() {
+            "--type" => a.ty = v.to_string(),
+            "--aggregators" => a.aggregators = v.parse().expect("--aggregators"),
+            "--reports" => a.reports = v.parse().expect("--reports"),
+            "--repetitions" => a.repetitions = v.parse().expect("--repetitions"),
+            "--length" => a.length = v.parse().expect("--length"),
+            "--bits" => a.bits = v.parse().expect("--bits"),
+            "--max" => a.max = v.parse().expect("--max"),
+            "--max-weight" => a.max_weight = v.parse().expect("--max-weight"),
+            other => {
+                eprintln!("unknown argument {other}");
+                std::process::exit(2);
+            }
+        }
+        i += 2;
+    }
+    a
+}
+
+fn ms(d: Duration) -> f64 {
+    d.as_secs_f64() * 1e3
+}
+fn mib(b: usize) -> f64 {
+    b as f64 / (1024.0 * 1024.0)
+}
+
+fn measurement(ty: &MeasurementType, i: usize) -> Measurement {
+    match ty {
+        MeasurementType::Count => Measurement::Count(i % 3 != 0),
+        MeasurementType::Sum { max_measurement } => Measurement::Sum((i as u64 * 37) % (max_measurement + 1)),
+        MeasurementType::SumVec { length, bits } => Measurement::SumVec((0..*length).map(|j| ((i * 7 + j) as u64) % (1u64 << bits)).collect()),
+        MeasurementType::Histogram { length } => Measurement::Histogram((i * 5) % length),
+        MeasurementType::MultihotCountVec { length, max_weight } => {
+            Measurement::MultihotCountVec((0..*length).map(|j| j % length < *max_weight && (i + j) % 2 == 0).collect())
+        }
+    }
+}
+
+fn main() {
+    let a = parse();
+    let ty = match a.ty.as_str() {
+        "count" => MeasurementType::Count,
+        "sum" => MeasurementType::Sum { max_measurement: a.max },
+        "sumvec" => MeasurementType::SumVec { length: a.length, bits: a.bits },
+        "histogram" => MeasurementType::Histogram { length: a.length },
+        "multihot" => MeasurementType::MultihotCountVec { length: a.length, max_weight: a.max_weight },
+        other => {
+            eprintln!("unknown type {other}");
+            std::process::exit(2);
+        }
+    };
+    let mut cfg = TaskConfig::new([7u8; 32], ty.clone(), a.aggregators);
+    cfg.repetitions = a.repetitions;
+    cfg.validate().expect("config");
+
+    println!("type={:?} aggregators={} repetitions={} reports={}", ty, a.aggregators, a.repetitions, a.reports);
+    println!("plain_mod={} soundness=2^-{:.1} per report", cfg.plain_mod, cfg.soundness_bits());
+
+    let t0 = Instant::now();
+    let (material, shares) = keys::run_local_ceremony(&cfg).expect("ceremony");
+    let ceremony = t0.elapsed();
+    let material_bytes = encode(&material).unwrap();
+    let material: PublicMaterial = decode(&material_bytes).unwrap();
+    println!(
+        "ceremony: {:.0} ms  | context {:.2} MiB, public key {:.2} MiB, eval-mult key {:.2} MiB, rotation keys {:.2} MiB ({} indices)",
+        ms(ceremony),
+        mib(material.context.len()),
+        mib(material.public_key.len()),
+        mib(material.eval_mult_key.len()),
+        mib(material.rotation_keys.len()),
+        material.rotation_indices.len()
+    );
+
+    let t0 = Instant::now();
+    let mut aggs: Vec<Aggregator> =
+        shares.iter().enumerate().map(|(i, s)| Aggregator::new(cfg.clone(), &material, i, s).expect("aggregator")).collect();
+    println!("aggregator setup: {:.0} ms total for {} aggregators", ms(t0.elapsed()), aggs.len());
+    let client = Client::new(cfg.clone(), &material.context, &material.public_key).expect("client");
+    let collector = Collector::new(cfg.clone(), &material).expect("collector");
+    let layout = client.layout().clone();
+    println!(
+        "layout: input_len={} block={} chunks={} row={} ring_dim={}",
+        layout.input_len,
+        layout.block,
+        layout.num_chunks,
+        layout.row,
+        layout.row * 2
+    );
+
+    let mut t_shard = Duration::ZERO;
+    let mut t_init = Duration::ZERO;
+    let mut t_masks = Duration::ZERO;
+    let mut t_finish = Duration::ZERO;
+    let mut report_bytes = 0usize;
+    let mut mask_bytes = 0usize;
+    let mut verifier_bytes = 0usize;
+    let mut ms_list = Vec::new();
+
+    for i in 0..a.reports {
+        let m = measurement(&ty, i);
+        let t0 = Instant::now();
+        let report = client.shard(&m).expect("shard");
+        t_shard += t0.elapsed();
+        let rb = encode(&report).unwrap();
+        report_bytes = rb.len();
+        let report: Report = decode(&rb).unwrap();
+
+        let mut masks = Vec::new();
+        for ag in aggs.iter_mut() {
+            let t0 = Instant::now();
+            let mm = ag.prepare_init(&report).expect("prepare_init");
+            t_init += t0.elapsed();
+            let b = encode(&mm).unwrap();
+            mask_bytes = b.len();
+            masks.push(decode::<MaskMessage>(&b).unwrap());
+        }
+        let mut verifiers = Vec::new();
+        for ag in aggs.iter_mut() {
+            let others: Vec<MaskMessage> = masks.iter().filter(|x| x.aggregator != ag.index()).cloned().collect();
+            let t0 = Instant::now();
+            let v = ag.prepare_masks(&report.report_id, &others).expect("prepare_masks");
+            t_masks += t0.elapsed();
+            let b = encode(&v).unwrap();
+            verifier_bytes = b.len();
+            verifiers.push(decode::<VerifierMessage>(&b).unwrap());
+        }
+        for ag in aggs.iter_mut() {
+            let others: Vec<VerifierMessage> = verifiers.iter().filter(|x| x.aggregator != ag.index()).cloned().collect();
+            let t0 = Instant::now();
+            let verdict = ag.prepare_finish(&report.report_id, &others).expect("prepare_finish");
+            t_finish += t0.elapsed();
+            assert_eq!(verdict, Verdict::Accepted, "honest report {i} rejected");
+        }
+        ms_list.push(m);
+    }
+
+    let n_ag = aggs.len() as f64;
+    let n_r = a.reports as f64;
+    println!("per report:");
+    println!("  client shard            {:>8.1} ms   report {:.2} MiB ({} chunk(s))", ms(t_shard) / n_r, mib(report_bytes), layout.num_chunks);
+    println!("  aggregator prepare_init {:>8.1} ms   mask message {:.2} MiB", ms(t_init) / n_r / n_ag, mib(mask_bytes));
+    println!("  aggregator prepare_masks{:>8.1} ms   verifier message {:.2} MiB", ms(t_masks) / n_r / n_ag, mib(verifier_bytes));
+    println!("  aggregator prepare_finish{:>7.1} ms", ms(t_finish) / n_r / n_ag);
+    println!(
+        "  aggregator total        {:>8.1} ms per report per aggregator",
+        (ms(t_init) + ms(t_masks) + ms(t_finish)) / n_r / n_ag
+    );
+
+    let t0 = Instant::now();
+    let shares: Vec<AggregateShare> = aggs.iter().map(|ag| decode(&encode(&ag.aggregate_share().expect("share")).unwrap()).unwrap()).collect();
+    let t_share = t0.elapsed();
+    let t0 = Instant::now();
+    let (agg, count) = collector.unshard(&shares).expect("unshard");
+    let t_unshard = t0.elapsed();
+    let expected = ty.aggregate_plain(&ms_list).unwrap();
+    println!(
+        "batch: aggregate_share {:.1} ms per aggregator ({:.2} MiB each), collector unshard {:.1} ms, {} reports",
+        ms(t_share) / n_ag,
+        mib(encode(&shares[0]).unwrap().len()),
+        ms(t_unshard),
+        count
+    );
+    println!("aggregate = {agg:?}");
+    assert_eq!(agg, expected, "aggregate mismatch");
+    println!("aggregate matches plaintext reference: OK");
+}

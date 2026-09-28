@@ -35,6 +35,8 @@ pub enum RejectReason {
     UnknownClient,
     /// The signing key has used up its reports for this batch.
     QuotaExceeded,
+    /// Group out of range for the layout, or non-zero outside batched silent mode.
+    BadGroup,
 }
 
 impl std::fmt::Display for RejectReason {

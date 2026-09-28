@@ -27,10 +27,12 @@ struct Args {
     max_weight: usize,
     silent: bool,
     auth: bool,
+    groups: usize,
+    moments: bool,
 }
 
 fn parse() -> Args {
-    let mut a = Args { ty: "sum".into(), aggregators: 2, reports: 4, repetitions: 0, length: 8, bits: 4, max: 100, max_weight: 2, silent: false, auth: false };
+    let mut a = Args { ty: "sum".into(), aggregators: 2, reports: 4, repetitions: 0, length: 8, bits: 4, max: 100, max_weight: 2, silent: false, auth: false, groups: 0, moments: false };
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
     while i < argv.len() {
@@ -49,9 +51,14 @@ fn parse() -> Args {
                 "verdict" => false,
                 other => panic!("unknown mode {other}"),
             },
+            "--groups" => a.groups = v.parse().expect("--groups"),
             "--auth" => {
                 a.auth = true;
                 i -= 1; // flag without value
+            }
+            "--moments" => {
+                a.moments = true;
+                i -= 1;
             }
             other => {
                 eprintln!("unknown argument {other}");
@@ -102,12 +109,19 @@ fn main() {
     if a.auth {
         cfg.auth = AuthPolicy::Required { max_reports_per_client_per_batch: 1 };
     }
+    if a.groups > 0 {
+        cfg.silent_batch_groups = a.groups;
+    }
+    if a.moments {
+        cfg.moments = true;
+        cfg.max_batch_size = cfg.moments_max_batch().expect("moments need SumVec").min(cfg.max_batch_size);
+    }
     cfg.validate().expect("config");
     let identities: Vec<ClientIdentity> = (0..a.reports).map(|_| ClientIdentity::generate()).collect();
     let registry: Option<Arc<dyn ClientRegistry>> =
         if a.auth { Some(StaticRegistry::new(identities.iter().map(|i| i.public_key()))) } else { None };
 
-    println!("type={:?} mode={:?} auth={:?} aggregators={} repetitions={} reports={}", ty, cfg.mode, cfg.auth, a.aggregators, cfg.repetitions, a.reports);
+    println!("type={:?} mode={:?} auth={:?} aggregators={} repetitions={} reports={} groups={}", ty, cfg.mode, cfg.auth, a.aggregators, cfg.repetitions, a.reports, cfg.silent_batch_groups);
     println!("plain_mod={} mult_depth={} soundness=2^-{:.1} per report", cfg.plain_mod, cfg.mult_depth(), cfg.soundness_bits());
 
     let t0 = Instant::now();
@@ -132,10 +146,12 @@ fn main() {
     let collector = Collector::new(cfg.clone(), &material).expect("collector");
     let layout = cfg.layout(aggs[0].layout().row).expect("layout");
     println!(
-        "layout: input_len={} block={} chunks={} row={} ring_dim={}",
+        "layout: {:?} input_len={} block={} chunks={} groups={} row={} ring_dim={}",
+        layout.kind,
         layout.input_len,
         layout.block,
         layout.num_chunks,
+        layout.groups,
         layout.row,
         layout.row * 2
     );
@@ -157,7 +173,8 @@ fn main() {
             client = client.with_identity(ClientIdentity::from_secret_bytes(&identities[i].secret_bytes()));
         }
         let t0 = Instant::now();
-        let report = client.shard(&m).expect("shard");
+        let group = if a.silent { (i % cfg.silent_batch_groups) as u32 } else { 0 };
+        let report = client.shard_in_group(&m, group).expect("shard");
         t_shard += t0.elapsed();
         let rb = encode(&report).unwrap();
         report_bytes = rb.len();
@@ -203,10 +220,24 @@ fn main() {
 
     let n_ag = aggs.len() as f64;
     let n_r = a.reports as f64;
+    // Batch close (silent: runs the last shared chain) is measured before the
+    // per-report summary so that it can be amortised into it.
+    let t0 = Instant::now();
+    let mut t_close = Duration::ZERO;
+    let mut counts_opt: Option<Vec<CountShare>> = None;
+    if a.silent {
+        let counts: Vec<CountShare> = aggs.iter_mut().map(|ag| decode(&encode(&ag.count_share().expect("count share")).unwrap()).unwrap()).collect();
+        t_close = t0.elapsed();
+        counts_opt = Some(counts);
+    }
     println!("per report:");
     println!("  client shard            {:>8.1} ms   report {:.2} MiB ({} chunk(s))", ms(t_shard) / n_r, mib(report_bytes), layout.num_chunks);
     if a.silent {
-        println!("  aggregator process_silent {:>6.1} ms per report per aggregator (no messages, no per-report decryption)", ms(t_silent) / n_r / n_ag);
+        println!(
+            "  aggregator process_silent {:>6.1} ms per report per aggregator, amortised over {} reports incl. batch close (no messages, no per-report decryption)",
+            (ms(t_silent) + ms(t_close)) / n_r / n_ag,
+            a.reports
+        );
     } else {
     println!("  aggregator prepare_init {:>8.1} ms   mask message {:.2} MiB", ms(t_init) / n_r / n_ag, mib(mask_bytes));
     println!("  aggregator prepare_masks{:>8.1} ms   verifier message {:.2} MiB", ms(t_masks) / n_r / n_ag, mib(verifier_bytes));
@@ -218,8 +249,7 @@ fn main() {
     }
 
     let t0 = Instant::now();
-    if a.silent {
-        let counts: Vec<CountShare> = aggs.iter_mut().map(|ag| decode(&encode(&ag.count_share().expect("count share")).unwrap()).unwrap()).collect();
+    if let Some(counts) = counts_opt {
         for ag in aggs.iter_mut() {
             ag.count_finish(&counts).expect("count finish");
         }
@@ -227,7 +257,10 @@ fn main() {
     let shares: Vec<AggregateShare> = aggs.iter_mut().map(|ag| decode(&encode(&ag.aggregate_share().expect("share")).unwrap()).unwrap()).collect();
     let t_share = t0.elapsed();
     let t0 = Instant::now();
-    let BatchResult { aggregate: agg, report_count: count, valid_count } = collector.unshard(&shares).expect("unshard");
+    let BatchResult { aggregate: agg, report_count: count, valid_count, regression } = collector.unshard(&shares).expect("unshard");
+    if let Some(r) = &regression {
+        println!("regression: n={} beta={:?}", r.n, r.beta);
+    }
     let t_unshard = t0.elapsed();
     let expected = ty.aggregate_plain(&ms_list).unwrap();
     println!(

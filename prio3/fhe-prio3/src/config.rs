@@ -67,6 +67,14 @@ pub struct TaskConfig {
     pub max_report_bytes: usize,
     pub plain_mod: u64,
     pub security_bits: u32,
+    /// Silent mode: reports verified together in one ciphertext (a power of
+    /// two; 1 disables batching). The Fermat chain is shared by all of them.
+    pub silent_batch_groups: usize,
+    /// Post-validation computation: also accumulate the second moments
+    /// `sum v_a v_b` of the SumVec values over valid reports, so the
+    /// collector can solve a linear regression (last value = target) without
+    /// ever seeing a record. Requires `SumVec` with a power-of-two `bits`.
+    pub moments: bool,
 }
 
 impl TaskConfig {
@@ -84,6 +92,20 @@ impl TaskConfig {
             max_report_bytes: 0,
             plain_mod: DEFAULT_PLAIN_MOD,
             security_bits: 128,
+            silent_batch_groups: 1,
+            moments: false,
+        }
+    }
+
+    /// Largest batch for which every second-moment sum stays below `p`
+    /// (each product is below `2^(2 bits)`). `None` when moments are off.
+    pub fn moments_max_batch(&self) -> Option<u64> {
+        if !self.moments {
+            return None;
+        }
+        match self.measurement_type {
+            MeasurementType::SumVec { bits, .. } => Some((self.plain_mod - 1) >> (2 * bits)),
+            _ => None,
         }
     }
 
@@ -97,6 +119,7 @@ impl TaskConfig {
         c.repetitions = 4;
         c.plain_mod = SILENT_PLAIN_MOD;
         c.max_batch_size = 1 << 16;
+        c.silent_batch_groups = 64;
         c
     }
 
@@ -121,6 +144,26 @@ impl TaskConfig {
         if let AuthPolicy::Required { max_reports_per_client_per_batch: 0 } = self.auth {
             return Err(Error::Config("max_reports_per_client_per_batch must be >= 1".into()));
         }
+        if !self.silent_batch_groups.is_power_of_two() {
+            return Err(Error::Config("silent_batch_groups must be a power of two".into()));
+        }
+        if self.moments {
+            match self.measurement_type {
+                MeasurementType::SumVec { length, bits } => {
+                    if length < 2 || !bits.is_power_of_two() {
+                        return Err(Error::Config("moments need SumVec with length >= 2 (features + target) and a power-of-two bits".into()));
+                    }
+                    if 2 * bits as u64 >= 64 - self.plain_mod.leading_zeros() as u64 {
+                        return Err(Error::Config("moments: 2*bits must be below log2(plain_mod) so products are exact".into()));
+                    }
+                    let cap = self.moments_max_batch().expect("checked");
+                    if self.max_batch_size > cap {
+                        return Err(Error::Config(format!("moments: max_batch_size must be at most {cap} for {bits}-bit values under p = {}", self.plain_mod)));
+                    }
+                }
+                _ => return Err(Error::Config("moments are only defined for SumVec".into())),
+            }
+        }
         if self.mode == VerificationMode::Silent && self.mult_depth() > 26 {
             return Err(Error::Config(format!(
                 "silent mode circuit depth {} exceeds 26; use a plaintext modulus with a shorter Fermat chain or fewer repetitions",
@@ -137,12 +180,23 @@ impl TaskConfig {
     pub fn layout_kind(&self) -> LayoutKind {
         match self.mode {
             VerificationMode::Verdict => LayoutKind::Blocked,
+            VerificationMode::Silent if self.silent_batch_groups > 1 => LayoutKind::Batched,
             VerificationMode::Silent => LayoutKind::Interleaved,
         }
     }
 
     pub fn layout(&self, row: usize) -> Result<Layout> {
-        Layout::new(self.layout_kind(), self.measurement_type.input_len(), self.repetitions, row)
+        let groups = if self.layout_kind() == LayoutKind::Batched { self.silent_batch_groups } else { 1 };
+        let mut l = Layout::with_groups(self.layout_kind(), self.measurement_type.input_len(), self.repetitions, row, groups)?;
+        if self.moments {
+            if let MeasurementType::SumVec { length, bits } = self.measurement_type {
+                if l.num_chunks != 1 {
+                    return Err(Error::Config("moments need the whole SumVec in one chunk".into()));
+                }
+                l.moments = Some((length, bits));
+            }
+        }
+        Ok(l)
     }
 
     /// Multiplicative levels consumed by `E^(p-1)` with left-to-right

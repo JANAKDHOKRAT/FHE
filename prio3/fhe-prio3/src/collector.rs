@@ -6,7 +6,7 @@ use crate::config::{TaskConfig, VerificationMode};
 use crate::error::{Error, Result};
 use crate::layout::Layout;
 use crate::messages::{AggregateShare, PublicMaterial};
-use crate::types::BatchResult;
+use crate::types::{AggregateResult, BatchResult, RegressionResult};
 use openfhe_tbgv_rs::{Context, PartialDecryption};
 
 pub struct Collector {
@@ -79,6 +79,47 @@ impl Collector {
             }
         }
         self.cfg.measurement_type.check_aggregate_consistency(&slot_sums, valid)?;
-        Ok(BatchResult { aggregate: self.cfg.measurement_type.decode_aggregate(&slot_sums)?, report_count: count, valid_count: valid })
+        let aggregate = self.cfg.measurement_type.decode_aggregate(&slot_sums)?;
+        let regression = match self.layout.moments {
+            None => None,
+            Some((length, _)) => {
+                let pairs = self.layout.moment_pairs();
+                let mut second = vec![vec![0u128; length]; length];
+                let mut idx = 0;
+                for a in 0..length {
+                    for b in a..length {
+                        let partials: Vec<PartialDecryption> = shares
+                            .iter()
+                            .map(|s| {
+                                let bytes = s.moment_partials.get(idx).ok_or_else(|| Error::Protocol("missing moment partial".into()))?;
+                                PartialDecryption::deserialize(&self.ctx, bytes, s.aggregator == 0).map_err(Into::into)
+                            })
+                            .collect::<Result<_>>()?;
+                        let refs: Vec<&PartialDecryption> = partials.iter().collect();
+                        let v = self.ctx.fuse(&refs, 1)?[0] as u128;
+                        second[a][b] = v;
+                        second[b][a] = v;
+                        idx += 1;
+                    }
+                }
+                debug_assert_eq!(idx, pairs);
+                let first: Vec<u128> = match &aggregate {
+                    AggregateResult::SumVec(v) => v.clone(),
+                    _ => return Err(Error::Protocol("moments require a SumVec aggregate".into())),
+                };
+                // Each second moment is a sum of `valid` products each below 2^(2 bits);
+                // anything larger means a corrupted contribution.
+                let bits = match self.cfg.measurement_type {
+                    crate::types::MeasurementType::SumVec { bits, .. } => bits,
+                    _ => unreachable!(),
+                };
+                let cap = (valid as u128) * ((1u128 << (2 * bits)) - 1);
+                if second.iter().flatten().any(|&s| s > cap) {
+                    return Err(Error::Protocol("aggregate inconsistent: a second moment exceeds its bound".into()));
+                }
+                Some(RegressionResult::from_moments(valid, first, second))
+            }
+        };
+        Ok(BatchResult { aggregate, report_count: count, valid_count: valid, regression })
     }
 }

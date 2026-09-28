@@ -67,12 +67,17 @@ impl Drop for ContextInner {
         unsafe { ffi::tbgv_context_free(self.0) }
     }
 }
-// SAFETY: a context is a heap object that may be moved between threads.
-// It is deliberately not `Sync`: OpenFHE keeps evaluation keys and the
-// context cache in process-global tables without locking, so one process
-// must drive one context from one thread (OpenFHE parallelises internally
-// with OpenMP).
+// SAFETY: a context is a heap object that may be moved between threads
+// (`Send`). Sharing references (`Sync`) is sound for *evaluation*: OpenFHE's
+// evaluation, encryption and decryption entry points only read the context
+// and the installed keys, which is how OpenFHE's own examples run OpenMP
+// loops over ciphertexts. What must not run concurrently with anything else
+// is key installation (`install_*`, `merge_rotation_keys`,
+// `clear_rotation_keys`) and context creation, which mutate process-global
+// tables without locking. Callers serialise those (this crate's tests and
+// the aggregator node do).
 unsafe impl Send for ContextInner {}
+unsafe impl Sync for ContextInner {}
 
 /// BGV crypto context: parameters plus installed public evaluation keys.
 #[derive(Clone)]
@@ -203,6 +208,12 @@ impl Context {
     /// into slot `i` (a left shift). Requires a joint rotation key for `index`.
     pub fn rotate(&self, a: &Ciphertext, index: i32) -> Result<Ciphertext> {
         self.wrap_ct(unsafe { ffi::tbgv_eval_rotate(self.raw(), a.ptr, index) })
+    }
+
+    /// `a * a` with relinearisation. Same result as `mult(a, a)`, fewer
+    /// polynomial products.
+    pub fn square(&self, a: &Ciphertext) -> Result<Ciphertext> {
+        self.wrap_ct(unsafe { ffi::tbgv_eval_square(self.raw(), a.ptr) })
     }
 
     pub fn negate(&self, a: &Ciphertext) -> Result<Ciphertext> {
@@ -341,8 +352,10 @@ macro_rules! handle_type {
                 unsafe { ffi::$free(self.ptr) }
             }
         }
-        // SAFETY: heap objects owned exclusively by this handle.
+        // SAFETY: heap objects owned exclusively by this handle; OpenFHE
+        // objects are immutable once created except through `&mut` here.
         unsafe impl Send for $name {}
+        unsafe impl Sync for $name {}
     };
 }
 
@@ -502,6 +515,7 @@ pub struct PartialDecryption {
     lead: bool,
 }
 unsafe impl Send for PartialDecryption {}
+unsafe impl Sync for PartialDecryption {}
 
 impl PartialDecryption {
     pub fn is_lead(&self) -> bool {

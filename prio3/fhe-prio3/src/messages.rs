@@ -11,17 +11,22 @@ pub type ReportId = [u8; 32];
 pub struct Report {
     pub task_id: [u8; 32],
     pub report_id: ReportId,
+    /// Batched silent mode: the group the client was assigned before
+    /// encrypting; 0 otherwise. Bound by `report_id` and the signature.
+    pub group: u32,
     pub chunks: Vec<Vec<u8>>,
     /// Present when the task's `AuthPolicy` requires it.
     pub auth: Option<crate::auth::ReportAuth>,
 }
 
 impl Report {
-    /// Deterministic identifier binding the task and every ciphertext byte.
-    pub fn compute_id(task_id: &[u8; 32], chunks: &[Vec<u8>]) -> ReportId {
+    /// Deterministic identifier binding the task, the group and every
+    /// ciphertext byte.
+    pub fn compute_id(task_id: &[u8; 32], group: u32, chunks: &[Vec<u8>]) -> ReportId {
         let mut h = Sha256::new();
-        h.update(b"fhe-prio3/1 report");
+        h.update(b"fhe-prio3/2 report");
         h.update(task_id);
+        h.update(group.to_le_bytes());
         h.update((chunks.len() as u32).to_le_bytes());
         for c in chunks {
             h.update((c.len() as u64).to_le_bytes());
@@ -78,6 +83,8 @@ pub struct AggregateShare {
     /// Silent mode: partial decryption of the encrypted valid-report count,
     /// so the collector can verify it rather than trust it.
     pub valid_count_partial: Option<Vec<u8>>,
+    /// Post-validation moments: one partial decryption per (a <= b) pair.
+    pub moment_partials: Vec<Vec<u8>>,
 }
 
 /// Output of the key ceremony that every party may hold.

@@ -103,6 +103,8 @@ TbgvCiphertext tbgv_eval_sub_plain(TbgvContext ctx, TbgvCiphertext a, TbgvPlaint
 TbgvCiphertext tbgv_eval_mult_plain(TbgvContext ctx, TbgvCiphertext a, TbgvPlaintext b);
 TbgvCiphertext tbgv_eval_rotate(TbgvContext ctx, TbgvCiphertext a, int32_t index);
 TbgvCiphertext tbgv_eval_negate(TbgvContext ctx, TbgvCiphertext a);
+/* a*a with relinearisation; cheaper than tbgv_eval_mult(a, a). */
+TbgvCiphertext tbgv_eval_square(TbgvContext ctx, TbgvCiphertext a);
 
 /* TEST HOOK. Returns a copy of `ct` whose first component has p*N(X) added,
  * where N has uniformly random coefficients below 2^log2_magnitude. The

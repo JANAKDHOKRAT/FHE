@@ -363,6 +363,10 @@ TbgvCiphertext tbgv_eval_rotate(TbgvContext ctx, TbgvCiphertext a, int32_t index
     TBGV_TRY return new CT(cc_of(ctx)->EvalRotate(ct_of(a), index)); TBGV_CATCH(nullptr)
 }
 
+TbgvCiphertext tbgv_eval_square(TbgvContext ctx, TbgvCiphertext a) {
+    TBGV_TRY return new CT(cc_of(ctx)->EvalSquare(ct_of(a))); TBGV_CATCH(nullptr)
+}
+
 TbgvCiphertext tbgv_eval_negate(TbgvContext ctx, TbgvCiphertext a) {
     TBGV_TRY return new CT(cc_of(ctx)->EvalNegate(ct_of(a))); TBGV_CATCH(nullptr)
 }

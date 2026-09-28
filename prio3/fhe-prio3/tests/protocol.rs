@@ -205,7 +205,7 @@ fn structural_rejections_and_replay() {
     // Too many chunks trips the size cap before the chunk-count check ...
     let mut two_chunks = net.client.shard(&Measurement::Count(true)).unwrap();
     two_chunks.chunks.push(two_chunks.chunks[0].clone());
-    two_chunks.report_id = Report::compute_id(&two_chunks.task_id, &two_chunks.chunks);
+    two_chunks.report_id = Report::compute_id(&two_chunks.task_id, two_chunks.group, &two_chunks.chunks);
     match &net.run_report(&two_chunks)[0] {
         Verdict::Rejected(RejectReason::TooLarge { .. }) => {}
         v => panic!("expected TooLarge, got {v:?}"),
@@ -213,12 +213,12 @@ fn structural_rejections_and_replay() {
     // ... and too few chunks is a chunk-count rejection.
     let mut no_chunks = net.client.shard(&Measurement::Count(true)).unwrap();
     no_chunks.chunks.clear();
-    no_chunks.report_id = Report::compute_id(&no_chunks.task_id, &no_chunks.chunks);
+    no_chunks.report_id = Report::compute_id(&no_chunks.task_id, no_chunks.group, &no_chunks.chunks);
     net.expect_reject(&no_chunks, RejectReason::WrongChunkCount { expected: 1, got: 0 });
 
     let mut garbage = net.client.shard(&Measurement::Count(true)).unwrap();
     garbage.chunks[0].truncate(100);
-    garbage.report_id = Report::compute_id(&garbage.task_id, &garbage.chunks);
+    garbage.report_id = Report::compute_id(&garbage.task_id, garbage.group, &garbage.chunks);
     match &net.run_report(&garbage)[0] {
         Verdict::Rejected(RejectReason::MalformedCiphertext(_)) => {}
         v => panic!("expected MalformedCiphertext, got {v:?}"),
@@ -228,7 +228,7 @@ fn structural_rejections_and_replay() {
     let other = Net::new(cfg(12, MeasurementType::Count, 2));
     let mut foreign = other.client.shard(&Measurement::Count(true)).unwrap();
     foreign.task_id = net.cfg.task_id;
-    foreign.report_id = Report::compute_id(&foreign.task_id, &foreign.chunks);
+    foreign.report_id = Report::compute_id(&foreign.task_id, foreign.group, &foreign.chunks);
     match &net.run_report(&foreign)[0] {
         Verdict::Rejected(RejectReason::MalformedCiphertext(m)) => assert!(m.contains("joint key"), "{m}"),
         v => panic!("expected MalformedCiphertext, got {v:?}"),
@@ -273,10 +273,10 @@ fn challenge_is_bound_to_report_and_task() {
     c2.task_id[0] ^= 1;
     let f = Field::new(c1.plain_mod).unwrap();
     let layout = c1.layout(16384).unwrap();
-    let a = Challenge::derive(&c1, &f, &layout, &[1u8; 32]);
-    let b = Challenge::derive(&c1, &f, &layout, &[1u8; 32]);
-    let c = Challenge::derive(&c1, &f, &layout, &[2u8; 32]);
-    let d = Challenge::derive(&c2, &f, &layout, &[1u8; 32]);
+    let a = Challenge::derive(&c1, &f, &layout, &[1u8; 32], 0);
+    let b = Challenge::derive(&c1, &f, &layout, &[1u8; 32], 0);
+    let c = Challenge::derive(&c1, &f, &layout, &[2u8; 32], 0);
+    let d = Challenge::derive(&c2, &f, &layout, &[1u8; 32], 0);
     assert_eq!(a.bit_coeffs, b.bit_coeffs);
     assert_ne!(a.bit_coeffs, c.bit_coeffs);
     assert_ne!(a.bit_coeffs, d.bit_coeffs);

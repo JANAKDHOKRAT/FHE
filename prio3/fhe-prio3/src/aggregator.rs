@@ -42,12 +42,50 @@ pub enum Verdict {
     Rejected(RejectReason),
 }
 
+/// Everything an aggregator must persist to resume after a restart:
+/// serialized ciphertext accumulators and the bookkeeping. Verdict-mode
+/// reports that are mid-preparation are not included; they are re-run from
+/// the report by the coordinator.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct AggregatorState {
+    pub sums: Option<Vec<Vec<u8>>>,
+    pub valid_count_sum: Option<Vec<u8>>,
+    pub moment_sums: Option<Vec<Vec<u8>>>,
+    pub silent_terms: Option<Vec<u8>>,
+    /// Reports whose terms are in `silent_terms` but whose validity-masked
+    /// chunks have not been folded into the sums yet: (group, report id).
+    /// Their ciphertexts are recomputed from the stored reports on restore.
+    pub silent_pending: Vec<(usize, ReportId)>,
+    pub accepted_ids: Vec<ReportId>,
+    pub seen: Vec<ReportId>,
+    pub client_reports: Vec<([u8; 32], u32)>,
+    pub admitted: u64,
+    pub valid_count: Option<u64>,
+    pub closed: bool,
+}
+
 struct Pending {
     chunks: Vec<Ciphertext>,
     s: Ciphertext,
     masks: BTreeMap<usize, Ciphertext>,
     partials: BTreeMap<usize, PartialDecryption>,
     u: Option<Ciphertext>,
+}
+
+/// Silent mode: the reports whose check terms share the current
+/// verification ciphertext. Flushed when every group is used, when a group
+/// is reused, or at batch close.
+struct SilentBatch {
+    terms: Option<Ciphertext>,
+    /// (group, report id, per-chunk ciphertexts masked to that group's slots, level 1)
+    reports: Vec<(usize, ReportId, Vec<Ciphertext>)>,
+    used_groups: HashSet<usize>,
+}
+
+impl SilentBatch {
+    fn new() -> Self {
+        Self { terms: None, reports: Vec::new(), used_groups: HashSet::new() }
+    }
 }
 
 pub struct Aggregator {
@@ -72,8 +110,12 @@ pub struct Aggregator {
     pending: HashMap<ReportId, Pending>,
     accepted_ids: Vec<ReportId>,
     sums: Option<Vec<Ciphertext>>,
-    /// Silent mode: encrypted number of valid reports (every slot).
+    /// Silent mode: encrypted number of valid reports (slot 0).
     valid_count_sum: Option<Ciphertext>,
+    /// Post-validation moments: one accumulator per value pair (a <= b),
+    /// product at slot 0 of group 0.
+    moment_sums: Option<Vec<Ciphertext>>,
+    silent_batch: SilentBatch,
     /// Silent mode: decrypted valid count, once the count round has run.
     valid_count: Option<u64>,
     closed: bool,
@@ -136,10 +178,24 @@ impl Aggregator {
             accepted_ids: Vec::new(),
             sums: None,
             valid_count_sum: None,
+            moment_sums: None,
+            silent_batch: SilentBatch::new(),
             valid_count: None,
             closed: false,
             rng: OsRng,
         })
+    }
+
+    fn add_to_moments(&mut self, products: Vec<Ciphertext>) -> Result<()> {
+        match &mut self.moment_sums {
+            None => self.moment_sums = Some(products),
+            Some(acc) => {
+                for (a, p) in acc.iter_mut().zip(&products) {
+                    *a = self.ctx.add(a, p)?;
+                }
+            }
+        }
+        Ok(())
     }
 
     pub fn index(&self) -> usize {
@@ -213,8 +269,11 @@ impl Aggregator {
             // The attempt is charged now, whatever happens next.
             *used += 1;
         }
-        if Report::compute_id(&report.task_id, &report.chunks) != report.report_id {
+        if Report::compute_id(&report.task_id, report.group, &report.chunks) != report.report_id {
             return Err(RejectReason::ReportIdMismatch);
+        }
+        if report.group as usize >= self.layout.groups {
+            return Err(RejectReason::BadGroup);
         }
         if self.seen.contains(&report.report_id) {
             return Err(RejectReason::Replay);
@@ -253,7 +312,7 @@ impl Aggregator {
             return Err(Error::Protocol("prepare_init is only valid in verdict mode".into()));
         }
         let chunks = self.admit(report).map_err(Error::Reject)?;
-        let challenge = Challenge::derive(&self.cfg, &self.field, &self.layout, &report.report_id);
+        let challenge = Challenge::derive(&self.cfg, &self.field, &self.layout, &report.report_id, 0);
         let s = self.circuit.check_sum(&chunks, &challenge)?;
         let mask = self.circuit.make_mask(&self.pk, &self.field, &mut self.rng)?;
         let mask_bytes = mask.serialize()?;
@@ -331,33 +390,164 @@ impl Aggregator {
         if !self.circuit.verdict(&fused) {
             return Ok(Verdict::Rejected(RejectReason::ValidityCheckFailed));
         }
+        if self.layout.moments.is_some() {
+            let products = self.circuit.moment_products(&pending.chunks[0], 0)?;
+            self.add_to_moments(products)?;
+        }
         self.add_to_sums(pending.chunks)?;
         self.accepted_ids.push(*report_id);
         Ok(Verdict::Accepted)
     }
 
-    /// Silent mode. Admits the report, computes `valid` homomorphically and
-    /// adds `x * valid` to the sums. Nothing is decrypted and no message is
-    /// exchanged; an invalid report contributes exactly zero. Returns the
+    /// Silent mode. Admits the report and adds its check terms to the current
+    /// verification ciphertext. Nothing is decrypted and no message is
+    /// exchanged. When every group of the layout is in use (or the report's
+    /// group is already taken) the shared chain runs first. Returns the
     /// structural rejection reason if the report was not admitted.
     pub fn process_silent(&mut self, report: &Report) -> Result<()> {
         if self.cfg.mode != VerificationMode::Silent {
             return Err(Error::Protocol("process_silent is only valid in silent mode".into()));
         }
         let chunks = self.admit(report).map_err(Error::Reject)?;
-        let challenge = Challenge::derive(&self.cfg, &self.field, &self.layout, &report.report_id);
-        let s = self.circuit.check_sum(&chunks, &challenge)?;
-        let valid = self.circuit.silent_validity(&s)?;
-        let mut masked = Vec::with_capacity(chunks.len());
-        for ct in &chunks {
-            masked.push(self.ctx.mult(ct, &valid)?);
+        let group = report.group as usize;
+        if self.silent_batch.used_groups.contains(&group) {
+            self.flush_silent_batch()?;
         }
-        self.add_to_sums(masked)?;
-        self.valid_count_sum = Some(match self.valid_count_sum.take() {
-            None => valid,
-            Some(acc) => self.ctx.add(&acc, &valid)?,
+        let challenge = Challenge::derive(&self.cfg, &self.field, &self.layout, &report.report_id, group);
+        let terms = self.circuit.report_terms(&chunks, &challenge)?;
+        self.silent_batch.terms = Some(match self.silent_batch.terms.take() {
+            None => terms,
+            Some(t) => self.ctx.add(&t, &terms)?,
         });
+        let mut masked = Vec::with_capacity(chunks.len());
+        for (c, ct) in chunks.iter().enumerate() {
+            masked.push(self.circuit.mask_to_group(ct, c, group)?);
+        }
+        self.silent_batch.reports.push((group, report.report_id, masked));
+        self.silent_batch.used_groups.insert(group);
         self.accepted_ids.push(report.report_id);
+        if self.silent_batch.used_groups.len() == self.layout.groups {
+            self.flush_silent_batch()?;
+        }
+        Ok(())
+    }
+
+    /// Runs the shared chain for the current verification ciphertext and
+    /// folds every report's validity-masked chunks and count into the sums.
+    fn flush_silent_batch(&mut self) -> Result<()> {
+        let batch = std::mem::replace(&mut self.silent_batch, SilentBatch::new());
+        let Some(terms) = batch.terms else { return Ok(()) };
+        let s = self.circuit.class_sums(&terms)?;
+        let g = self.circuit.silent_validity(&s)?;
+        for (group, _id, masked) in batch.reports {
+            let mut y = Vec::with_capacity(masked.len());
+            for ct in &masked {
+                let prod = self.ctx.mult(ct, &g)?;
+                y.push(self.circuit.fold_to_group0(&prod, group)?);
+            }
+            if self.layout.moments.is_some() {
+                // Products are non-zero only at the group's element-0 slot,
+                // where G holds this report's validity bit.
+                let mut folded = Vec::with_capacity(self.layout.moment_pairs());
+                for p in self.circuit.moment_products(&masked[0], group)? {
+                    let gated = self.ctx.mult(&p, &g)?;
+                    folded.push(self.circuit.fold_to_group0(&gated, group)?);
+                }
+                self.add_to_moments(folded)?;
+            }
+            self.add_to_sums(y)?;
+            let cnt = self.circuit.fold_to_group0(&self.circuit.count_of_group(&g, group)?, group)?;
+            self.valid_count_sum = Some(match self.valid_count_sum.take() {
+                None => cnt,
+                Some(acc) => self.ctx.add(&acc, &cnt)?,
+            });
+        }
+        Ok(())
+    }
+
+    /// Number of reports admitted into the current, not yet flushed,
+    /// verification ciphertext.
+    pub fn pending_silent_reports(&self) -> usize {
+        self.silent_batch.reports.len()
+    }
+
+    /// Serializes the resumable state (see [`AggregatorState`]).
+    pub fn snapshot(&self) -> Result<AggregatorState> {
+        let ser = |v: &Vec<Ciphertext>| -> Result<Vec<Vec<u8>>> { v.iter().map(|c| c.serialize().map_err(Into::into)).collect() };
+        Ok(AggregatorState {
+            sums: match &self.sums {
+                Some(v) => Some(ser(v)?),
+                None => None,
+            },
+            valid_count_sum: match &self.valid_count_sum {
+                Some(c) => Some(c.serialize()?),
+                None => None,
+            },
+            moment_sums: match &self.moment_sums {
+                Some(v) => Some(ser(v)?),
+                None => None,
+            },
+            silent_terms: match &self.silent_batch.terms {
+                Some(c) => Some(c.serialize()?),
+                None => None,
+            },
+            silent_pending: self.silent_batch.reports.iter().map(|(g, id, _)| (*g, *id)).collect(),
+            accepted_ids: self.accepted_ids.clone(),
+            seen: self.seen.iter().copied().collect(),
+            client_reports: self.client_reports.iter().map(|(k, n)| (*k, *n)).collect(),
+            admitted: self.admitted,
+            valid_count: self.valid_count,
+            closed: self.closed,
+        })
+    }
+
+    /// Restores a state produced by [`Aggregator::snapshot`] on a freshly
+    /// constructed aggregator with the same task, keys and index.
+    /// `pending_reports` must contain every report listed in
+    /// `st.silent_pending`; their validity-masked chunks are recomputed.
+    pub fn restore(&mut self, st: AggregatorState, pending_reports: &[Report]) -> Result<()> {
+        let de = |v: &Vec<Vec<u8>>| -> Result<Vec<Ciphertext>> { v.iter().map(|b| self.ctx.deserialize_ciphertext(b).map_err(Into::into)).collect() };
+        self.sums = match &st.sums {
+            Some(v) => Some(de(v)?),
+            None => None,
+        };
+        self.valid_count_sum = match &st.valid_count_sum {
+            Some(b) => Some(self.ctx.deserialize_ciphertext(b)?),
+            None => None,
+        };
+        self.moment_sums = match &st.moment_sums {
+            Some(v) => Some(de(v)?),
+            None => None,
+        };
+        let mut batch = SilentBatch::new();
+        batch.terms = match &st.silent_terms {
+            Some(b) => Some(self.ctx.deserialize_ciphertext(b)?),
+            None => None,
+        };
+        for (g, id) in &st.silent_pending {
+            let report = pending_reports
+                .iter()
+                .find(|r| r.report_id == *id)
+                .ok_or_else(|| Error::Protocol(format!("restore: pending report {} not supplied", hex::encode(id))))?;
+            if report.group as usize != *g {
+                return Err(Error::Protocol("restore: pending report group mismatch".into()));
+            }
+            let mut masked = Vec::with_capacity(report.chunks.len());
+            for (c, bytes) in report.chunks.iter().enumerate() {
+                let ct = self.ctx.deserialize_ciphertext(bytes)?;
+                masked.push(self.circuit.mask_to_group(&ct, c, *g)?);
+            }
+            batch.reports.push((*g, *id, masked));
+            batch.used_groups.insert(*g);
+        }
+        self.silent_batch = batch;
+        self.accepted_ids = st.accepted_ids;
+        self.seen = st.seen.into_iter().collect();
+        self.client_reports = st.client_reports.into_iter().collect();
+        self.admitted = st.admitted;
+        self.valid_count = st.valid_count;
+        self.closed = st.closed;
+        self.pending.clear();
         Ok(())
     }
 
@@ -372,6 +562,7 @@ impl Aggregator {
         if count < self.cfg.min_batch_size {
             return Err(Error::Protocol(format!("batch has {count} admitted reports, minimum is {}", self.cfg.min_batch_size)));
         }
+        self.flush_silent_batch()?;
         self.closed = true;
         let ct = self.valid_count_sum.as_ref().expect("count >= 1");
         Ok(CountShare {
@@ -436,6 +627,13 @@ impl Aggregator {
             Some(ct) => Some(self.share.partial_decrypt(ct, self.index == 0)?.serialize()?),
             None => None,
         };
+        let mut moment_partials = Vec::new();
+        if self.layout.moments.is_some() {
+            let sums = self.moment_sums.as_ref().ok_or_else(|| Error::Protocol("moments enabled but no products accumulated".into()))?;
+            for m in sums {
+                moment_partials.push(self.share.partial_decrypt(m, self.index == 0)?.serialize()?);
+            }
+        }
         Ok(AggregateShare {
             task_id: self.cfg.task_id,
             aggregator: self.index,
@@ -443,6 +641,7 @@ impl Aggregator {
             report_count: count as u64,
             partials,
             valid_count_partial,
+            moment_partials,
         })
     }
 }

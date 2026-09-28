@@ -50,7 +50,7 @@ pub enum AggregateResult {
 }
 
 /// What the collector returns for a batch.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BatchResult {
     pub aggregate: AggregateResult,
     /// Reports that entered the sums (verdict mode: accepted reports;
@@ -60,6 +60,89 @@ pub struct BatchResult {
     /// `report_count` in verdict mode; decrypted from the encrypted counter
     /// in silent mode.
     pub valid_count: u64,
+    /// Present when the task accumulates second moments.
+    pub regression: Option<RegressionResult>,
+}
+
+/// Ordinary least squares from encrypted first and second moments. Values
+/// `0..length-1` are the features, value `length-1` is the target, and an
+/// intercept is included through the valid-report count.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RegressionResult {
+    pub n: u64,
+    /// `sum v_a` for every value.
+    pub first: Vec<u128>,
+    /// `sum v_a v_b`, symmetric, length x length.
+    pub second: Vec<Vec<u128>>,
+    /// `[intercept, beta_1, ..., beta_{length-1}]`, or empty if the normal
+    /// equations are singular.
+    pub beta: Vec<f64>,
+}
+
+impl RegressionResult {
+    /// Assembles the normal equations with intercept and solves them.
+    pub fn from_moments(n: u64, first: Vec<u128>, second: Vec<Vec<u128>>) -> Self {
+        let length = first.len();
+        let d = length - 1; // features
+        // A is (d+1)x(d+1): [[n, sum x_j], [sum x_i, sum x_i x_j]]; b = [sum y, sum x_i y]
+        let mut a = vec![vec![0f64; d + 1]; d + 1];
+        let mut b = vec![0f64; d + 1];
+        a[0][0] = n as f64;
+        b[0] = first[d] as f64;
+        for i in 0..d {
+            a[0][i + 1] = first[i] as f64;
+            a[i + 1][0] = first[i] as f64;
+            b[i + 1] = second[i][d] as f64;
+            for j in 0..d {
+                a[i + 1][j + 1] = second[i][j] as f64;
+            }
+        }
+        let beta = solve_linear(a, b).unwrap_or_default();
+        Self { n, first, second, beta }
+    }
+}
+
+/// Gaussian elimination with partial pivoting; `None` if singular.
+pub fn solve_linear(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Option<Vec<f64>> {
+    let n = b.len();
+    for col in 0..n {
+        let piv = (col..n).max_by(|&i, &j| a[i][col].abs().partial_cmp(&a[j][col].abs()).unwrap())?;
+        if a[piv][col].abs() < 1e-12 {
+            return None;
+        }
+        a.swap(col, piv);
+        b.swap(col, piv);
+        for r in col + 1..n {
+            let f = a[r][col] / a[col][col];
+            for c in col..n {
+                a[r][c] -= f * a[col][c];
+            }
+            b[r] -= f * b[col];
+        }
+    }
+    let mut x = vec![0f64; n];
+    for i in (0..n).rev() {
+        let s: f64 = (i + 1..n).map(|j| a[i][j] * x[j]).sum();
+        x[i] = (b[i] - s) / a[i][i];
+    }
+    Some(x)
+}
+
+/// Plaintext reference for the regression pilot.
+pub fn regression_plain(values: &[Vec<u64>]) -> RegressionResult {
+    let length = values[0].len();
+    let n = values.len() as u64;
+    let mut first = vec![0u128; length];
+    let mut second = vec![vec![0u128; length]; length];
+    for v in values {
+        for a in 0..length {
+            first[a] += v[a] as u128;
+            for b in 0..length {
+                second[a][b] += v[a] as u128 * v[b] as u128;
+            }
+        }
+    }
+    RegressionResult::from_moments(n, first, second)
 }
 
 /// `sum_i coeffs[i].1 * x[coeffs[i].0] + constant == 0` in F_p.
@@ -382,6 +465,23 @@ mod tests {
         let h = MeasurementType::Histogram { length: 3 };
         assert!(h.check_aggregate_consistency(&[1, 0, 2], 3).is_ok());
         assert!(h.check_aggregate_consistency(&[1, 0, 1], 3).is_err());
+    }
+
+    #[test]
+    fn regression_from_moments_matches_closed_form() {
+        // y = 2 + 3*x exactly
+        let rows: Vec<Vec<u64>> = (0..6).map(|x| vec![x, 2 + 3 * x]).collect();
+        let r = regression_plain(&rows);
+        assert_eq!(r.n, 6);
+        assert!((r.beta[0] - 2.0).abs() < 1e-9 && (r.beta[1] - 3.0).abs() < 1e-9, "{:?}", r.beta);
+        // two features
+        let rows: Vec<Vec<u64>> = vec![vec![1, 2, 8], vec![2, 1, 7], vec![3, 5, 19], vec![4, 1, 11], vec![0, 3, 8]];
+        // y = 1 + 2 x1 + 2 x2 + noise-free? check: 1+2+4=7 vs 8 -> not exact; just check consistency
+        let r = regression_plain(&rows);
+        assert_eq!(r.first, vec![10, 12, 53]);
+        assert_eq!(r.second[0][2], 1 * 8 + 2 * 7 + 3 * 19 + 4 * 11 + 0);
+        assert_eq!(r.beta.len(), 3);
+        assert!(solve_linear(vec![vec![1.0, 2.0], vec![2.0, 4.0]], vec![1.0, 2.0]).is_none());
     }
 
     #[test]

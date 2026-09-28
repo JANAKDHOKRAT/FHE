@@ -41,10 +41,14 @@ pub struct Challenge {
     pub lin_coeffs: Vec<Vec<Vec<u64>>>,
     /// Constant term of each repetition.
     pub constants: Vec<u64>,
+    pub group: usize,
 }
 
 impl Challenge {
-    pub fn derive(cfg: &TaskConfig, field: &Field, layout: &Layout, report_id: &ReportId) -> Self {
+    /// `group` is the report's group in a batched layout (0 otherwise). The
+    /// coefficients are placed at that group's slots only, so a client that
+    /// packs values anywhere else has them ignored.
+    pub fn derive(cfg: &TaskConfig, field: &Field, layout: &Layout, report_id: &ReportId, group: usize) -> Self {
         let m = layout.input_len;
         let k = layout.repetitions;
         let constraints = cfg.measurement_type.linear_constraints(field);
@@ -77,8 +81,9 @@ impl Challenge {
                 let mut bc = vec![0u64; layout.row];
                 let mut lc = vec![0u64; layout.row];
                 for (local, global) in range.clone().enumerate() {
-                    bc[layout.client_slot(local)] = r[j][global];
-                    lc[layout.client_slot(local)] = lin[j][global];
+                    let slot = layout.group_slot(group, local);
+                    bc[slot] = r[j][global];
+                    lc[slot] = lin[j][global];
                 }
                 bc_j.push(bc);
                 lc_j.push(lc);
@@ -86,17 +91,17 @@ impl Challenge {
             bit_coeffs.push(bc_j);
             lin_coeffs.push(lc_j);
         }
-        Self { bit_coeffs, lin_coeffs, constants }
+        Self { bit_coeffs, lin_coeffs, constants, group }
     }
 
     /// Constant vector: repetition `j`'s constant at its position 0 (blocked:
-    /// slot `j*block`; interleaved: slot `j`).
+    /// slot `j*block`; interleaved/batched: slot `j + classes*group`).
     fn constant_vector(&self, layout: &Layout) -> Vec<u64> {
         let mut v = vec![0u64; layout.row];
         for (j, &c) in self.constants.iter().enumerate() {
             let slot = match layout.kind {
                 LayoutKind::Blocked => layout.result_slot(j),
-                LayoutKind::Interleaved => j,
+                LayoutKind::Interleaved | LayoutKind::Batched => j + layout.classes * self.group,
             };
             v[slot] = c;
         }
@@ -125,15 +130,16 @@ impl Circuit {
                 }
                 Some(ctx.plaintext(&sel)?)
             }
-            LayoutKind::Interleaved => None,
+            LayoutKind::Interleaved | LayoutKind::Batched => None,
         };
         Ok(Self { ctx: ctx.clone(), layout: layout.clone(), plain_mod: ctx.plain_mod(), ones, selector })
     }
 
-    /// Computes `S`. Depth 2.
-    /// Blocked: slot `result_slot(j)` holds `E_j`, other slots hold partial
-    /// sums (never decrypted). Interleaved: every slot of class `j` holds `E_j`.
-    pub fn check_sum(&self, chunks: &[Ciphertext], ch: &Challenge) -> Result<Ciphertext> {
+    /// One report's contribution `T`: coefficient-multiplied bit and linear
+    /// terms of every chunk, each repetition rotated onto its class (or block),
+    /// plus the constants. Depth 2. Coefficients are applied before any
+    /// rotation, so slots outside the report's encoded positions never enter.
+    pub fn report_terms(&self, chunks: &[Ciphertext], ch: &Challenge) -> Result<Ciphertext> {
         let ctx = &self.ctx;
         let l = &self.layout;
         let mut total: Option<Ciphertext> = None;
@@ -141,7 +147,6 @@ impl Circuit {
             let x_minus_one = ctx.sub_plain(ct, &self.ones)?;
             let e = ctx.mult(ct, &x_minus_one)?;
             for j in 0..l.repetitions {
-                // Coefficients first (they vanish outside the encoded slots), rotation second.
                 let bit_term = ctx.mult_plain(&e, &ctx.plaintext(&ch.bit_coeffs[c][j])?)?;
                 let lin_term = ctx.mult_plain(ct, &ctx.plaintext(&ch.lin_coeffs[c][j])?)?;
                 let mut term = ctx.add(&bit_term, &lin_term)?;
@@ -155,11 +160,62 @@ impl Circuit {
             }
         }
         let t = total.expect("at least one chunk and one repetition");
-        let mut s = ctx.add_plain(&t, &ctx.plaintext(&ch.constant_vector(l))?)?;
-        for d in l.sum_rotations() {
-            s = ctx.add(&s, &ctx.rotate(&s, d)?)?;
+        Ok(ctx.add_plain(&t, &ctx.plaintext(&ch.constant_vector(l))?)?)
+    }
+
+    /// Sums every repetition's terms into its result position(s): `S`.
+    /// Blocked: slot `result_slot(j)`; interleaved/batched: every slot of
+    /// the class. Rotations only, no level.
+    pub fn class_sums(&self, t: &Ciphertext) -> Result<Ciphertext> {
+        let mut s = t.try_clone()?;
+        for d in self.layout.sum_rotations() {
+            s = self.ctx.add(&s, &self.ctx.rotate(&s, d)?)?;
         }
         Ok(s)
+    }
+
+    /// `S` for a single report (verdict mode and unbatched silent mode).
+    pub fn check_sum(&self, chunks: &[Ciphertext], ch: &Challenge) -> Result<Ciphertext> {
+        let t = self.report_terms(chunks, ch)?;
+        self.class_sums(&t)
+    }
+
+    /// Batched silent mode: restricts a chunk ciphertext to its own group's
+    /// element slots. Everything a client put elsewhere is zeroed, so it can
+    /// neither enter another group's sum nor be multiplied by another
+    /// report's validity bit. One plaintext multiplication (level 1).
+    pub fn mask_to_group(&self, ct: &Ciphertext, chunk: usize, group: usize) -> Result<Ciphertext> {
+        let l = &self.layout;
+        let mut ind = vec![0u64; l.row];
+        for i in 0..l.chunk_len(chunk) {
+            ind[l.group_slot(group, i)] = 1;
+        }
+        Ok(self.ctx.mult_plain(ct, &self.ctx.plaintext(&ind)?)?)
+    }
+
+    /// Batched silent mode: a ciphertext with `valid_group` at slot
+    /// `group_slot(group, 0)` and zero elsewhere, from `G`. One plaintext
+    /// multiplication at the last level (4 limbs).
+    pub fn count_of_group(&self, g: &Ciphertext, group: usize) -> Result<Ciphertext> {
+        let l = &self.layout;
+        let mut ind = vec![0u64; l.row];
+        ind[l.group_slot(group, 0)] = 1;
+        Ok(self.ctx.mult_plain(g, &self.ctx.plaintext(&ind)?)?)
+    }
+
+    /// Batched silent mode: moves group `group`'s slots onto group 0's by
+    /// composing the power-of-two fold rotations. Cheap at the last level.
+    pub fn fold_to_group0(&self, ct: &Ciphertext, group: usize) -> Result<Ciphertext> {
+        let l = &self.layout;
+        let mut out = ct.try_clone()?;
+        let mut bit = 0;
+        while (1usize << bit) < l.groups {
+            if (group >> bit) & 1 == 1 {
+                out = self.ctx.rotate(&out, (l.classes << bit) as i32)?;
+            }
+            bit += 1;
+        }
+        Ok(out)
     }
 
     /// Verdict mode. Fresh encrypted mask: uniform field elements at the
@@ -189,13 +245,53 @@ impl Circuit {
         (0..self.layout.repetitions).all(|j| fused.get(self.layout.result_slot(j)) == Some(&0))
     }
 
+    /// Post-validation second moments for one report in `group`: for every
+    /// value pair `a <= b` a ciphertext holding `v_a * v_b` at the group's
+    /// element-0 slot and zero elsewhere. Depth 3: weighted bits (1),
+    /// alignment mask (2), product (3). Values are recomposed from the bits
+    /// with plaintext weights `2^t`, so nothing the client wrote outside its
+    /// bit slots enters.
+    pub fn moment_products(&self, ct: &Ciphertext, group: usize) -> Result<Vec<Ciphertext>> {
+        let l = &self.layout;
+        let (length, bits) = l.moments.expect("moments enabled");
+        let stride = l.element_stride();
+        let ctx = &self.ctx;
+        let mut w = vec![0u64; l.row];
+        for a in 0..length {
+            for t in 0..bits as usize {
+                w[l.group_slot(group, a * bits as usize + t)] = 1u64 << t;
+            }
+        }
+        let mut z = ctx.mult_plain(ct, &ctx.plaintext(&w)?)?;
+        let mut d = 1usize;
+        while d < bits as usize {
+            z = ctx.add(&z, &ctx.rotate(&z, (stride * d) as i32)?)?;
+            d *= 2;
+        }
+        let mut ind0 = vec![0u64; l.row];
+        ind0[l.group_slot(group, 0)] = 1;
+        let ind0 = ctx.plaintext(&ind0)?;
+        let mut values = Vec::with_capacity(length);
+        for a in 0..length {
+            let aligned = if a == 0 { z.try_clone()? } else { ctx.rotate(&z, (a * bits as usize * stride) as i32)? };
+            values.push(ctx.mult_plain(&aligned, &ind0)?);
+        }
+        let mut out = Vec::with_capacity(l.moment_pairs());
+        for a in 0..length {
+            for b in a..length {
+                out.push(if a == b { ctx.square(&values[a])? } else { ctx.mult(&values[a], &values[b])? });
+            }
+        }
+        Ok(out)
+    }
+
     /// `x^(p-1)` slot-wise by left-to-right square-and-multiply.
     fn fermat(&self, x: &Ciphertext) -> Result<Ciphertext> {
         let e = self.plain_mod - 1;
         let bits = 64 - e.leading_zeros();
         let mut acc = x.try_clone()?;
         for b in (0..bits - 1).rev() {
-            acc = self.ctx.mult(&acc, &acc)?;
+            acc = self.ctx.square(&acc)?;
             if (e >> b) & 1 == 1 {
                 acc = self.ctx.mult(&acc, x)?;
             }
@@ -203,11 +299,13 @@ impl Circuit {
         Ok(acc)
     }
 
-    /// Silent mode. From `S` (interleaved layout) computes a ciphertext with
-    /// `valid = prod_j (1 - E_j^(p-1))` in **every** slot. Depth
-    /// `fermat + log2(classes)` on top of `S`.
+    /// Silent mode. From `S` computes `G`: for the interleaved layout every
+    /// slot holds `valid`; for the batched layout every class-0 slot of
+    /// group `r` holds `valid_r` (other slots of the group hold products that
+    /// straddle groups and are never used). Depth `fermat + log2(classes)`
+    /// on top of `S`.
     pub fn silent_validity(&self, s: &Ciphertext) -> Result<Ciphertext> {
-        debug_assert_eq!(self.layout.kind, LayoutKind::Interleaved);
+        debug_assert_ne!(self.layout.kind, LayoutKind::Blocked);
         let ctx = &self.ctx;
         let f = self.fermat(s)?; // slot in class j: [E_j != 0]
         let mut g = ctx.negate(&ctx.sub_plain(&f, &self.ones)?)?; // 1 - f

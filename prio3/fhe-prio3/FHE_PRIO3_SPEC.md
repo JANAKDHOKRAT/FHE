@@ -367,7 +367,7 @@ depend on honest inputs) are never decrypted.
    Sybil-resistance hook; it is only as good as the enrolment process.
 5. **Denial of service.** Unauthenticated or over-quota traffic is refused
    before deserialization. An admitted report still costs about 0.5 s of
-   CPU in verdict mode and about 25 s in silent mode; the quota is the
+   CPU in verdict mode and about 16 s in silent mode; the quota is the
    rate limit per identity, and transport-level limits remain the
    deployment's job.
 
@@ -393,6 +393,29 @@ share 1.75 MiB per chunk, public key 5.5 MiB, relinearisation key 11 MiB,
 rotation keys 11 MiB per index. Ceremony 1.7–4.8 s. Batch close:
 25 ms per aggregator plus 50 ms at the collector per chunk. With `k = 2`
 (soundness `2^-62`) the aggregator cost for Sum(100) drops to 487 ms.
+With `AuthPolicy::Required` (Count, 3 reports) the aggregator cost is
+563 ms per report: signature verification is not measurable next to the
+homomorphic work.
+
+**Silent mode** (`p = 786433`, `k = 4`, depth 25, ring dimension 65536,
+2 aggregators, `simulate --mode silent`):
+
+| Type | client shard | aggregator `process_silent` | report size | ceremony | key material per aggregator |
+| --- | --- | --- | --- | --- | --- |
+| Count | 471 ms | **16.2 s** per report | 29 MiB | 72 s | 2.1 GiB (18 rotation keys of 111 MiB, relin key 111 MiB) |
+| Sum(100) | 480 ms | **16.8 s** per report | 29 MiB | 70 s | 2.1 GiB |
+
+Batch close: 330 ms per aggregator for the count and sum partials
+(4.5 MiB each), 400 ms at the collector. Aggregator start-up (installing
+the keys) 13 s. The simulator process, which runs the ceremony and both
+aggregators, peaked at 9.6 GiB resident; an aggregator on its own holds the
+2.1 GiB of keys plus a few 29 MiB ciphertexts. The test suite with three
+aggregators in one process peaked at 11.5 GiB. Silent mode is therefore
+about 30 times the CPU and 8 times the bandwidth of verdict mode per
+report, with no inter-aggregator traffic per report at all, and it still
+beats the thesis prototype's 11 s per report only by one constant factor
+less; the difference is that it is sound and that it leaks nothing per
+report.
 
 For comparison, the thesis prototype `fhe-vdaf-2` (depth 24, Fermat test,
 `N = 32768`) logs about 11 s per report per aggregator, and Prio3 prepares a
@@ -417,6 +440,13 @@ encrypted inputs, which Prio3's linear aggregation cannot do.
 * **Freshness check** compares an incoming ciphertext with a reference
   encryption made by the aggregator itself (OpenFHE's `FLEXIBLEAUTOEXT`
   fresh ciphertexts have noise degree 2, which a hand-written check missed).
+* **Memory.** Rotation keys dominate: 11 MiB each in verdict mode, 111 MiB
+  each in silent mode (18 of them). The ceremony therefore runs one
+  rotation index at a time and `PublicMaterial` stores one serialized map
+  per index, so a party never holds two copies of the whole set; a first
+  version that did held over 12 GiB and was killed. OpenFHE selected ring
+  dimension 131072 for the depth-26 variant, which doubles every size and
+  time above; that is why four repetitions (depth 25) is the default.
 * **OpenFHE global state.** OpenFHE stores evaluation keys in process-global
   tables keyed by key tag and caches contexts by parameters. One process
   should drive one context from one thread; parallelism comes from OpenMP

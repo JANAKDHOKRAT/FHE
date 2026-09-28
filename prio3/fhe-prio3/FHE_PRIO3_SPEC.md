@@ -584,6 +584,50 @@ release therefore reveals no more than the union of the shard releases.
 This is a weaker property than a single batch of the same total size, and
 the deployer chooses `min_batch_size` per shard accordingly.
 
+Security review of the sharding additions. Each change was checked
+against sections 4.1 and 4.2 for what an adversary gains.
+
+* *Robustness (4.1)*: unchanged. Every report is bound to its shard's
+  task id and encrypted under that shard's key; the challenge, signature,
+  replay set, quota and batch digest are all per shard. An adversary who
+  could make an invalid report count in a shard could do so in a single
+  set; the combined result is the sum of independently robust results.
+* *Privacy (4.2)*: one weakening was introduced by the first version and
+  is closed. The sharded client obtained the joint public key from the
+  router, so a compromised router could have substituted its own key and
+  decrypted that client's report; the file-based clients never had this
+  exposure because the material reaches them out of band. Material is now
+  attested by every aggregator (`attest.rs`: Ed25519 over the task digest,
+  context, joint public key, joint tag and rotation indices), clients pin
+  the aggregators' identity keys, and a sharded client refuses unattested
+  material. Substituting a key or a task now needs every aggregator's
+  signature, which is the collusion the scheme does not defend against in
+  any case. Checked in the unit test (missing, duplicated, rogue-key,
+  swapped-key, swapped-context, swapped-tag, other-task, stripped-keys
+  cases) and in the process-level test (a client pinning a different key
+  refuses what the router serves; shard 0's attestations do not validate
+  shard 1's material).
+* *What the router can still do*: steer a client to a shard of its choice,
+  refuse service, and close shards early with the operator token. Steering
+  does not lower the per-shard `min_batch_size` guarantee. It does let an
+  adversary who also controls clients choose *which* batch a target lands
+  in, which in a single set costs the same `min_batch_size − 1` reports;
+  the batch-size argument of 4.2 is unchanged, and sharding does not
+  strengthen it either.
+* *What is revealed*: `S` shard aggregates instead of one, each over at
+  least `min_batch_size` valid reports (the router and each shard's
+  collector see them). Deployers who need only the total set
+  `min_batch_size` per shard with this in mind.
+* *Release-once and key leases*: both strengthen or are neutral. Release-
+  once bounds the noisy partial decryptions per ciphertext to one (the
+  node commits the released share before returning it, so a crash cannot
+  produce a second one). Key leases change only when process-global keys
+  are dropped; a lease count reaches zero only when no aggregator exists,
+  so no evaluation can be running under a cleared tag.
+* *New public data*: `/v1/status` now carries the task id, which every
+  report and the router already expose. `/v1/assign` and the shard
+  material are unauthenticated, as the material is public by design.
+
 Evaluation-key lifetime (found while testing this). OpenFHE keeps
 installed evaluation keys in process-global tables keyed by the joint tag;
 they belong to no context and survive every `Context` drop. A process that

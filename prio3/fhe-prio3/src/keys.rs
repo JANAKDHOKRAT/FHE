@@ -172,6 +172,7 @@ pub fn run_local_ceremony(cfg: &TaskConfig) -> Result<(PublicMaterial, Vec<Vec<u
         eval_mult_key,
         rotation_keys,
         rotation_indices: indices,
+        attestations: Vec::new(),
     };
     let share_bytes = shares.iter().map(|s| s.serialize().map_err(Into::into)).collect::<Result<Vec<_>>>()?;
     Ok((material, share_bytes))

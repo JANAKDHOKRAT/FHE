@@ -9,6 +9,7 @@
 use clap::{Parser, Subcommand};
 use fhe_prio3::messages::{decode, encode};
 use fhe_prio3::*;
+use fhe_prio3::attest;
 use fhe_prio3_node::aggregator_node::{AggregatorNode, AggregatorNodeConfig};
 use fhe_prio3_node::client::NetworkClient;
 use fhe_prio3_node::collector_node::{CollectorNode, CollectorNodeConfig};
@@ -32,6 +33,11 @@ enum Cmd {
         task: PathBuf,
         #[arg(long)]
         out_dir: PathBuf,
+        /// Directory of the aggregators' sealed long-term identities
+        /// (`aggregator-<i>.identity.sealed`); created there when absent.
+        /// Default: `<out_dir>/identities`.
+        #[arg(long)]
+        identities_dir: Option<PathBuf>,
     },
     /// Write a task configuration file.
     TaskConfig {
@@ -115,6 +121,10 @@ enum Cmd {
         /// Client signing key file (32 bytes hex) when the task requires authentication.
         #[arg(long)]
         identity: Option<PathBuf>,
+        /// Aggregator identity keys (`aggregator-keys.txt` from keygen): when
+        /// given, the material must be attested by every aggregator.
+        #[arg(long)]
+        aggregator_keys: Option<PathBuf>,
     },
     /// Close the batch (leader) and print the collector's result.
     Close {
@@ -139,6 +149,9 @@ enum Cmd {
         shards: usize,
         #[arg(long)]
         out_dir: PathBuf,
+        /// See `keygen`. The same identities sign every shard's material.
+        #[arg(long)]
+        identities_dir: Option<PathBuf>,
     },
     /// Router for a sharded deployment.
     Router {
@@ -169,6 +182,10 @@ enum Cmd {
         value: String,
         #[arg(long)]
         identity: Option<PathBuf>,
+        /// Aggregator identity keys (`aggregator-keys.txt` from keygen-shards), required:
+        /// material served by the router is trusted only with their attestations.
+        #[arg(long)]
+        aggregator_keys: PathBuf,
     },
     /// Close every shard through the router and print the combined result.
     CloseAll {
@@ -191,6 +208,40 @@ fn parse_type(s: &str) -> anyhow::Result<MeasurementType> {
         ["multihot", l, w] => MeasurementType::MultihotCountVec { length: l.parse()?, max_weight: w.parse()? },
         _ => anyhow::bail!("unknown type {s}"),
     })
+}
+
+/// Loads the aggregators' sealed identities from `dir`, creating any that
+/// are missing. Sealed under the deployment key like the shares, with the
+/// aggregator index as associated data.
+fn load_or_create_identities(dir: &PathBuf, n: usize) -> anyhow::Result<Vec<AggregatorIdentity>> {
+    std::fs::create_dir_all(dir)?;
+    let mut ids = Vec::with_capacity(n);
+    for i in 0..n {
+        let path = dir.join(format!("aggregator-{i}.identity.sealed"));
+        let label = format!("aggregator-identity:{i}");
+        let id = if path.exists() {
+            let b = secret::unseal(label.as_bytes(), &std::fs::read(&path)?)?;
+            AggregatorIdentity::from_secret_bytes(b.as_slice().try_into().map_err(|_| anyhow::anyhow!("identity must be 32 bytes"))?)
+        } else {
+            let id = AggregatorIdentity::generate();
+            std::fs::write(&path, secret::seal(label.as_bytes(), &id.secret_bytes())?)?;
+            id
+        };
+        ids.push(id);
+    }
+    Ok(ids)
+}
+
+/// Writes `aggregator-keys.txt`: the public identity keys, one per line,
+/// line `i` for aggregator `i`. This file is what clients pin.
+fn write_aggregator_keys(out_dir: &PathBuf, ids: &[AggregatorIdentity]) -> anyhow::Result<()> {
+    let mut text = String::from("# fhe-prio3 aggregator identity keys, line i = aggregator i\n");
+    for id in ids {
+        text.push_str(&hex::encode(id.public_key()));
+        text.push('\n');
+    }
+    std::fs::write(out_dir.join("aggregator-keys.txt"), text)?;
+    Ok(())
 }
 
 fn parse_measurement(s: &str) -> anyhow::Result<Measurement> {
@@ -236,10 +287,13 @@ async fn main() -> anyhow::Result<()> {
             std::fs::write(&out, encode(&cfg)?)?;
             println!("wrote {} (digest {})", out.display(), hex::encode(cfg.digest()));
         }
-        Cmd::Keygen { task, out_dir } => {
+        Cmd::Keygen { task, out_dir, identities_dir } => {
             let cfg: TaskConfig = read(&task)?;
             std::fs::create_dir_all(&out_dir)?;
-            let (material, shares) = keys::run_local_ceremony(&cfg)?;
+            let ids = load_or_create_identities(&identities_dir.unwrap_or_else(|| out_dir.join("identities")), cfg.num_aggregators)?;
+            write_aggregator_keys(&out_dir, &ids)?;
+            let (mut material, shares) = keys::run_local_ceremony(&cfg)?;
+            material.attestations = ids.iter().enumerate().map(|(i, id)| attest::attest(&cfg, &material, i, id)).collect();
             std::fs::write(out_dir.join("material.bin"), encode(&material)?)?;
             for (i, s) in shares.iter().enumerate() {
                 let sealed = secret::seal(format!("share:{i}:{}", hex::encode(cfg.task_id)).as_bytes(), s)?;
@@ -299,7 +353,7 @@ async fn main() -> anyhow::Result<()> {
             let tls = CollectorNode::tls_config(tls_cert, tls_key).await?;
             node.serve(listen, Some(tls), handle).await?;
         }
-        Cmd::Submit { task, material, leader, ca, value, identity } => {
+        Cmd::Submit { task, material, leader, ca, value, identity, aggregator_keys } => {
             let cfg: TaskConfig = read(&task)?;
             let material: PublicMaterial = read(&material)?;
             let id = match identity {
@@ -309,7 +363,11 @@ async fn main() -> anyhow::Result<()> {
                 }
                 None => None,
             };
-            let c = NetworkClient::new(cfg, &material, id, leader, &std::fs::read(&ca)?)?;
+            let pinned = match aggregator_keys {
+                Some(p) => Some(fhe_prio3_node::client::parse_aggregator_keys(&std::fs::read_to_string(p)?)?),
+                None => None,
+            };
+            let c = NetworkClient::new(cfg, &material, id, leader, &std::fs::read(&ca)?, pinned.as_deref())?;
             let out = c.submit(&parse_measurement(&value)?).await?;
             println!("{out:?}");
         }
@@ -318,13 +376,17 @@ async fn main() -> anyhow::Result<()> {
             let r: BatchResult = fhe_prio3_node::wire::http_post(&http, &format!("{leader}/v1/close"), Some(&token), &()).await?;
             println!("{r:?}");
         }
-        Cmd::KeygenShards { task, shards, out_dir } => {
+        Cmd::KeygenShards { task, shards, out_dir, identities_dir } => {
             let base: TaskConfig = read(&task)?;
             let cfgs = fhe_prio3::sharding::shard_configs(&base, shards)?;
+            std::fs::create_dir_all(&out_dir)?;
+            let ids = load_or_create_identities(&identities_dir.unwrap_or_else(|| out_dir.join("identities")), base.num_aggregators)?;
+            write_aggregator_keys(&out_dir, &ids)?;
             for (i, cfg) in cfgs.iter().enumerate() {
                 let dir = out_dir.join(format!("shard-{i}"));
                 std::fs::create_dir_all(&dir)?;
-                let (material, shares) = keys::run_local_ceremony(cfg)?;
+                let (mut material, shares) = keys::run_local_ceremony(cfg)?;
+                material.attestations = ids.iter().enumerate().map(|(j, id)| attest::attest(cfg, &material, j, id)).collect();
                 std::fs::write(dir.join("task.bin"), encode(cfg)?)?;
                 std::fs::write(dir.join("material.bin"), encode(&material)?)?;
                 for (j, s) in shares.iter().enumerate() {
@@ -350,7 +412,7 @@ async fn main() -> anyhow::Result<()> {
             let tls = fhe_prio3_node::router::RouterNode::tls_config(tls_cert, tls_key).await?;
             node.serve(listen, Some(tls), handle).await?;
         }
-        Cmd::SubmitSharded { router, ca, value, identity } => {
+        Cmd::SubmitSharded { router, ca, value, identity, aggregator_keys } => {
             let id = match identity {
                 Some(p) => {
                     let b = hex::decode(std::fs::read_to_string(p)?.trim())?;
@@ -358,7 +420,8 @@ async fn main() -> anyhow::Result<()> {
                 }
                 None => None,
             };
-            let c = fhe_prio3_node::client::ShardedClient::new(router, &std::fs::read(&ca)?, id.as_ref())?;
+            let pinned = fhe_prio3_node::client::parse_aggregator_keys(&std::fs::read_to_string(aggregator_keys)?)?;
+            let c = fhe_prio3_node::client::ShardedClient::new(router, &std::fs::read(&ca)?, id.as_ref(), pinned)?;
             let (out, shard) = c.submit(&parse_measurement(&value)?).await?;
             println!("shard {shard}: {out:?}");
         }

@@ -7,7 +7,7 @@
 
 use fhe_prio3::messages::{decode, encode};
 use fhe_prio3::*;
-use fhe_prio3_node::client::ShardedClient;
+use fhe_prio3_node::client::{ShardedClient, parse_aggregator_keys};
 use fhe_prio3_node::wire::{SubmitOutcome, http_get, http_post, https_client};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -175,7 +175,8 @@ async fn deploy(base: &TaskConfig, shards: usize, threads: usize) -> Deployment 
 
 /// Submits `values` concurrently through the router; returns wall time.
 async fn submit_all(d: &Deployment, values: &[u64]) -> std::time::Duration {
-    let client = std::sync::Arc::new(ShardedClient::new(d.router_url.clone(), &d.tls.ca_pem, None).unwrap());
+    let pinned = parse_aggregator_keys(&std::fs::read_to_string(d.keys_dir.join("aggregator-keys.txt")).unwrap()).unwrap();
+    let client = std::sync::Arc::new(ShardedClient::new(d.router_url.clone(), &d.tls.ca_pem, None, pinned).unwrap());
     let t0 = Instant::now();
     let mut tasks = Vec::new();
     for &v in values {
@@ -229,6 +230,18 @@ async fn two_shards_as_processes_scale_and_combine() {
             assert_eq!(list.len(), 2);
             let m: PublicMaterial = http_get(&http, &format!("{}/v1/shard/1/material", d.router_url), None).await.unwrap();
             assert!(m.rotation_keys.is_empty() && m.eval_mult_key.is_empty(), "clients get no evaluation keys");
+            // material served by the router carries every aggregator's attestation
+            let pinned = parse_aggregator_keys(&std::fs::read_to_string(d.keys_dir.join("aggregator-keys.txt")).unwrap()).unwrap();
+            let task1: TaskConfig = http_get(&http, &format!("{}/v1/shard/1/task", d.router_url), None).await.unwrap();
+            fhe_prio3::attest::verify_material(&task1, &m, &pinned).unwrap();
+            // a client pinning other aggregator keys refuses what the router serves
+            let rogue = vec![AggregatorIdentity::generate().public_key(), pinned[1]];
+            let c = ShardedClient::new(d.router_url.clone(), &d.tls.ca_pem, None, rogue).unwrap();
+            let err = c.submit(&Measurement::Sum(1)).await.err().expect("unattested material must be refused");
+            assert!(err.to_string().contains("pinned key") || err.to_string().contains("attest"), "{err}");
+            // shard 0's attestations do not validate shard 1's material
+            let task0: TaskConfig = http_get(&http, &format!("{}/v1/shard/0/task", d.router_url), None).await.unwrap();
+            assert!(fhe_prio3::attest::verify_material(&task0, &m, &pinned).is_err());
             let missing: anyhow::Result<PublicMaterial> = http_get(&http, &format!("{}/v1/shard/7/material", d.router_url), None).await;
             assert!(missing.err().expect("shard 7 does not exist").to_string().contains("404"));
             let _ = decode::<TaskConfig>(&encode(&base).unwrap()).unwrap();

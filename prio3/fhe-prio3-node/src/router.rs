@@ -61,6 +61,7 @@ pub fn client_material(m: &PublicMaterial) -> PublicMaterial {
         eval_mult_key: Vec::new(),
         rotation_keys: Vec::new(),
         rotation_indices: m.rotation_indices.clone(),
+        attestations: m.attestations.clone(),
     }
 }
 

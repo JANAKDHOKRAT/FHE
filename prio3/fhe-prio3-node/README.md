@@ -91,8 +91,22 @@ shard's key and submits to that shard's leader. `POST /v1/close-all` closes
 every shard through its leader and returns the combined result
 (`fhe_prio3::sharding::combine_results`): aggregates and counts are added,
 regression moments are added and the fit is recomputed. The router never
-holds a key share, a ciphertext or a partial decryption; compromising it
-lets an attacker steer clients between shards and nothing else. At startup
+holds a key share, a ciphertext or a partial decryption.
+
+**What the router is trusted with: nothing that touches privacy.** The
+material a client encrypts under is *attested*: `keygen`/`keygen-shards`
+give each aggregator a long-term Ed25519 identity (sealed at rest under
+the deployment key, reused across shards) and every aggregator signs each
+shard's task digest, context, joint public key, joint tag and rotation
+indices (`fhe_prio3::attest`). Clients pin the aggregators' public keys
+(`aggregator-keys.txt`, distributed out of band like a CA bundle) and a
+sharded client refuses material that lacks a valid attestation from every
+aggregator. A compromised router can therefore steer clients between
+shards, refuse service, or close shards early with the operator token; it
+cannot make a client encrypt under a key of its own or under a different
+task, because that would need every aggregator's signature, which is the
+collusion the scheme does not defend against anyway. The file-based
+`submit` accepts `--aggregator-keys` for the same check. At startup
 the router checks every leader's `/v1/status` and refuses to run if leader
 `i` does not serve shard `i`'s task as aggregator 0. A shard below its
 minimum batch fails the whole close; nothing partial is returned, the
@@ -110,11 +124,11 @@ secret-dependent value to average; this was found by the sharded test and
 fixed in the protocol crate.
 
 ```sh
-fhe-prio3-node keygen-shards --task task.bin --shards 2 --out-dir shards/
+fhe-prio3-node keygen-shards --task task.bin --shards 2 --out-dir shards/   # also shards/aggregator-keys.txt, shards/identities/
 # per shard i: start its collector and aggregators from shards/shard-i/ as above
 fhe-prio3-node router --shards-dir shards/ --leaders https://l0:8443,https://l1:8443 \
     --listen 0.0.0.0:9443 --token "$TOKEN" --tls-cert r.pem --tls-key r.key --ca ca.pem
-fhe-prio3-node submit-sharded --router https://router:9443 --ca ca.pem --value sum:42
+fhe-prio3-node submit-sharded --router https://router:9443 --ca ca.pem --aggregator-keys aggregator-keys.txt --value sum:42
 fhe-prio3-node close-all --router https://router:9443 --ca ca.pem --token "$TOKEN"
 ```
 
@@ -178,6 +192,9 @@ and a collector, one router) for each of the four configurations in the
 table above, submits 16 reports concurrently through the router, checks
 the combined result against the plaintext sum, checks that a second
 `close-all` returns byte-identical output, a wrong token gets 401, an
-unknown shard gets 404, and clients receive no evaluation keys. Timings
+unknown shard gets 404, clients receive no evaluation keys, the served
+material verifies under the pinned aggregator keys, a client pinning a
+different key refuses it, one shard's attestations do not validate
+another shard's material, and a misordered leader list stops the router. Timings
 are printed and written to `$TMPDIR/fhe_prio3_sharding_timing.txt`; they
 are not asserted, since they depend on the machine.

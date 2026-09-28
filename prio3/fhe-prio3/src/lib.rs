@@ -15,6 +15,7 @@
 //!   the batch sums; it holds no key.
 
 pub mod aggregator;
+pub mod attest;
 pub mod auth;
 pub mod client;
 pub mod collector;
@@ -32,6 +33,7 @@ pub mod xof;
 pub use aggregator::{Aggregator, AggregatorState, Verdict};
 pub use client::Client;
 pub use collector::Collector;
+pub use attest::{AggregatorIdentity, MaterialAttestation};
 pub use auth::{ClientIdentity, ClientRegistry, StaticRegistry};
 pub use config::{AuthPolicy, TaskConfig, VerificationMode};
 pub use error::{Error, RejectReason, Result};

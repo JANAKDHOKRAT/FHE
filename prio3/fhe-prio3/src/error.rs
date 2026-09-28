@@ -37,6 +37,9 @@ pub enum RejectReason {
     QuotaExceeded,
     /// Group out of range for the layout, or non-zero outside batched silent mode.
     BadGroup,
+    /// The chunk was encrypted for other parameters or another joint key
+    /// (its fingerprint does not match this task's public material).
+    WrongParameters,
 }
 
 impl std::fmt::Display for RejectReason {

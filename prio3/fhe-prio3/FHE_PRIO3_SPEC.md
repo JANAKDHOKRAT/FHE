@@ -78,7 +78,8 @@ one rotation *row* is `N/2 = 16384` slots.
 ### 3.1 Keys
 
 All BGV keys are produced by an n-of-n ceremony (`keys.rs`), every message
-of which is a serialized OpenFHE object:
+of which is a serialized OpenFHE object (setup material; during operation
+ciphertexts travel in the packed format of §6b instead):
 
 1. **Public key** (sequential): party 0 runs `KeyGen`; party `i` runs
    `MultipartyKeyGen` on the accumulated public key. The secret key is the
@@ -106,7 +107,7 @@ rotation keys needed are `{block/2, block/4, …, 1}` (block sums) and
 
 The client encodes the measurement, packs chunk `c` into slots
 `[0, chunk_len(c))` of one plaintext, encrypts each chunk under the joint
-public key, and sets
+public key, encodes it in the packed wire format (§6b), and sets
 
     report_id = SHA-256("fhe-prio3/1 report" || task_id || count || (len || bytes)*)
 
@@ -118,11 +119,12 @@ There are no per-aggregator shares.
 Each aggregator, independently and deterministically:
 
 **Validate.** Task id matches; `report_id` recomputes; not seen before
-(replay); chunk count matches the layout; each chunk deserializes into
-*this* context, carries the joint key tag, and is structurally identical to
-a fresh encryption (2 polynomials, level 0, same noise degree, same limb
-count, packed encoding). Any failure is a deterministic rejection that all
-honest aggregators reach identically.
+(replay); chunk count matches the layout; each chunk parses in the packed
+wire format (§6b) with this task's fingerprint and exactly the metadata of
+a fresh encryption (2 polynomials, level 0, same noise degree, same tower
+count, same scaling factor), every residue below its modulus, and is
+rebuilt inside *this* aggregator's context. Any failure is a deterministic
+rejection that all honest aggregators reach identically.
 
 **Derive the challenge.** `Xof = SHAKE128("fhe-prio3/1", "verify", bincode(TaskConfig), report_id)`;
 for each repetition `j` sample `r_{j,0..m-1}` (bit-check coefficients) and
@@ -232,13 +234,13 @@ byte, the signature is bound to exactly those ciphertexts.
 
 Admission runs in this order, and everything before the last step costs
 microseconds and touches no ciphertext: batch still open; total ciphertext
-bytes at most `num_chunks * (fresh ciphertext size + 1 KiB)` (or the
-configured cap, if smaller); task id; signature valid; key registered; the
+bytes at most `num_chunks` times the packed size of a fresh ciphertext (or
+the configured cap, if smaller); task id; signature valid; key registered; the
 key's quota for this batch not exhausted (the attempt is charged now, so a
 rejected probe still costs the identity its quota); `report_id`
 recomputes; not a replay; right chunk count; batch not full. Only then are
-the ciphertexts deserialized and compared structurally with a fresh
-encryption, and only then is any homomorphic work done.
+the ciphertexts parsed in the packed format and rebuilt (§6b), and only
+then is any homomorphic work done.
 
 Consequences, all exercised by `tests/mitigations.rs`:
 
@@ -366,7 +368,8 @@ depend on honest inputs) are never decrypted.
    Sybil resistance, exactly as in DAP. Authentication with quotas is the
    Sybil-resistance hook; it is only as good as the enrolment process.
 5. **Denial of service.** Unauthenticated or over-quota traffic is refused
-   before deserialization. An admitted report still costs about 0.5 s of
+   before any ciphertext is parsed, and no received byte reaches OpenFHE's
+   deserializer (§6b), which a mutated ciphertext could crash. An admitted report still costs about 0.5 s of
    CPU in verdict mode and about 16 s in silent mode; the quota is the
    rate limit per identity, and transport-level limits remain the
    deployment's job.
@@ -463,9 +466,11 @@ encrypted inputs, which Prio3's linear aggregation cannot do.
   temporarily restoring the old code). Applying the coefficient vectors,
   which vanish outside the encoded slots, before any rotation removes the
   path entirely.
-* **Freshness check** compares an incoming ciphertext with a reference
-  encryption made by the aggregator itself (OpenFHE's `FLEXIBLEAUTOEXT`
-  fresh ciphertexts have noise degree 2, which a hand-written check missed).
+* **Freshness check** compares an incoming ciphertext's metadata with a
+  reference encryption made by the aggregator itself (OpenFHE's
+  `FLEXIBLEAUTOEXT` fresh ciphertexts have noise degree 2, which a
+  hand-written check missed). Since the packed format (§6b) this happens
+  in the parser, before anything is rebuilt.
 * **Memory.** Rotation keys dominate: 11 MiB each in verdict mode, 111 MiB
   each in silent mode (18 of them). The ceremony therefore runs one
   rotation index at a time and `PublicMaterial` stores one serialized map
@@ -740,6 +745,164 @@ process, two shards on four cores finish in 1.6–1.8× less wall time than one
 shard on two cores; with a fixed budget of four threads the gain is 1.1×,
 because one shard already saturates the machine. Sharding scales with
 machines added, which is the deployment it is for.
+
+### Packed ciphertext wire format (`packed.rs`, shim `tbgv_ciphertext_build`)
+
+**Why.** Before this change every ciphertext another party sent was
+handed to OpenFHE's own deserializer. Its loader trusts the vector lengths
+and moduli it reads. A seeded mutation run crashed it on 16 of 2,400
+mutants of a fresh 3,672,429-byte verdict-mode ciphertext: 14 arithmetic
+faults (`SIGFPE`), 1 abort and 1 segmentation fault. The mutations were
+bit flips, byte overwrites and `0xFF` windows in the first 4 KiB, and
+truncations. Admission ran the cheap checks first, but deserialization
+came before any structural check. So one upload that passed the size cap,
+report id, replay and chunk-count checks killed the aggregator process.
+Without `AuthPolicy::Required` that is anyone who can reach
+`/v1/submit`; with it, any registered client.
+
+**What changed.** Every ciphertext exchanged during operation now travels
+in the packed format below:
+
+* client report chunks;
+* verdict-mode masks and verifier partial decryptions;
+* silent-mode count partials;
+* the partials inside aggregate shares, plain or sealed, including the
+  valid-count and moment partials.
+
+The receiver parses the bytes in safe Rust. It then rebuilds the ciphertext
+inside its own context (`Context::build_ciphertext`). The template is its
+own fresh encryption of zero: the elements are replaced by the received
+residues, and level, noise degree and scaling factor are set from the
+header. The shim repeats every bound check before any OpenFHE call: same
+context, full-chain template, 1–2 elements, tower count and level
+consistent with the chain, degree, scaling-factor range, exact value count,
+and every value below its tower modulus.
+
+**What still uses OpenFHE's format.** Two things, neither of which is
+input from a client or from a peer during operation:
+
+* The key-ceremony material: context, public key, evaluation keys and
+  secret-key shares. It is produced once by the task's aggregators and
+  bound by their attestation signatures.
+* An aggregator's snapshot of its own accumulators, written to and read
+  from its own database.
+
+A compromised ceremony peer or a tampered database can still reach
+OpenFHE's loader. That is outside the threat model above, and it is stated
+here rather than hidden.
+
+**Layout** (little-endian):
+
+| Offset | Size | Field |
+| --- | --- | --- |
+| 0 | 4 | magic `FPC1` |
+| 4 | 1 | version `1` |
+| 5 | 1 | number of elements, 1 or 2 |
+| 6 | 2 | number of towers `k`, `1 ≤ k ≤ L` |
+| 8 | 4 | level, `level + k = L` |
+| 12 | 1 | noise-scale degree, 1 or 2 |
+| 13 | 3 | reserved, zero |
+| 16 | 8 | scaling factor, `1 ≤ s < p` |
+| 24 | 32 | fingerprint |
+| 56 | … | residues, element-major, then tower, then coefficient |
+
+The residue of tower `t` occupies exactly `bitlen(q_t − 1)` bits, least
+significant bit first, with no gaps, and the last byte's unused bits are
+zero. `L` and the moduli are the receiver's own. The fingerprint is
+SHA-256 over a domain string, `p`, `N`, the moduli and SHA-256 of the joint
+public key. It is the same for every party of a task and identifies no
+client. It replaces OpenFHE's key-tag check: a chunk made for other
+parameters or a stale key is refused as `WrongParameters` before any work.
+It is a consistency check, not authentication; anyone can copy it.
+
+**Validation order**, all before any OpenFHE call:
+
+1. length of at least 56 bytes, magic, version, reserved bytes, fingerprint;
+2. metadata bounds;
+3. the expected shape. For chunks and masks this is exactly the receiver's
+   own fresh encryption. For partials between aggregators it is exactly the
+   receiver's own partial of the same ciphertext. At the collector it is one
+   element, and every aggregator's partial of one ciphertext must have the
+   same shape;
+4. the exact length for that shape;
+5. every residue below its modulus, then zero padding.
+
+The encoding is canonical: one ciphertext has exactly one encoding, so the
+report id, a hash of these bytes, cannot be varied without changing the
+ciphertext. This does not stop re-randomisation. Anyone holding the public
+key can add an encryption of zero and submit the result as a new report.
+That was true before, and authentication with per-identity quotas is what
+bounds it (§4.3).
+
+**Measured** (`tests/wire.rs::packed_against_openfhe_size_and_time`, fresh
+ciphertext, 4 vCPUs, mean of 5):
+
+| Mode | `N` | towers, bit widths | packed | OpenFHE | smaller by |
+| --- | --- | --- | --- | --- | --- |
+| verdict | 32768 | 7: 48, 60, 60, 55, 55, 55, 17 | 2,867,256 B | 3,672,149 B | 21.9 % |
+| silent | 65536 | 29: 36, 60, 60, 25 × 44, 21 | 20,922,424 B | 30,414,913 B | 31.2 % |
+
+| Mode | encode | parse | parse + rebuild | OpenFHE serialize | OpenFHE deserialize |
+| --- | --- | --- | --- | --- | --- |
+| verdict | 1.8 ms | 2.3 ms | 4.6 ms | 2.9 ms | 22.9 ms |
+| silent | 30.8 ms | 22.2 ms | 53.8 ms | 52.2 ms | 124.0 ms |
+
+Receiving is therefore cheaper than before, not only smaller. Other packed
+objects: the verdict-mode verifier partial, with 1 element and 4 towers at
+level 3, is 913,464 bytes. The silent-mode count partial, with 1 element
+and 4 towers at level 25, is 1,638,456 bytes. Plan item A14 assumed 48-bit
+moduli throughout. The real chains above have limbs of 17 to 60 bits, and
+per-tower widths are what give these savings.
+
+**Attacks tried** (`tests/wire.rs`; shim `tests/raw_residues.rs`):
+
+* *Exactness.* Every object kind the protocol exchanges was rebuilt: fresh,
+  sum, products at levels 1–3, rotation, plain product and partials. Each
+  gave identical metadata and residues, and the difference with the
+  original decrypts to zero. Fresh ciphertexts re-serialize to identical
+  OpenFHE bytes, and fusing rebuilt partials gives the right result.
+* *Header.* Every field was tried at its boundary values, and each was
+  refused with its specific error. This covers every fingerprint bit,
+  each reserved byte, and another valid scaling factor.
+* *Residues.* In every tower of both elements, a residue equal to the
+  modulus or all ones was refused at the first and last index. The value
+  `q − 1` was accepted.
+* *Length.* Empty, header only, one byte short and one byte long were all
+  refused.
+* *Seeded mutation.* 6,000 mutants of seven kinds produced no crash. The
+  mutants that parse (1,106 in the recorded run; the count varies because
+  the base ciphertext is freshly random) are ciphertexts of other
+  plaintexts, and every one re-encodes to exactly its own bytes. Samples of them run through the
+  whole round are refused by the validity check.
+* *The 16 crash recipes.* They were regenerated with the original seed and
+  generator on the test's own ciphertext. Replayed once against OpenFHE's
+  loader, one process per input in a separate harness, they crash it again:
+  14 `SIGFPE`, 1 `SIGABRT`, 1 `SIGSEGV`. The repository test does not call
+  OpenFHE's loader on them, since a crash would kill the test process. The aggregator refuses each one without an OpenFHE call:
+  * as sent, by the size bound;
+  * cut to exactly the packed length, as `BadMagic`;
+  * behind a forged valid header, by the residue check.
+
+  The original 16 crash files, run through admission, are all refused by
+  the size bound. The batch then completes with the right result.
+* *Hostile partials.* Another valid scaling factor, one tower fewer and two
+  elements are all refused. The pending report stays intact, and the
+  honest round then completes. The collector refuses shares whose shapes
+  disagree, out-of-bound metadata and non-packed bytes.
+* *Over TLS* (node `e2e.rs`, three aggregators). An upload in OpenFHE's
+  format is refused at the HTTP body limit, and the leader keeps serving.
+  A wrong fingerprint, a residue above its modulus and a chunk one byte
+  short are refused with their reasons. The batch then closes with the
+  right sum.
+
+**What it does not do.** It says nothing about noise. Any residues below
+their moduli form a valid ciphertext of some plaintext with some noise, so
+§4.3 item 2 is unchanged. It authenticates nothing. It also makes the
+format this project's to maintain. An OpenFHE upgrade that changes the
+modulus chain changes the fingerprint, so all parties of a task must run
+the same parameters, as before. The rebuild uses only OpenFHE's public
+element and metadata accessors, and the shim test checks it for exactness
+on every object kind above. That test is what to re-run after an upgrade.
 
 ## 7. Changes relative to `fhe-vdaf-1` / `fhe-vdaf-2`
 

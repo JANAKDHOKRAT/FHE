@@ -21,8 +21,30 @@ shares sealed at rest.
   deployment, see below. Holds no key, sees no ciphertext.
 
 All node-to-node calls carry a bearer token in `x-fhe-prio3-token` over TLS
-and are refused otherwise. Bodies are bincode, capped at the size of a fresh
-report plus 64 KiB; the collector caps at 256 MiB.
+and are refused otherwise. Bodies are bincode. Every ciphertext inside a body
+is in the packed wire format (spec §6b). It is parsed in safe Rust, and none
+reaches OpenFHE's deserializer. Body limits are set per route:
+
+* The public routes `/v1/submit` and `/v1/close` are capped at the packed
+  size of one report plus 64 KiB.
+* The internal routes are capped at the largest internal message plus
+  64 KiB. That message is either a report or the `n − 1` masks the leader
+  sends each helper in one `/v1/masks` request, whichever is larger.
+* The collector caps at 256 MiB.
+
+A single cap of one report used to refuse the `/v1/masks` request of a
+three-aggregator verdict deployment, which carries two masks.
+`tests/e2e.rs::three_aggregators_verdict_over_tls` reproduces that failure
+and passes with the split. The same test also uploads hostile chunks: one
+in OpenFHE's own format, one with a wrong fingerprint, one with a residue
+above its modulus and one a byte short. The test checks that each is
+refused and that the leader keeps serving.
+
+Upgrading across the change to the packed format: a database written by an
+earlier build stores client reports in OpenFHE's format. A node restarted
+on it with pending silent-mode reports fails to start, because restore
+refuses those reports. Close or discard in-flight batches before
+upgrading. Clients and aggregators of one task must run the same format.
 
 ## Endpoints
 

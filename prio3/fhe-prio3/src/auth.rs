@@ -59,7 +59,7 @@ impl ClientIdentity {
 }
 
 /// Verifies a report's signature. Constant-cost and run before any
-/// ciphertext is deserialized.
+/// ciphertext is parsed.
 pub fn verify(auth: &ReportAuth, task_id: &[u8; 32], report_id: &ReportId) -> Result<()> {
     let vk = VerifyingKey::from_bytes(&auth.client_key).map_err(|_| Error::Protocol("invalid client public key".into()))?;
     let sig_bytes: [u8; 64] = auth.signature.as_slice().try_into().map_err(|_| Error::Protocol("signature must be 64 bytes".into()))?;

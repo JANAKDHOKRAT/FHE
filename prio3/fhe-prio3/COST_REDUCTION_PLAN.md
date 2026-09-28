@@ -187,15 +187,21 @@ which under A1 is amortised. Check 4: implement only if the 2.1 GiB per
 aggregator is a problem in deployment; it is a memory/time trade with no
 security effect.
 
-### A14. Bit-packed transport of ciphertexts — **implement if bandwidth matters**
+### A14. Bit-packed transport of ciphertexts — **implemented, measured** (spec §6b)
 
-Check 1: lossless. Check 2: OpenFHE serialises every limb coefficient as a
-64-bit word; the moduli here are 48-bit, so a pack/unpack pass around
-OpenFHE's bytes saves 25 % (29 → 22 MiB per report). Needs a small
-parser of the cereal layout or an own serializer of `(c0, c1)` limbs via
-the shim; either is testable by round trip. Check 3: bandwidth only, no CPU
-gain, small CPU cost. Check 4: implement when reports cross a metered
-network.
+Check 1: lossless, and verified exact on every object kind the protocol
+exchanges. Check 2, corrected: the premise here was wrong. The moduli are
+not all 48-bit. Measured limb widths are 48, 60, 60, 55, 55, 55 and 17
+bits in verdict mode. In silent mode they are 36, 60, 60, then 25 limbs of
+44 bits, then 21. Packing each tower at its own width saves 21.9 % in
+verdict mode (3,672,149 → 2,867,256 bytes per chunk) and 31.2 % in silent
+mode (30,414,913 → 20,922,424 bytes). It was built as an own serializer of
+the limbs through the shim, not as a parser of the cereal layout. Check 3,
+also corrected: there is a CPU gain on the receiving side. Parse and
+rebuild take 4.6 ms against 22.9 ms for OpenFHE's deserializer in verdict
+mode, and 53.8 ms against 124.0 ms in silent mode. What decided it was
+not bandwidth: OpenFHE's loader crashes on mutated input (16 of 2,400
+mutants), and with the packed format no received byte reaches it.
 
 ### A15. Clients pre-place repetitions (send four rotated copies) — **drop**
 
@@ -316,8 +322,9 @@ report, so overlapping them is worth up to 5 %. Only after B2 is settled.
 13. Write the thread-safety test for concurrent evaluation (B2); on
     success make an explicit `SyncContext` wrapper with the tested
     operations only.
-14. Add the 48-bit pack/unpack transport encoding with round-trip tests
-    (A14), applied to reports and shares only.
+14. Done: packed transport encoding with per-tower widths (A14), applied
+    to every ciphertext exchanged during operation (reports, masks, all
+    partial decryptions), with round-trip and attack tests.
 15. Optionally halve the class-sum keys by composition (A13) if memory
     per aggregator has to drop below 2 GiB.
 

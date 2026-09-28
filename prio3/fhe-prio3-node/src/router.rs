@@ -169,7 +169,8 @@ async fn close_all(State(node): State<RouterNode>, headers: HeaderMap, _body: By
     check_token(&headers, &node.inner.token)?;
     let mut results = Vec::with_capacity(node.inner.shards.len());
     for s in &node.inner.shards {
-        let r: BatchResult = http_post(&node.inner.http, &format!("{}/v1/close", s.leader), Some(&node.inner.token), &()).await?;
+        let r: CloseReply = http_post(&node.inner.http, &format!("{}/v1/close", s.leader), Some(&node.inner.token), &()).await?;
+        let r = r.result.ok_or_else(|| HttpError(StatusCode::BAD_REQUEST, "shards with release policies release to their collectors; combine per collector from the collectors' results".into()))?;
         results.push(r);
     }
     let combined = combine_results(&results)?;

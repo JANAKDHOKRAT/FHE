@@ -58,6 +58,13 @@ enum Cmd {
         /// 32-byte task id as hex (default: derived from the type string).
         #[arg(long)]
         task_id: Option<String>,
+        /// Release second moments for a regression (SumVec / bounded tasks).
+        #[arg(long, default_value_t = false)]
+        moments: bool,
+        /// Release policy, repeatable, one per collector in id order:
+        /// `<hex sealing public key>:<e0,e1,...>[:moments]`.
+        #[arg(long = "collector")]
+        collectors: Vec<String>,
     },
     Aggregator {
         #[arg(long)]
@@ -75,8 +82,9 @@ enum Cmd {
         /// Base URLs of all aggregators by index, comma separated.
         #[arg(long)]
         aggregators: String,
-        #[arg(long)]
-        collector: String,
+        /// Collector base URLs by collector id, comma separated (one without policies).
+        #[arg(long, alias = "collector")]
+        collectors: String,
         #[arg(long)]
         token: String,
         #[arg(long)]
@@ -94,6 +102,12 @@ enum Cmd {
         task: PathBuf,
         #[arg(long)]
         material: PathBuf,
+        /// This collector's id in the task's release policies (0 without policies).
+        #[arg(long, default_value_t = 0)]
+        id: u32,
+        /// Sealing secret file from `collector-identity` (required with policies).
+        #[arg(long)]
+        seal_secret: Option<PathBuf>,
         #[arg(long)]
         db: PathBuf,
         #[arg(long)]
@@ -137,6 +151,12 @@ enum Cmd {
     },
     /// Generate a client identity file and print its public key.
     ClientIdentity {
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Generate a collector sealing key file (sealed under FHE_PRIO3_SEAL_KEY)
+    /// and print its public key, to be declared in the task's policy.
+    CollectorIdentity {
         #[arg(long)]
         out: PathBuf,
     },
@@ -245,6 +265,22 @@ fn write_aggregator_keys(out_dir: &PathBuf, ids: &[AggregatorIdentity]) -> anyho
     Ok(())
 }
 
+/// `<hex sealing public key>:<e0,e1,...>[:moments]`
+fn parse_policy(spec: &str) -> anyhow::Result<CollectorPolicy> {
+    let parts: Vec<&str> = spec.split(':').collect();
+    if parts.len() < 2 || parts.len() > 3 {
+        anyhow::bail!("collector policy must be <hex key>:<elements>[:moments], got {spec}");
+    }
+    let key: [u8; 32] = hex::decode(parts[0])?.as_slice().try_into().map_err(|_| anyhow::anyhow!("sealing key must be 32 bytes"))?;
+    let elements = parts[1].split(',').map(|x| x.trim().parse::<usize>()).collect::<std::result::Result<Vec<_>, _>>()?;
+    let moments = match parts.get(2) {
+        None => false,
+        Some(&"moments") => true,
+        Some(other) => anyhow::bail!("unknown policy flag {other}"),
+    };
+    Ok(CollectorPolicy { elements, moments, seal_key: key })
+}
+
 fn parse_measurement(s: &str) -> anyhow::Result<Measurement> {
     let (kind, v) = s.split_once(':').ok_or_else(|| anyhow::anyhow!("value must be kind:value"))?;
     Ok(match kind {
@@ -266,7 +302,7 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().init();
     let cli = Cli::parse();
     match cli.cmd {
-        Cmd::TaskConfig { out, r#type, aggregators, mode, min_batch, auth_quota, task_id } => {
+        Cmd::TaskConfig { out, r#type, aggregators, mode, min_batch, auth_quota, task_id, moments, collectors } => {
             let ty = parse_type(&r#type)?;
             let id: [u8; 32] = match task_id {
                 Some(h) => hex::decode(h)?.as_slice().try_into().map_err(|_| anyhow::anyhow!("task id must be 32 bytes"))?,
@@ -283,6 +319,13 @@ async fn main() -> anyhow::Result<()> {
             cfg.min_batch_size = min_batch;
             if auth_quota > 0 {
                 cfg.auth = AuthPolicy::Required { max_reports_per_client_per_batch: auth_quota };
+            }
+            if moments {
+                cfg.moments = true;
+                cfg.max_batch_size = cfg.moments_max_batch().ok_or_else(|| anyhow::anyhow!("moments need a vector type"))?.min(cfg.max_batch_size);
+            }
+            for spec in &collectors {
+                cfg.collectors.push(parse_policy(spec)?);
             }
             cfg.validate()?;
             std::fs::write(&out, encode(&cfg)?)?;
@@ -307,7 +350,12 @@ async fn main() -> anyhow::Result<()> {
             std::fs::write(&out, hex::encode(id.secret_bytes()))?;
             println!("{}", hex::encode(id.public_key()));
         }
-        Cmd::Aggregator { index, task, material, share, db, listen, aggregators, collector, token, tls_cert, tls_key, ca, clients } => {
+        Cmd::CollectorIdentity { out } => {
+            let k = CollectorSealKey::generate();
+            std::fs::write(&out, secret::seal(b"collector-identity", &k.secret_bytes())?)?;
+            println!("{}", hex::encode(k.public_key()));
+        }
+        Cmd::Aggregator { index, task, material, share, db, listen, aggregators, collectors, token, tls_cert, tls_key, ca, clients } => {
             let cfg: TaskConfig = read(&task)?;
             let material: PublicMaterial = read(&material)?;
             let sealed = std::fs::read(&share)?;
@@ -329,7 +377,7 @@ async fn main() -> anyhow::Result<()> {
                 material,
                 share,
                 aggregators: aggregators.split(',').map(|s| s.trim().to_string()).collect(),
-                collector,
+                collectors: collectors.split(',').map(|s| s.trim().to_string()).collect(),
                 token,
                 db,
                 registry,
@@ -345,10 +393,17 @@ async fn main() -> anyhow::Result<()> {
             let tls = AggregatorNode::tls_config(tls_cert, tls_key).await?;
             node.serve(listen, Some(tls), handle).await?;
         }
-        Cmd::Collector { task, material, db, listen, token, tls_cert, tls_key } => {
+        Cmd::Collector { task, material, id, seal_secret, db, listen, token, tls_cert, tls_key } => {
             let cfg: TaskConfig = read(&task)?;
             let material: PublicMaterial = read(&material)?;
-            let node = CollectorNode::new(CollectorNodeConfig { task: cfg, material, token, db })?;
+            let seal_key = match seal_secret {
+                Some(p) => {
+                    let b = secret::unseal(format!("collector-identity").as_bytes(), &std::fs::read(&p)?)?;
+                    Some(CollectorSealKey::from_secret_bytes(b.as_slice().try_into().map_err(|_| anyhow::anyhow!("sealing secret must be 32 bytes"))?))
+                }
+                None => None,
+            };
+            let node = CollectorNode::new(CollectorNodeConfig { task: cfg, material, collector_id: id, seal_key, token, db })?;
             let handle = axum_server::Handle::new();
             tracing::info!(%listen, "collector listening");
             let tls = CollectorNode::tls_config(tls_cert, tls_key).await?;
@@ -374,8 +429,11 @@ async fn main() -> anyhow::Result<()> {
         }
         Cmd::Close { leader, ca, token } => {
             let http = fhe_prio3_node::wire::https_client(&std::fs::read(&ca)?)?;
-            let r: BatchResult = fhe_prio3_node::wire::http_post(&http, &format!("{leader}/v1/close"), Some(&token), &()).await?;
-            println!("{r:?}");
+            let r: fhe_prio3_node::wire::CloseReply = fhe_prio3_node::wire::http_post(&http, &format!("{leader}/v1/close"), Some(&token), &()).await?;
+            match r.result {
+                Some(res) => println!("{res:?}"),
+                None => println!("released to collectors {:?}; each reads its result from its own collector", r.released_to),
+            }
         }
         Cmd::KeygenShards { task, shards, out_dir, identities_dir } => {
             let base: TaskConfig = read(&task)?;

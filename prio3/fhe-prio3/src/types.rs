@@ -59,6 +59,10 @@ pub enum AggregateResult {
 /// What the collector returns for a batch.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BatchResult {
+    /// Collector this result was released to (0 without release policies).
+    pub collector: u32,
+    /// Elements of `aggregate` this collector received; the others are zero.
+    pub elements: Vec<usize>,
     pub aggregate: AggregateResult,
     /// Reports that entered the sums (verdict mode: accepted reports;
     /// silent mode: admitted reports, valid or not).
@@ -254,6 +258,35 @@ impl MeasurementType {
         }
     }
 
+    /// Number of elements of the aggregate (what a release policy names).
+    pub fn num_elements(&self) -> usize {
+        match self {
+            MeasurementType::Count | MeasurementType::Sum { .. } => 1,
+            MeasurementType::SumVec { length, .. } | MeasurementType::Histogram { length } | MeasurementType::MultihotCountVec { length, .. } => *length,
+            MeasurementType::BoundedSumVec { bounds } => bounds.len(),
+        }
+    }
+
+    /// Encoded slots that belong to element `e`: everything the collector
+    /// needs to read that element and check its own constraints (for `Sum`
+    /// and `BoundedSumVec` the offset bits too). Slots outside every
+    /// element's range (the weight bits of `MultihotCountVec`) serve a
+    /// constraint spanning all elements and are released only to collectors
+    /// that see every element.
+    pub fn element_slots(&self, e: usize) -> std::ops::Range<usize> {
+        debug_assert!(e < self.num_elements());
+        match self {
+            MeasurementType::Count => 0..1,
+            MeasurementType::Sum { .. } => 0..self.input_len(),
+            MeasurementType::SumVec { bits, .. } => e * *bits as usize..(e + 1) * *bits as usize,
+            MeasurementType::BoundedSumVec { .. } => {
+                let (start, bits) = self.value_slots().expect("vector type")[e];
+                start..start + 2 * bits as usize
+            }
+            MeasurementType::Histogram { .. } | MeasurementType::MultihotCountVec { .. } => e..e + 1,
+        }
+    }
+
     /// Number of field elements (all bits) in an encoded measurement.
     pub fn input_len(&self) -> usize {
         match self {
@@ -414,31 +447,45 @@ impl MeasurementType {
     /// not a proper encryption fails this with overwhelming probability,
     /// which is how silent mode detects (but cannot attribute) corruption.
     pub fn check_aggregate_consistency(&self, slot_sums: &[u64], count: u64) -> Result<()> {
-        if slot_sums.len() < self.input_len() {
+        self.check_aggregate_consistency_visible(slot_sums, count, None)
+    }
+
+    /// As [`Self::check_aggregate_consistency`], for a collector that sees
+    /// only `visible` slots (`None`: all). Hidden slots are zero in
+    /// `slot_sums` and are not checked; a linear constraint is checked only
+    /// when every slot it involves is visible. Constraints are evaluated
+    /// over the integers with the type's own arithmetic, so this is the
+    /// same check as the full one restricted to what the collector holds.
+    pub fn check_aggregate_consistency_visible(&self, slot_sums: &[u64], count: u64, visible: Option<&[bool]>) -> Result<()> {
+        let m = self.input_len();
+        if slot_sums.len() < m {
             return Err(Error::Protocol("aggregate has too few slots".into()));
         }
-        if let Some((i, &s)) = slot_sums[..self.input_len()].iter().enumerate().find(|&(_, &s)| s > count) {
+        let vis = |i: usize| visible.map_or(true, |v| v[i]);
+        if let Some((i, &s)) = slot_sums[..m].iter().enumerate().find(|&(i, &s)| vis(i) && s > count) {
             return Err(Error::Protocol(format!("aggregate inconsistent: slot {i} sums to {s} over {count} reports")));
         }
         let value = |bits: &[u64]| -> u128 { decode_bits_u128(bits) };
+        let all_visible = |r: std::ops::Range<usize>| r.into_iter().all(vis);
         let ok = match self {
             MeasurementType::Count | MeasurementType::SumVec { .. } => true,
             MeasurementType::Sum { max_measurement } => {
                 let bits = Self::sum_bits(*max_measurement) as usize;
-                value(&slot_sums[..bits]) + count as u128 * Self::sum_offset(*max_measurement) as u128 == value(&slot_sums[bits..2 * bits])
+                !all_visible(0..2 * bits) || value(&slot_sums[..bits]) + count as u128 * Self::sum_offset(*max_measurement) as u128 == value(&slot_sums[bits..2 * bits])
             }
             MeasurementType::BoundedSumVec { bounds } => {
                 let map = self.value_slots().expect("vector type");
                 map.iter().zip(bounds).all(|(&(start, bits), &b)| {
                     let bits = bits as usize;
-                    value(&slot_sums[start..start + bits]) + count as u128 * Self::sum_offset(b) as u128 == value(&slot_sums[start + bits..start + 2 * bits])
+                    !all_visible(start..start + 2 * bits)
+                        || value(&slot_sums[start..start + bits]) + count as u128 * Self::sum_offset(b) as u128 == value(&slot_sums[start + bits..start + 2 * bits])
                 })
             }
-            MeasurementType::Histogram { length } => slot_sums[..*length].iter().map(|&s| s as u128).sum::<u128>() == count as u128,
+            MeasurementType::Histogram { length } => !all_visible(0..*length) || slot_sums[..*length].iter().map(|&s| s as u128).sum::<u128>() == count as u128,
             MeasurementType::MultihotCountVec { length, max_weight } => {
                 let wb = Self::weight_bits(*max_weight) as usize;
                 let weight: u128 = slot_sums[..*length].iter().map(|&s| s as u128).sum();
-                weight + count as u128 * Self::weight_offset(*max_weight) as u128 == value(&slot_sums[*length..*length + wb])
+                !all_visible(0..*length + wb) || weight + count as u128 * Self::weight_offset(*max_weight) as u128 == value(&slot_sums[*length..*length + wb])
             }
         };
         if !ok {

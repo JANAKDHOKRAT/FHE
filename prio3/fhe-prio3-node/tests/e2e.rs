@@ -45,24 +45,30 @@ struct Cluster {
     material: PublicMaterial,
     shares: Vec<Vec<u8>>,
     agg_urls: Vec<String>,
-    col_url: String,
+    col_urls: Vec<String>,
     agg_ports: Vec<u16>,
-    col_port: u16,
+    col_ports: Vec<u16>,
+    /// Sealing keys by collector id (empty without policies).
+    seal_keys: Vec<CollectorSealKey>,
     token: String,
     handles: Vec<axum_server::Handle>,
 }
 
 impl Cluster {
     fn new(task: TaskConfig) -> Self {
+        Self::with_seal_keys(task, Vec::new())
+    }
+
+    fn with_seal_keys(task: TaskConfig, seal_keys: Vec<CollectorSealKey>) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let tls = make_tls(dir.path());
         let (material, shares) = keys::run_local_ceremony(&task).unwrap();
         let n = task.num_aggregators;
         let agg_ports: Vec<u16> = (0..n).map(|_| free_port()).collect();
-        let col_port = free_port();
+        let col_ports: Vec<u16> = (0..task.num_collectors()).map(|_| free_port()).collect();
         let agg_urls = agg_ports.iter().map(|p| format!("https://localhost:{p}")).collect();
-        let col_url = format!("https://localhost:{col_port}");
-        Self { dir, tls, task, material, shares, agg_urls, col_url, agg_ports, col_port, token: "t0k3n".into(), handles: Vec::new() }
+        let col_urls = col_ports.iter().map(|p| format!("https://localhost:{p}")).collect();
+        Self { dir, tls, task, material, shares, agg_urls, col_urls, agg_ports, col_ports, seal_keys, token: "t0k3n".into(), handles: Vec::new() }
     }
 
     fn agg_config(&self, i: usize) -> AggregatorNodeConfig {
@@ -72,7 +78,7 @@ impl Cluster {
             material: self.material.clone(),
             share: self.shares[i].clone(),
             aggregators: self.agg_urls.clone(),
-            collector: self.col_url.clone(),
+            collectors: self.col_urls.clone(),
             token: self.token.clone(),
             db: self.dir.path().join(format!("agg{i}.db")),
             registry: None,
@@ -100,16 +106,18 @@ impl Cluster {
         }
     }
 
-    async fn start_collector(&mut self) {
+    async fn start_collector(&mut self, c: usize) {
         let node = CollectorNode::new(CollectorNodeConfig {
             task: self.task.clone(),
             material: self.material.clone(),
+            collector_id: c as u32,
+            seal_key: self.seal_keys.get(c).map(|k| CollectorSealKey::from_secret_bytes(&k.secret_bytes())),
             token: self.token.clone(),
-            db: self.dir.path().join("collector.db"),
+            db: self.dir.path().join(format!("collector{c}.db")),
         })
         .unwrap();
         let handle = axum_server::Handle::new();
-        let addr: SocketAddr = format!("127.0.0.1:{}", self.col_port).parse().unwrap();
+        let addr: SocketAddr = format!("127.0.0.1:{}", self.col_ports[c]).parse().unwrap();
         let tls = CollectorNode::tls_config(self.tls.cert.clone(), self.tls.key.clone()).await.expect("tls config");
         let h = handle.clone();
         let task = tokio::spawn(async move { node.serve(addr, Some(tls), h).await });
@@ -118,7 +126,9 @@ impl Cluster {
     }
 
     async fn start_all(&mut self) {
-        self.start_collector().await;
+        for c in 0..self.task.num_collectors() {
+            self.start_collector(c).await;
+        }
         for i in 0..self.task.num_aggregators {
             self.start_aggregator(i).await;
         }
@@ -130,7 +140,20 @@ impl Cluster {
 
     async fn close(&self) -> anyhow::Result<BatchResult> {
         let http = https_client(&self.tls.ca_pem)?;
-        http_post(&http, &format!("{}/v1/close", self.agg_urls[0]), Some(&self.token), &()).await
+        let r: fhe_prio3_node::wire::CloseReply = http_post(&http, &format!("{}/v1/close", self.agg_urls[0]), Some(&self.token), &()).await?;
+        r.result.ok_or_else(|| anyhow::anyhow!("no result on close"))
+    }
+
+    async fn close_policies(&self) -> anyhow::Result<Vec<u32>> {
+        let http = https_client(&self.tls.ca_pem)?;
+        let r: fhe_prio3_node::wire::CloseReply = http_post(&http, &format!("{}/v1/close", self.agg_urls[0]), Some(&self.token), &()).await?;
+        assert!(r.result.is_none(), "policy tasks return no result to the leader");
+        Ok(r.released_to)
+    }
+
+    async fn result_of(&self, c: usize) -> anyhow::Result<Option<BatchResult>> {
+        let http = https_client(&self.tls.ca_pem)?;
+        http_get(&http, &format!("{}/v1/result", self.col_urls[c]), Some(&self.token)).await
     }
 
     fn stop_all(&mut self) {
@@ -245,4 +268,73 @@ async fn silent_batched_sum_over_tls() {
     let r = c.close().await.unwrap();
     assert_eq!((r.aggregate, r.report_count, r.valid_count), (AggregateResult::Sum(200), 4, 3));
     c.stop_all();
+}
+
+/// Two collectors with disjoint release policies over TLS: each collector
+/// process receives only its own sealed shares, opens them with its own key
+/// and serves only its own elements; the leader relays opaque envelopes and
+/// gets no result; a helper refuses an unknown collector id; a collector
+/// refuses an envelope sealed for another collector; a wrong sealing key
+/// fails at startup.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_collectors_with_policies_over_tls() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let t = MeasurementType::BoundedSumVec { bounds: vec![100, 5, 15, 15] };
+    let k0 = CollectorSealKey::generate();
+    let k1 = CollectorSealKey::generate();
+    let mut task = TaskConfig::new([11u8; 32], t.clone(), 2);
+    task.moments = true;
+    task.max_batch_size = task.moments_max_batch().unwrap().min(1 << 20);
+    task.collectors = vec![
+        CollectorPolicy { elements: vec![0, 1], moments: false, seal_key: k0.public_key() },
+        CollectorPolicy { elements: vec![2, 3], moments: true, seal_key: k1.public_key() },
+    ];
+    task.validate().unwrap();
+    let mut c = Cluster::with_seal_keys(task.clone(), vec![CollectorSealKey::from_secret_bytes(&k0.secret_bytes()), CollectorSealKey::from_secret_bytes(&k1.secret_bytes())]);
+    c.start_all().await;
+    let client = c.client();
+    let rows = vec![vec![10u64, 1, 8, 8], vec![20, 5, 7, 6], vec![100, 3, 15, 15], vec![40, 1, 11, 12]];
+    for r in &rows {
+        assert_eq!(client.submit(&Measurement::SumVec(r.clone())).await.unwrap(), SubmitOutcome::Accepted);
+    }
+    let http = https_client(&c.tls.ca_pem).unwrap();
+    // a helper refuses a collector id the task does not declare
+    let r: anyhow::Result<fhe_prio3_node::wire::ShareReply> =
+        http_post(&http, &format!("{}/v1/aggregate-share", c.agg_urls[1]), Some(&c.token), &fhe_prio3_node::wire::ShareRequest { collector: 7 }).await;
+    assert!(r.err().expect("unknown collector").to_string().contains("400"));
+    // the leader closes: releases go to both collectors, no result comes back
+    assert_eq!(c.close_policies().await.unwrap(), vec![0, 1]);
+    let all = t.aggregate_plain(&rows.iter().map(|r| Measurement::SumVec(r.clone())).collect::<Vec<_>>()).unwrap();
+    let AggregateResult::SumVec(all) = all else { panic!() };
+    let r0 = c.result_of(0).await.unwrap().expect("collector 0 complete");
+    assert_eq!((r0.collector, &r0.elements, r0.aggregate.clone(), r0.report_count), (0, &vec![0, 1], AggregateResult::SumVec(vec![all[0], all[1], 0, 0]), 4));
+    assert!(r0.regression.is_none());
+    let r1 = c.result_of(1).await.unwrap().expect("collector 1 complete");
+    assert_eq!((r1.collector, &r1.elements, r1.aggregate.clone()), (1, &vec![2, 3], AggregateResult::SumVec(vec![0, 0, all[2], all[3]])));
+    let reg = r1.regression.expect("collector 1 has moments");
+    let plain = fhe_prio3::types::regression_plain(&rows.iter().map(|r| vec![r[2], r[3]]).collect::<Vec<_>>());
+    assert_eq!((reg.n, &reg.first, &reg.second), (plain.n, &plain.first, &plain.second));
+    // an envelope sealed for collector 1 is refused by collector 0
+    let sealed1: fhe_prio3_node::wire::ShareReply =
+        http_post(&http, &format!("{}/v1/aggregate-share", c.agg_urls[1]), Some(&c.token), &fhe_prio3_node::wire::ShareRequest { collector: 1 }).await.unwrap();
+    let fhe_prio3_node::wire::ShareReply::Sealed(sealed1) = sealed1 else { panic!("policy tasks seal") };
+    assert!(fhe_prio3::seal::open(&sealed1, &k0).is_err(), "the leader-visible envelope is opaque to another key");
+    let r: anyhow::Result<fhe_prio3_node::wire::ShareReceipt> =
+        http_post(&http, &format!("{}/v1/aggregate-share", c.col_urls[0]), Some(&c.token), &fhe_prio3_node::wire::SealedEnvelope { sealed: sealed1 }).await;
+    assert!(r.err().expect("wrong collector").to_string().contains("400"));
+    // closing again is idempotent: the same releases
+    assert_eq!(c.close_policies().await.unwrap(), vec![0, 1]);
+    c.stop_all();
+    // a collector started with a key the task does not declare refuses to start
+    let bad = CollectorNode::new(CollectorNodeConfig {
+        task: task.clone(),
+        material: c.material.clone(),
+        collector_id: 1,
+        seal_key: Some(CollectorSealKey::generate()),
+        token: c.token.clone(),
+        db: c.dir.path().join("bad.db"),
+    });
+    assert!(bad.is_err());
+    let none = CollectorNode::new(CollectorNodeConfig { task, material: c.material.clone(), collector_id: 0, seal_key: None, token: c.token.clone(), db: c.dir.path().join("bad2.db") });
+    assert!(none.is_err());
 }

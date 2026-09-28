@@ -33,7 +33,8 @@ pub struct AggregatorNodeConfig {
     pub share: Vec<u8>,
     /// Base URLs of every aggregator, by index (including this one).
     pub aggregators: Vec<String>,
-    pub collector: String,
+    /// Base URLs of the collectors, by collector id (one without policies).
+    pub collectors: Vec<String>,
     /// Shared secret for aggregator-to-aggregator and aggregator-to-collector calls.
     pub token: String,
     pub db: PathBuf,
@@ -47,7 +48,7 @@ struct Inner {
     agg: Mutex<Aggregator>,
     store: Mutex<Store>,
     aggregators: Vec<String>,
-    collector: String,
+    collectors: Vec<String>,
     token: String,
     http: reqwest::Client,
     next_group: AtomicU32,
@@ -88,6 +89,9 @@ impl AggregatorNode {
         }
         let groups = agg.layout().groups as u32;
         let max_report_bytes = agg.max_report_bytes();
+        if cfg.collectors.len() != cfg.task.num_collectors() {
+            anyhow::bail!("task has {} collector(s) but {} collector URL(s) were given", cfg.task.num_collectors(), cfg.collectors.len());
+        }
         let http = https_client(&cfg.ca_pem)?;
         Ok(Self {
             inner: Arc::new(Inner {
@@ -96,7 +100,7 @@ impl AggregatorNode {
                 agg: Mutex::new(agg),
                 store: Mutex::new(store),
                 aggregators: cfg.aggregators,
-                collector: cfg.collector,
+                collectors: cfg.collectors,
                 token: cfg.token,
                 http,
                 next_group: AtomicU32::new(0),
@@ -265,7 +269,7 @@ impl AggregatorNode {
 
     /// Closes the batch on every aggregator and delivers the shares to the
     /// collector, which returns the batch result.
-    async fn drive_close(&self) -> std::result::Result<BatchResult, HttpError> {
+    async fn drive_close(&self) -> std::result::Result<CloseReply, HttpError> {
         if self.inner.task.mode == VerificationMode::Silent {
             let mut counts = vec![self.with_agg("count_share", String::new(), vec![], |agg| Ok((agg.count_share()?, true))).await?];
             for (_, url) in self.helpers() {
@@ -282,20 +286,50 @@ impl AggregatorNode {
                 }
             }
         }
-        let mut shares = vec![self.with_agg("aggregate_share", String::new(), vec![], |agg| Ok((agg.aggregate_share()?, true))).await?];
-        for (_, url) in self.helpers() {
-            let s: AggregateShare = http_post(&self.inner.http,&format!("{url}/v1/aggregate-share"), Some(&self.inner.token), &()).await?;
-            shares.push(s);
-        }
-        let mut result: Option<BatchResult> = None;
-        for s in shares {
-            let r: Option<BatchResult> =
-                http_post(&self.inner.http, &format!("{}/v1/aggregate-share", self.inner.collector), Some(&self.inner.token), &ShareEnvelope { share: s }).await?;
-            if r.is_some() {
-                result = r;
+        if self.inner.task.collectors.is_empty() {
+            // single collector, plain shares relayed by the leader
+            let mut shares = vec![self.with_agg("aggregate_share", String::new(), vec![], |agg| Ok((agg.aggregate_share()?, true))).await?];
+            for (_, url) in self.helpers() {
+                let r: ShareReply = http_post(&self.inner.http, &format!("{url}/v1/aggregate-share"), Some(&self.inner.token), &ShareRequest { collector: 0 }).await?;
+                match r {
+                    ShareReply::Plain(s) => shares.push(s),
+                    ShareReply::Sealed(_) => return Err(HttpError(StatusCode::INTERNAL_SERVER_ERROR, "helper sealed a share on a task without policies".into())),
+                }
             }
+            let mut result: Option<BatchResult> = None;
+            for s in shares {
+                let r: ShareReceipt =
+                    http_post(&self.inner.http, &format!("{}/v1/aggregate-share", self.inner.collectors[0]), Some(&self.inner.token), &ShareEnvelope { share: s }).await?;
+                if r.complete {
+                    result = r.result;
+                }
+            }
+            let result = result.ok_or_else(|| HttpError(StatusCode::INTERNAL_SERVER_ERROR, "collector did not produce a result after all shares".into()))?;
+            return Ok(CloseReply { result: Some(result), released_to: vec![0] });
         }
-        result.ok_or_else(|| HttpError(StatusCode::INTERNAL_SERVER_ERROR, "collector did not produce a result after all shares".into()))
+        // release policies: every aggregator seals its share for collector c
+        // to c's key; the leader relays opaque envelopes and learns nothing
+        let mut released_to = Vec::new();
+        for c in 0..self.inner.task.collectors.len() {
+            let mut sealed = vec![self.with_agg("sealed_share_for", format!("{c}"), vec![], move |agg| Ok((agg.sealed_share_for(c)?, true))).await?];
+            for (_, url) in self.helpers() {
+                let r: ShareReply = http_post(&self.inner.http, &format!("{url}/v1/aggregate-share"), Some(&self.inner.token), &ShareRequest { collector: c as u32 }).await?;
+                match r {
+                    ShareReply::Sealed(s) => sealed.push(s),
+                    ShareReply::Plain(_) => return Err(HttpError(StatusCode::INTERNAL_SERVER_ERROR, "helper returned a plain share on a task with policies".into())),
+                }
+            }
+            let mut complete = false;
+            for s in sealed {
+                let r: ShareReceipt = http_post(&self.inner.http, &format!("{}/v1/aggregate-share", self.inner.collectors[c]), Some(&self.inner.token), &SealedEnvelope { sealed: s }).await?;
+                complete = r.complete;
+            }
+            if !complete {
+                return Err(HttpError(StatusCode::INTERNAL_SERVER_ERROR, format!("collector {c} did not complete after all shares")));
+            }
+            released_to.push(c as u32);
+        }
+        Ok(CloseReply { result: None, released_to })
     }
 }
 
@@ -404,8 +438,22 @@ async fn internal_count_finish(State(node): State<AggregatorNode>, headers: Head
     reply(&n)
 }
 
-async fn internal_aggregate_share(State(node): State<AggregatorNode>, headers: HeaderMap) -> std::result::Result<axum::response::Response, HttpError> {
+/// A helper releases only what the task's policy for the named collector
+/// allows, and seals it to that collector; the leader cannot widen it.
+async fn internal_aggregate_share(State(node): State<AggregatorNode>, headers: HeaderMap, body: Bytes) -> std::result::Result<axum::response::Response, HttpError> {
     check_token(&headers, &node.inner.token)?;
-    let s = node.with_agg("aggregate_share", String::new(), vec![], |agg| Ok((agg.aggregate_share()?, true))).await?;
-    reply(&s)
+    let req: ShareRequest = parse_body(&body)?;
+    let c = req.collector as usize;
+    if node.inner.task.collectors.is_empty() {
+        if c != 0 {
+            return Err(HttpError(StatusCode::BAD_REQUEST, "task has a single collector, id 0".into()));
+        }
+        let s = node.with_agg("aggregate_share", String::new(), vec![], |agg| Ok((agg.aggregate_share()?, true))).await?;
+        return reply(&ShareReply::Plain(s));
+    }
+    if c >= node.inner.task.collectors.len() {
+        return Err(HttpError(StatusCode::BAD_REQUEST, format!("no collector {c} in the task")));
+    }
+    let s = node.with_agg("sealed_share_for", format!("{c}"), vec![], move |agg| Ok((agg.sealed_share_for(c)?, true))).await?;
+    reply(&ShareReply::Sealed(s))
 }

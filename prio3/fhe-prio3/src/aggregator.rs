@@ -66,8 +66,8 @@ pub struct AggregatorState {
     /// a repeated close returns these same bytes rather than a fresh
     /// partial decryption of the same ciphertext.
     pub released_count_share: Option<CountShare>,
-    /// The aggregate share released for this batch, if any (same rule).
-    pub released_aggregate_share: Option<AggregateShare>,
+    /// The aggregate shares released for this batch, by collector (same rule).
+    pub released_aggregate_shares: BTreeMap<u32, AggregateShare>,
 }
 
 struct Pending {
@@ -128,7 +128,7 @@ pub struct Aggregator {
     valid_count: Option<u64>,
     closed: bool,
     released_count_share: Option<CountShare>,
-    released_aggregate_share: Option<AggregateShare>,
+    released_aggregate_shares: BTreeMap<u32, AggregateShare>,
     rng: OsRng,
 }
 
@@ -194,7 +194,7 @@ impl Aggregator {
             valid_count: None,
             closed: false,
             released_count_share: None,
-            released_aggregate_share: None,
+            released_aggregate_shares: BTreeMap::new(),
             rng: OsRng,
         })
     }
@@ -404,7 +404,7 @@ impl Aggregator {
             return Ok(Verdict::Rejected(RejectReason::ValidityCheckFailed));
         }
         if self.layout.moments.is_some() {
-            let products = self.circuit.moment_products(&pending.chunks[0], 0)?;
+            let products = self.circuit.moment_products(&pending.chunks, 0)?;
             self.add_to_moments(products)?;
         }
         self.add_to_sums(pending.chunks)?;
@@ -462,7 +462,7 @@ impl Aggregator {
                 // Products are non-zero only at the group's element-0 slot,
                 // where G holds this report's validity bit.
                 let mut folded = Vec::with_capacity(self.layout.moment_pairs());
-                for p in self.circuit.moment_products(&masked[0], group)? {
+                for p in self.circuit.moment_products(&masked, group)? {
                     let gated = self.ctx.mult(&p, &g)?;
                     folded.push(self.circuit.fold_to_group0(&gated, group)?);
                 }
@@ -512,7 +512,7 @@ impl Aggregator {
             valid_count: self.valid_count,
             closed: self.closed,
             released_count_share: self.released_count_share.clone(),
-            released_aggregate_share: self.released_aggregate_share.clone(),
+            released_aggregate_shares: self.released_aggregate_shares.clone(),
         })
     }
 
@@ -563,7 +563,7 @@ impl Aggregator {
         self.valid_count = st.valid_count;
         self.closed = st.closed;
         self.released_count_share = st.released_count_share;
-        self.released_aggregate_share = st.released_aggregate_share;
+        self.released_aggregate_shares = st.released_aggregate_shares;
         self.pending.clear();
         Ok(())
     }
@@ -632,14 +632,30 @@ impl Aggregator {
         Ok(valid)
     }
 
-    /// Releases this aggregator's partial decryptions of the batch sums and
-    /// closes the batch: no further reports are admitted under this key.
-    /// Refuses batches with fewer than `min_batch_size` valid reports (in
-    /// silent mode this requires the count round to have run).
-    ///
-    /// Released once per batch, for the reason given at [`Self::count_share`].
+    /// Releases this aggregator's partial decryptions of the batch sums to
+    /// the single collector of a task without release policies (id 0) and
+    /// closes the batch. Tasks with policies use [`Self::aggregate_share_for`].
     pub fn aggregate_share(&mut self) -> Result<AggregateShare> {
-        if let Some(s) = &self.released_aggregate_share {
+        if !self.cfg.collectors.is_empty() {
+            return Err(Error::Protocol("task has release policies: use aggregate_share_for(collector)".into()));
+        }
+        self.aggregate_share_for(0)
+    }
+
+    /// Releases to collector `collector` exactly what its policy allows:
+    /// partial decryptions of the chunks it may see (whole chunks, cut at
+    /// visibility boundaries, so nothing outside its elements is ever
+    /// partially decrypted) and of the second-moment accumulators of pairs
+    /// within its elements. Closes the batch on first release. Refuses
+    /// batches with fewer than `min_batch_size` valid reports (in silent
+    /// mode this requires the count round to have run).
+    ///
+    /// Released once per (batch, collector), for the reason given at
+    /// [`Self::count_share`]; the number of releases per batch is therefore
+    /// bounded by the number of collectors declared in the task.
+    pub fn aggregate_share_for(&mut self, collector: usize) -> Result<AggregateShare> {
+        let elements = self.cfg.collector_elements(collector)?; // rejects unknown collectors
+        if let Some(s) = self.released_aggregate_shares.get(&(collector as u32)) {
             return Ok(s.clone());
         }
         let count = self.accepted_ids.len();
@@ -653,23 +669,31 @@ impl Aggregator {
         self.closed = true;
         self.pending.clear();
         let sums = self.sums.as_ref().expect("count >= 1");
-        let mut partials = Vec::with_capacity(sums.len());
-        for s in sums {
-            partials.push(self.share.partial_decrypt(s, self.index == 0)?.serialize()?);
+        let chunks = self.cfg.collector_chunks(&self.layout, collector);
+        let mut partials = Vec::with_capacity(chunks.len());
+        for &k in &chunks {
+            partials.push(self.share.partial_decrypt(&sums[k], self.index == 0)?.serialize()?);
         }
         let valid_count_partial = match &self.valid_count_sum {
             Some(ct) => Some(self.share.partial_decrypt(ct, self.index == 0)?.serialize()?),
             None => None,
         };
         let mut moment_partials = Vec::new();
-        if self.layout.moments.is_some() {
+        let pairs = self.cfg.collector_moment_pairs(collector)?;
+        if !pairs.is_empty() {
             let sums = self.moment_sums.as_ref().ok_or_else(|| Error::Protocol("moments enabled but no products accumulated".into()))?;
-            for m in sums {
-                moment_partials.push(self.share.partial_decrypt(m, self.index == 0)?.serialize()?);
+            let n = self.cfg.measurement_type.num_elements();
+            for &(a, b) in &pairs {
+                // accumulator index of pair (a <= b) in row-major (a, b >= a) order
+                let idx = pair_index(n, a, b);
+                debug_assert!(idx < sums.len());
+                moment_partials.push(self.share.partial_decrypt(&sums[idx], self.index == 0)?.serialize()?);
             }
         }
+        let _ = elements;
         let share = AggregateShare {
             task_id: self.cfg.task_id,
+            collector: collector as u32,
             aggregator: self.index,
             batch_digest: batch_digest(self.accepted_ids.clone()),
             report_count: count as u64,
@@ -677,7 +701,41 @@ impl Aggregator {
             valid_count_partial,
             moment_partials,
         };
-        self.released_aggregate_share = Some(share.clone());
+        self.released_aggregate_shares.insert(collector as u32, share.clone());
         Ok(share)
+    }
+
+    /// [`Self::aggregate_share_for`], sealed to the collector's key from the
+    /// task. Tasks without policies have no key and cannot seal.
+    pub fn sealed_share_for(&mut self, collector: usize) -> Result<crate::seal::SealedShare> {
+        let key = self.cfg.collectors.get(collector).map(|p| p.seal_key).ok_or_else(|| Error::Config(format!("no sealing key for collector {collector}")))?;
+        let share = self.aggregate_share_for(collector)?;
+        crate::seal::seal(&share, &key)
+    }
+}
+
+/// Index of pair `(a <= b)` among the `(a <= b)` pairs of `n` values in the
+/// accumulator order of `Circuit::moment_products` (row-major over `a`,
+/// then `b` from `a`).
+pub fn pair_index(n: usize, a: usize, b: usize) -> usize {
+    debug_assert!(a <= b && b < n);
+    // pairs before row a: sum_{i<a} (n - i) = a*n - a(a-1)/2
+    a * n - a * a.saturating_sub(1) / 2 + (b - a)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn pair_index_matches_accumulator_order() {
+        for n in 1..7 {
+            let mut idx = 0;
+            for a in 0..n {
+                for b in a..n {
+                    assert_eq!(super::pair_index(n, a, b), idx, "n={n} a={a} b={b}");
+                    idx += 1;
+                }
+            }
+            assert_eq!(idx, n * (n + 1) / 2);
+        }
     }
 }

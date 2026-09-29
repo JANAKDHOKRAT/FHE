@@ -104,6 +104,15 @@ unsafe extern "C" {
     pub fn tbgv_eval_square(ctx: TbgvContext, a: TbgvCiphertext) -> TbgvCiphertext;
     pub fn tbgv_ciphertext_add_noise_for_tests(ctx: TbgvContext, ct: TbgvCiphertext, log2_magnitude: u32, seed: u64) -> TbgvCiphertext;
 
+    pub fn tbgv_flooding_sigma(ctx: TbgvContext) -> f64;
+    pub fn tbgv_fuse_raw(ctx: TbgvContext, partials: *const TbgvCiphertext, n: usize, out_over_t: *mut f64, out_len: usize, log2_max: *mut f64, log2_q: *mut f64) -> c_int;
+    pub fn tbgv_raw_decrypt_for_tests(ctx: TbgvContext, ct: TbgvCiphertext, sks: *const TbgvSecretKey, n: usize, out_over_t: *mut f64, out_len: usize, log2_max: *mut f64, log2_q: *mut f64) -> c_int;
+    pub fn tbgv_pubkey_inflate_for_tests(ctx: TbgvContext, pk: TbgvPublicKey, log2_k: u32, seed: u64, constant: c_int) -> TbgvPublicKey;
+
+    pub fn tbgv_fuse_flooding_check(ctx: TbgvContext, partials: *const TbgvCiphertext, n: usize, slack_bits: u32, within: *mut c_int, ratio: *mut f64) -> c_int;
+    pub fn tbgv_partial_decrypt_shaped_for_tests(ctx: TbgvContext, ct: TbgvCiphertext, sk: TbgvSecretKey, is_lead: c_int, num: u64, den: u64, seed: u64) -> TbgvCiphertext;
+    pub fn tbgv_pubkey_inflate_ratio_for_tests(ctx: TbgvContext, pk: TbgvPublicKey, num: u64, den: u64) -> TbgvPublicKey;
+
     pub fn tbgv_partial_decrypt(ctx: TbgvContext, ct: TbgvCiphertext, sk: TbgvSecretKey, is_lead: c_int) -> TbgvCiphertext;
     pub fn tbgv_fuse(ctx: TbgvContext, partials: *const TbgvCiphertext, n: usize, out: *mut i64, out_len: usize) -> usize;
     pub fn tbgv_decrypt_single(ctx: TbgvContext, sk: TbgvSecretKey, ct: TbgvCiphertext, out: *mut i64, out_len: usize) -> usize;

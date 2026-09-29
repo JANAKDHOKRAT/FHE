@@ -112,7 +112,7 @@ pub enum Payload {
     /// ciphertext, and the commitment to the test vector's seed.
     Relin2Commit { relin2: [u8; 32], check_ct: [u8; 32], check_seed: [u8; 32] },
     Relin2Reveal,
-    PartialCommit { partial: [u8; 32] },
+    PartialCommit { partial: [u8; 32], deep: Vec<[u8; 32]> },
     PartialReveal { check_seed: [u8; 32] },
     /// Digest of the transcript and the joint material, and the attestation.
     Confirm { transcript: [u8; 32], attestation: MaterialAttestation },
@@ -152,6 +152,7 @@ pub enum Blob {
     Relin2,
     CheckCiphertext,
     Partial,
+    DeepPartial(usize),
 }
 
 impl Blob {
@@ -163,13 +164,14 @@ impl Blob {
             Blob::Relin2 => "relin2".into(),
             Blob::CheckCiphertext => "check".into(),
             Blob::Partial => "partial".into(),
+            Blob::DeepPartial(i) => format!("deep-partial-{i}"),
         }
     }
     pub fn round(&self) -> Round {
         match self {
             Blob::PublicKey | Blob::Relin1 | Blob::Rotation(_) => Round::KeyReveal,
             Blob::Relin2 | Blob::CheckCiphertext => Round::Relin2Reveal,
-            Blob::Partial => Round::PartialReveal,
+            Blob::Partial | Blob::DeepPartial(_) => Round::PartialReveal,
         }
     }
 }
@@ -260,6 +262,106 @@ fn check_vector(session: &[u8; 32], seed: &[u8; 32], f: &crate::field::Field, ro
     (0..row).map(|_| x.next_field_elem(f)).collect()
 }
 
+/// The protocol's decryption points, computed by its own circuit with the
+/// joint test ciphertext `x` as every chunk of a report and the parties'
+/// test ciphertexts as the masks. Verdict mode: the masked check value, and
+/// a second-moment product if the task has moments. Silent mode: the
+/// validity-gated chunk and count at the bottom of the chain (and a gated
+/// moment product).
+fn protocol_decryption_points(cfg: &TaskConfig, ctx: &Context, field: &crate::field::Field, session: &[u8; 32], ct_hashes: &[u8], x: &Ciphertext, masks: &[Ciphertext]) -> Result<Vec<Ciphertext>> {
+    use crate::config::VerificationMode;
+    use crate::verify::{Challenge, Circuit};
+    let layout = cfg.layout(ctx.row_slots())?;
+    let circuit = Circuit::new(ctx, &layout)?;
+    let chunks: Vec<Ciphertext> = (0..layout.num_chunks).map(|_| x.try_clone()).collect::<std::result::Result<_, _>>()?;
+    let report_id = h(&[b"ceremony circuit check", session, ct_hashes]);
+    let mut out = Vec::new();
+    match cfg.mode {
+        VerificationMode::Verdict => {
+            let ch = Challenge::derive(cfg, field, &layout, &report_id, 0);
+            let s = circuit.check_sum(&chunks, &ch)?;
+            out.push(circuit.apply_masks(&s, &masks.iter().collect::<Vec<_>>())?);
+            if layout.moments.is_some() {
+                if let Some(p) = circuit.moment_products(&chunks, 0)?.into_iter().next() {
+                    out.push(p);
+                }
+            }
+        }
+        VerificationMode::Silent => {
+            let ch = Challenge::derive(cfg, field, &layout, &report_id, 0);
+            let g = circuit.silent_validity(&circuit.class_sums(&circuit.report_terms(&chunks, &ch)?)?)?;
+            let masked: Vec<Ciphertext> = chunks.iter().enumerate().map(|(c, ct)| circuit.mask_to_group(ct, c, 0)).collect::<Result<_>>()?;
+            out.push(circuit.fold_to_group0(&ctx.mult(&masked[0], &g)?, 0)?);
+            out.push(circuit.fold_to_group0(&circuit.count_of_group(&g, 0)?, 0)?);
+            if layout.moments.is_some() {
+                if let Some(p) = circuit.moment_products(&masked, 0)?.into_iter().next() {
+                    out.push(circuit.fold_to_group0(&ctx.mult(&p, &g)?, 0)?);
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The protocol's decryption points are checked with their noise multiplied
+/// by `2^DEEP_CHECK_AMPLIFICATION_BITS` (doublings: exact, no level used).
+/// Passing the flooding check then means the noise sits at least about that
+/// many bits below one party's flooding range `Q'` at every decryption point
+/// of one report, and at least `64 - 16 - 8 = 40` bits below for sums over a
+/// silent-mode batch of 2^16 reports and verification checks combining a few
+/// hundred of them. Honest keys leave 118 bits or more
+/// (`openfhe-tbgv-rs/tests/key_noise_gap.rs`), so honest ceremonies pass.
+pub const DEEP_CHECK_AMPLIFICATION_BITS: u32 = 64;
+
+fn amplified(ctx: &Context, mut v: Ciphertext) -> Result<Ciphertext> {
+    for _ in 0..DEEP_CHECK_AMPLIFICATION_BITS {
+        v = ctx.add(&v, &v)?;
+    }
+    Ok(v)
+}
+
+/// Whether the deep key check may keep a value: at most the task's
+/// multiplicative depth (as deep as the protocol decrypts, and as deep as the
+/// wire format's start-up self-test verified), and at least the 3 towers
+/// OpenFHE's flooded partial decryption needs.
+fn deep_ok(c: &Ciphertext, cfg: &TaskConfig) -> Result<bool> {
+    let m = c.meta()?;
+    Ok(m.level <= cfg.mult_depth() && m.num_towers >= 3)
+}
+
+/// The inflation a deviation applies to contribution `which` (0 public key,
+/// 1 eval-mult round 1, 2 round 2, 3 rotations), if any.
+fn inflation(dev: Deviation, which: usize) -> Option<u32> {
+    let k = match (dev, which) {
+        (Deviation::InflatedPublicKeyNoise(k), 0) | (Deviation::InflatedRelin1Noise(k), 1) | (Deviation::InflatedRelin2Noise(k), 2) | (Deviation::InflatedRotationNoise(k), 3) => k,
+        (Deviation::InflatedKeys(ks), w) => ks[w],
+        _ => 0,
+    };
+    (k > 0).then_some(k)
+}
+
+/// Tests only: key residues (EVALUATION format, polynomial-major then
+/// tower-major) plus `t 2^k` times the constant polynomial, i.e. the same key
+/// with its noise larger by `2^k`.
+fn inflated(mut v: Vec<u64>, moduli: &[u64], ring: usize, plain_mod: u64, k: u32) -> Vec<u64> {
+    let per = moduli.len() * ring;
+    for (i, x) in v.iter_mut().enumerate() {
+        let q = moduli[(i % per) / ring] as u128;
+        let mut p2 = 1u128;
+        let mut b = 2u128 % q;
+        let mut e = k;
+        while e > 0 {
+            if e & 1 == 1 {
+                p2 = p2 * b % q;
+            }
+            b = b * b % q;
+            e >>= 1;
+        }
+        *x = ((*x as u128 + (plain_mod as u128 % q) * p2 % q) % q) as u64;
+    }
+    v
+}
+
 /// Deviations from the protocol, for the tests that show each is caught.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[doc(hidden)]
@@ -267,6 +369,17 @@ pub enum Deviation {
     None,
     /// Uniform residues for the public-key share (committed consistently).
     GarbagePublicKey,
+    /// A well-formed public-key share whose noise carries an extra `2^k`
+    /// (the constant polynomial): decrypts correctly, oversized noise (A3).
+    InflatedPublicKeyNoise(u32),
+    /// The same for the round-1 eval-mult contribution.
+    InflatedRelin1Noise(u32),
+    /// The same for the round-2 eval-mult contribution.
+    InflatedRelin2Noise(u32),
+    /// The same for every rotation-key contribution.
+    InflatedRotationNoise(u32),
+    /// All four at once: `[public key, round 1, round 2, rotations]`, 0 = none.
+    InflatedKeys([u32; 4]),
     /// Uniform residues for the contribution to rotation key `k`.
     GarbageRotation(usize),
     /// Round-2 eval-mult contribution made with a fresh secret.
@@ -483,20 +596,34 @@ fn run_inner(
         use rand::Rng;
         (0..polys).flat_map(|_| moduli.iter().flat_map(|&q| (0..ring).map(move |_| q)).collect::<Vec<_>>()).map(|q| rng.gen_range(0..q)).collect()
     };
-    let pk_b = if dev == Deviation::GarbagePublicKey { garbage(&pk_moduli, 1, &mut rng) } else { my_pk.export(0)? };
+    let pk_b = match dev {
+        Deviation::GarbagePublicKey => garbage(&pk_moduli, 1, &mut rng),
+        _ => match inflation(dev, 0) {
+            Some(k) => inflated(my_pk.export(0)?, &pk_moduli, ring, cfg.plain_mod, k),
+            None => my_pk.export(0)?,
+        },
+    };
     let h_pk = me.stage(t, &Blob::PublicKey, to_bytes(&pk_b))?;
     if dev == Deviation::BlobMismatch {
         // serve other residues than the committed ones
         t.stage_blob(Round::KeyReveal, &Blob::PublicKey.name(), to_bytes(&garbage(&pk_moduli, 1, &mut rng)))?;
     }
-    let h_r1 = me.stage(t, &Blob::Relin1, to_bytes(&EvalMultKey::round1_next(&ctx, &share, &relin_t)?.export(1)?))?;
+    let mut r1_b = EvalMultKey::round1_next(&ctx, &share, &relin_t)?.export(1)?;
+    if let Some(k) = inflation(dev, 1) {
+        r1_b = inflated(r1_b, &ks_moduli, ring, cfg.plain_mod, k);
+    }
+    let h_r1 = me.stage(t, &Blob::Relin1, to_bytes(&r1_b))?;
     let mut h_rot = Vec::with_capacity(indices.len());
     for (k, &idx) in indices.iter().enumerate() {
         let b = if dev == Deviation::GarbageRotation(k) {
             garbage(&ks_moduli, parts, &mut rng)
         } else {
             let tmpl = RotationKeys::single(&ctx, idx, &EvalMultKey::template(&ctx, &expand_crs(&crs, &format!("rot {idx}"), &ks_moduli, ring, parts))?)?;
-            RotationKeys::next(&ctx, &share, &tmpl, &[idx], &joint_tag)?.get(idx)?.export(1)?
+            let b = RotationKeys::next(&ctx, &share, &tmpl, &[idx], &joint_tag)?.get(idx)?.export(1)?;
+            match inflation(dev, 3) {
+                Some(e) => inflated(b, &ks_moduli, ring, cfg.plain_mod, e),
+                None => b,
+            }
         };
         h_rot.push(me.stage(t, &Blob::Rotation(k), to_bytes(&b))?);
     }
@@ -560,7 +687,11 @@ fn run_inner(
         EvalMultKey::round2(&ctx, &share, &relin1, &joint_tag)?
     };
     let mut r2_bytes = to_bytes(&r2.export(0)?);
-    r2_bytes.extend(to_bytes(&r2.export(1)?));
+    let mut r2_b = r2.export(1)?;
+    if let Some(k) = inflation(dev, 2) {
+        r2_b = inflated(r2_b, &ks_moduli, ring, cfg.plain_mod, k);
+    }
+    r2_bytes.extend(to_bytes(&r2_b));
     drop(r2);
     let h_r2 = me.stage(t, &Blob::Relin2, r2_bytes)?;
     let codec = Codec::new(&ctx, &joint_pk, &joint_pk_bytes)?;
@@ -575,6 +706,7 @@ fn run_inner(
     me.exchange(t, Round::Relin2Reveal, Payload::Relin2Reveal)?;
     let mut mk: Option<EvalMultKey> = None;
     let mut test: Option<Ciphertext> = None;
+    let mut test_cts: Vec<Ciphertext> = Vec::with_capacity(n);
     let mut ct_hashes = Vec::with_capacity(n);
     for (j, c) in r2_commits.iter().enumerate() {
         let Payload::Relin2Commit { relin2, check_ct, .. } = c else { unreachable!("kinds checked") };
@@ -589,9 +721,10 @@ fn run_inner(
             .decode(&me.blob(t, j, &Blob::CheckCiphertext, check_ct)?, Expect::Exactly(codec.fresh_meta()))
             .map_err(|e| Error::Protocol(format!("ceremony: party {j}'s test ciphertext: {e}")))?;
         test = Some(match test {
-            None => ct,
+            None => ct.try_clone()?,
             Some(acc) => ctx.add(&acc, &ct)?,
         });
+        test_cts.push(ct);
         ct_hashes.extend_from_slice(check_ct);
     }
     let mk = mk.expect("n >= 1");
@@ -624,13 +757,61 @@ fn run_inner(
     };
     let h_pd = me.stage(t, &Blob::Partial, codec.encode(mine.ciphertext())?)?;
 
+    // Deep key check (SECURITY.md §6.2). Oversized noise in any key grows
+    // with depth, and the check above works at depth 1: it let through
+    // public-key noise that stood out of the flooding by 2^13 at the depth-3
+    // verdict check value. First value: the test ciphertext through
+    // full-range plaintext factors and squarings down to the task's depth
+    // (an operation is kept only if its result stays within it;
+    // deterministic, so every party computes the same chain), then every
+    // rotation, compared slot by slot below.
+    let mut steps: Vec<Option<Vec<u64>>> = Vec::new();
+    let mut deep = x.try_clone()?;
+    loop {
+        let f: Vec<u64> = (0..row).map(|_| wx.next_field_elem(&field)).collect();
+        let a = ctx.mult_plain(&deep, &ctx.plaintext(&f)?)?;
+        if !deep_ok(&a, cfg)? {
+            break;
+        }
+        deep = a;
+        steps.push(Some(f));
+        let b = ctx.square(&deep)?;
+        if !deep_ok(&b, cfg)? {
+            break;
+        }
+        deep = b;
+        steps.push(None);
+    }
+    // every rotation key at the bottom, summed (a plaintext weight would cost
+    // one more level)
+    let mut d_ct = deep.try_clone()?;
+    for &idx in &indices {
+        d_ct = ctx.add(&d_ct, &ctx.rotate(&deep, idx)?)?;
+    }
+    drop(deep);
+    // then the protocol's own decryption points, computed by the protocol's
+    // own circuit on the test ciphertexts: noise from every key grows along
+    // exactly the path it will take on client data (flooding check only;
+    // full-range test values make it larger than for real 0/1 reports)
+    let mut deep_values = vec![d_ct];
+    for v in protocol_decryption_points(cfg, &ctx, &field, &session, &ct_hashes, &x, &test_cts)? {
+        deep_values.push(amplified(&ctx, v)?);
+    }
+    let deep_metas: Vec<CiphertextMeta> = deep_values.iter().map(|c| Ok(CiphertextMeta { num_elements: 1, ..c.meta()? })).collect::<Result<_>>()?;
+    let mut h_deep = Vec::with_capacity(deep_values.len());
+    for (i, v) in deep_values.iter().enumerate() {
+        h_deep.push(me.stage(t, &Blob::DeepPartial(i), codec.encode(share.partial_decrypt(v, index == 0)?.ciphertext())?)?);
+    }
+    drop(deep_values);
+
     // Rounds 7-8: partial decryptions committed, then revealed with the test seeds.
-    let pd_commits = me.exchange(t, Round::PartialCommit, Payload::PartialCommit { partial: h_pd })?;
+    let pd_commits = me.exchange(t, Round::PartialCommit, Payload::PartialCommit { partial: h_pd, deep: h_deep })?;
     let seeds = me.exchange(t, Round::PartialReveal, Payload::PartialReveal { check_seed })?;
     let mut partials = Vec::with_capacity(n);
+    let mut deep_partials: Vec<Vec<PartialDecryption>> = deep_metas.iter().map(|_| Vec::with_capacity(n)).collect();
     let mut sum = vec![0u64; row];
     for j in 0..n {
-        let (Payload::PartialCommit { partial }, Payload::PartialReveal { check_seed: s }, Payload::Relin2Commit { check_seed: c, .. }) = (&pd_commits[j], &seeds[j], &r2_commits[j]) else {
+        let (Payload::PartialCommit { partial, deep }, Payload::PartialReveal { check_seed: s }, Payload::Relin2Commit { check_seed: c, .. }) = (&pd_commits[j], &seeds[j], &r2_commits[j]) else {
             unreachable!("kinds checked")
         };
         if seed_commit(b"check seed", &session, j, s) != *c {
@@ -643,8 +824,19 @@ fn run_inner(
             .decode(&me.blob(t, j, &Blob::Partial, partial)?, Expect::Exactly(partial_meta))
             .map_err(|e| Error::Protocol(format!("ceremony: party {j}'s partial decryption: {e}")))?;
         partials.push(PartialDecryption::from_ciphertext(ct, j == 0));
+        if deep.len() != deep_metas.len() {
+            return Err(Error::Protocol(format!("ceremony: party {j} committed {} deep partial decryptions, expected {}", deep.len(), deep_metas.len())));
+        }
+        for (i, (hd, meta)) in deep.iter().zip(&deep_metas).enumerate() {
+            let ct = codec
+                .decode(&me.blob(t, j, &Blob::DeepPartial(i), hd)?, Expect::Exactly(*meta))
+                .map_err(|e| Error::Protocol(format!("ceremony: party {j}'s deep partial decryption {i}: {e}")))?;
+            deep_partials[i].push(PartialDecryption::from_ciphertext(ct, j == 0));
+        }
     }
     let refs: Vec<&PartialDecryption> = partials.iter().collect();
+    // an oversized key contribution shows here first, before any client data
+    crate::vdec::check_flooding(&ctx, &refs, "ceremony: joint key check")?;
     let got = ctx.fuse(&refs, row)?;
     let mulmod = |a: u64, b: u64| ((a as u128 * b as u128) % p as u128) as u64;
     let bad = (0..row)
@@ -658,6 +850,33 @@ fn run_inner(
         .count();
     if bad > 0 {
         return Err(Error::Protocol(format!("ceremony: joint key check failed in {bad} of {row} slots (a contribution or a partial decryption is wrong)")));
+    }
+    for (i, ps) in deep_partials.iter().enumerate().skip(1) {
+        crate::vdec::check_flooding(&ctx, &ps.iter().collect::<Vec<_>>(), &format!("ceremony: deep key check (protocol decryption point {i})"))?;
+    }
+    let deep_refs: Vec<&PartialDecryption> = deep_partials[0].iter().collect();
+    crate::vdec::check_flooding(&ctx, &deep_refs, "ceremony: deep key check")?;
+    let got = ctx.fuse(&deep_refs, row)?;
+    let mut z = sum.clone();
+    for step in &steps {
+        for (s, zs) in z.iter_mut().enumerate() {
+            *zs = match step {
+                Some(f) => mulmod(*zs, f[s]),
+                None => mulmod(*zs, *zs),
+            };
+        }
+    }
+    let bad = (0..row)
+        .filter(|&s| {
+            let mut e = z[s];
+            for &idx in &indices {
+                e = (e + z[(s as i64 + idx as i64).rem_euclid(row as i64) as usize]) % p;
+            }
+            got[s] != e
+        })
+        .count();
+    if bad > 0 {
+        return Err(Error::Protocol(format!("ceremony: deep key check failed in {bad} of {row} slots (the keys do not evaluate correctly at depth)")));
     }
 
     // Round 9: everyone signs the same transcript and attests the material.

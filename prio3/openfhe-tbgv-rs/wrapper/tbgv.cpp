@@ -805,6 +805,240 @@ TbgvCiphertext tbgv_ciphertext_add_noise_for_tests(TbgvContext ctx, TbgvCipherte
     TBGV_CATCH(nullptr)
 }
 
+/* ---- full-precision decryption values --------------------------------------
+ * Every partial decryption is revealed at the ciphertext's full modulus Q_l,
+ * so whoever fuses them can form sum_i partial_i = m + t (noise + flooding)
+ * over Q_l, before OpenFHE's fusion reduces it to q0. These functions
+ * measure that value: its largest centered coefficient, and optionally every
+ * coefficient divided by t. */
+
+/* log2 of a BigInteger of any size (a double overflows above 2^1024). */
+static double big_log2(const BigInteger& x) {
+    const usint msb = x.GetMSB();
+    if (msb == 0) return -INFINITY;
+    if (msb <= 900) return std::log2(x.ConvertToDouble());
+    const usint shift = msb - 64;
+    return std::log2((x >> shift).ConvertToDouble()) + static_cast<double>(shift);
+}
+
+static double centered_stats(DCRTPoly x, uint64_t t, double* out_over_t, size_t out_len, double* log2_q) {
+    x.SetFormat(Format::COEFFICIENT);
+    DCRTPoly::PolyLargeType big = x.CRTInterpolate();
+    const BigInteger Q = big.GetModulus();
+    const BigInteger half = Q >> 1;
+    const double td = static_cast<double>(t);
+    BigInteger mx(0);
+    for (usint i = 0; i < big.GetLength(); ++i) {
+        const BigInteger& v = big[i];
+        const bool neg = v > half;
+        const BigInteger a = neg ? Q - v : v;
+        if (a > mx) mx = a;
+        if (out_over_t != nullptr && i < out_len) {
+            const double d = a.ConvertToDouble() / td;
+            out_over_t[i] = neg ? -d : d;
+        }
+    }
+    if (log2_q != nullptr) *log2_q = big_log2(Q);
+    return mx > BigInteger(0) ? big_log2(mx) : 0.0;
+}
+
+double tbgv_flooding_sigma(TbgvContext ctx) {
+    TBGV_TRY
+    const auto cp = std::dynamic_pointer_cast<CryptoParametersRLWE<DCRTPoly>>(cc_of(ctx)->GetCryptoParameters());
+    if (!cp) { set_error("not an RLWE context"); return -1.0; }
+    return cp->GetFloodingDistributionParameter();
+    TBGV_CATCH(-1.0)
+}
+
+int tbgv_fuse_raw(TbgvContext ctx, const TbgvCiphertext* partials, size_t n, double* out_over_t, size_t out_len, double* log2_max,
+                  double* log2_q) {
+    TBGV_TRY
+    if (n == 0 || partials == nullptr || log2_max == nullptr || log2_q == nullptr) { set_error("bad arguments"); return 0; }
+    DCRTPoly b = ct_of(partials[0])->GetElements().at(0);
+    for (size_t i = 1; i < n; ++i) b += ct_of(partials[i])->GetElements().at(0);
+    *log2_max = centered_stats(b, cc_of(ctx)->GetCryptoParameters()->GetPlaintextModulus(), out_over_t, out_len, log2_q);
+    return 1;
+    TBGV_CATCH(0)
+}
+
+int tbgv_raw_decrypt_for_tests(TbgvContext ctx, TbgvCiphertext h, const TbgvSecretKey* sks, size_t n, double* out_over_t,
+                               size_t out_len, double* log2_max, double* log2_q) {
+    TBGV_TRY
+    if (n == 0 || sks == nullptr || log2_max == nullptr || log2_q == nullptr) { set_error("bad arguments"); return 0; }
+    const CT& ct = ct_of(h);
+    const auto& el = ct->GetElements();
+    if (el.size() != 2) { set_error("raw decryption expects a relinearized ciphertext"); return 0; }
+    const size_t towers = el[0].GetNumOfElements();
+    DCRTPoly s = sk_of(sks[0])->GetPrivateElement();
+    for (size_t i = 1; i < n; ++i) s += sk_of(sks[i])->GetPrivateElement();
+    if (s.GetNumOfElements() < towers) { set_error("secret has fewer towers than the ciphertext"); return 0; }
+    s.DropLastElements(s.GetNumOfElements() - towers);
+    s.SetFormat(el[1].GetFormat());
+    DCRTPoly x = el[1] * s;
+    x += el[0];
+    *log2_max = centered_stats(x, cc_of(ctx)->GetCryptoParameters()->GetPlaintextModulus(), out_over_t, out_len, log2_q);
+    return 1;
+    TBGV_CATCH(0)
+}
+
+TbgvPublicKey tbgv_pubkey_inflate_for_tests(TbgvContext ctx, TbgvPublicKey h, uint32_t log2_k, uint64_t seed, int constant) {
+    TBGV_TRY
+    const auto& el = pk_of(h)->GetPublicElements();
+    if (el.size() != 2) { set_error("not a public key"); return nullptr; }
+    const uint64_t t = cc_of(ctx)->GetCryptoParameters()->GetPlaintextModulus();
+    if (!constant && log2_k > 62) { set_error("random inflation is limited to 62 bits"); return nullptr; }
+    DCRTPoly e(el[0].GetParams(), Format::COEFFICIENT, true);
+    std::mt19937_64 rng(seed);
+    const uint32_t N = el[0].GetRingDimension();
+    std::vector<int64_t> r(N, 0);
+    if (!constant) {
+        const uint64_t mask = (1ULL << log2_k) - 1;
+        for (auto& x : r) {
+            x = static_cast<int64_t>(rng() & mask);
+            if (rng() & 1) x = -x;
+        }
+    }
+    for (size_t j = 0; j < e.GetNumOfElements(); ++j) {
+        NativePoly& p = e.GetAllElements()[j];
+        const NativeInteger q = p.GetModulus();
+        const NativeInteger tq = NativeInteger(t).Mod(q);
+        if (constant) {
+            p[0] = NativeInteger(2).ModExp(NativeInteger(log2_k), q).ModMul(tq, q);  // E = 2^k (the constant polynomial)
+        } else {
+            for (uint32_t i = 0; i < N; ++i) {
+                const NativeInteger mag = NativeInteger(static_cast<uint64_t>(r[i] < 0 ? -r[i] : r[i])).Mod(q).ModMul(tq, q);
+                p[i] = r[i] < 0 ? q.ModSub(mag, q) : mag;
+            }
+        }
+    }
+    e.SetFormat(el[0].GetFormat());
+    DCRTPoly b = el[0];
+    b += e;
+    PK pk = std::make_shared<PublicKeyImpl<DCRTPoly>>(cc_of(ctx));
+    pk->SetPublicElements(std::vector<DCRTPoly>{b, el[1]});
+    pk->SetKeyTag(pk_of(h)->GetKeyTag());
+    return new PK(pk);
+    TBGV_CATCH(nullptr)
+}
+
+/* Q' = Q_l / q0: the range of OpenFHE's flooding in NOISE_FLOODING_MULTIPARTY
+ * (MultipartyRNS::MultipartyDecryptMain/Lead sample it uniformly modulo the
+ * product of every tower but the first and add t times it). */
+static BigInteger q_prime(const std::shared_ptr<ILDCRTParams<BigInteger>>& params) {
+    BigInteger p(1);
+    const auto& ps = params->GetParams();
+    for (size_t i = 1; i < ps.size(); ++i) p *= BigInteger(ps[i]->GetModulus().ConvertToInt<uint64_t>());
+    return p;
+}
+
+static BigInteger big_of(uint64_t x) { return BigInteger(std::to_string(x)); }
+
+/* The DCRTPoly (with `like`'s towers, EVALUATION format) whose coefficients are
+ * the signed integers `vals` (centered, |v| < Q_l / 2). */
+static DCRTPoly dcrt_from_signed(const DCRTPoly& like, const std::vector<BigInteger>& mag, const std::vector<bool>& neg) {
+    DCRTPoly coef = like;
+    coef.SetFormat(Format::COEFFICIENT);
+    DCRTPoly::PolyLargeType big = coef.CRTInterpolate();
+    const BigInteger Q = big.GetModulus();
+    for (usint i = 0; i < big.GetLength(); ++i) {
+        const BigInteger m = mag[i].Mod(Q);
+        big[i] = (neg[i] && m != BigInteger(0)) ? Q - m : m;
+    }
+    DCRTPoly out(big, like.GetParams());
+    out.SetFormat(Format::EVALUATION);
+    return out;
+}
+
+int tbgv_fuse_flooding_check(TbgvContext ctx, const TbgvCiphertext* partials, size_t n, uint32_t slack_bits, int* within,
+                             double* ratio) {
+    TBGV_TRY
+    if (n == 0 || partials == nullptr || within == nullptr || ratio == nullptr) { set_error("bad arguments"); return 0; }
+    DCRTPoly b = ct_of(partials[0])->GetElements().at(0);
+    for (size_t i = 1; i < n; ++i) b += ct_of(partials[i])->GetElements().at(0);
+    const auto params = b.GetParams();
+    if (params->GetParams().size() < 3) { set_error("fewer than three towers: no flooding range"); return 0; }
+    b.SetFormat(Format::COEFFICIENT);
+    DCRTPoly::PolyLargeType big = b.CRTInterpolate();
+    const BigInteger Q = big.GetModulus();
+    const BigInteger half = Q >> 1;
+    const BigInteger qp = q_prime(params);
+    const BigInteger t = big_of(cc_of(ctx)->GetCryptoParameters()->GetPlaintextModulus());
+    // each party floods with |e| <= Q'/2; honest noise and the message fit in Q' 2^-slack + 1
+    const BigInteger floods = t * big_of(n) * (qp >> 1);
+    const BigInteger bound = floods + t * (qp >> slack_bits) + t;
+    BigInteger mx(0);
+    for (usint i = 0; i < big.GetLength(); ++i) {
+        const BigInteger& v = big[i];
+        const BigInteger a = v > half ? Q - v : v;
+        if (a > mx) mx = a;
+    }
+    *within = mx <= bound ? 1 : 0;
+    *ratio = std::exp2(big_log2(mx) - big_log2(floods));
+    return 1;
+    TBGV_CATCH(0)
+}
+
+TbgvCiphertext tbgv_partial_decrypt_shaped_for_tests(TbgvContext ctx, TbgvCiphertext h, TbgvSecretKey sk, int is_lead,
+                                                     uint64_t num, uint64_t den, uint64_t seed) {
+    TBGV_TRY
+    if (den == 0) { set_error("den must be positive"); return nullptr; }
+    const CT& ct = ct_of(h);
+    const auto& el = ct->GetElements();
+    if (el.size() != 2) { set_error("expects a relinearized ciphertext"); return nullptr; }
+    const size_t towers = el[0].GetNumOfElements();
+    DCRTPoly s = sk_of(sk)->GetPrivateElement();
+    s.DropLastElements(s.GetNumOfElements() - towers);
+    s.SetFormat(el[1].GetFormat());
+    DCRTPoly x = el[1] * s;
+    if (is_lead) x += el[0];
+    // flooding uniform in [-W, W], W = floor(Q' num / (2 den)), instead of OpenFHE's [-Q'/2, Q'/2]
+    const BigInteger w = (q_prime(el[0].GetParams()) * big_of(num)) / (big_of(den) * BigInteger(2));
+    const uint32_t N = el[0].GetRingDimension();
+    std::vector<BigInteger> mag(N);
+    std::vector<bool> neg(N, false);
+    if (w > BigInteger(0)) {
+        DiscreteUniformGeneratorImpl<BigVector> dug;
+        const BigVector r = dug.GenerateVector(N, w * BigInteger(2) + BigInteger(1));
+        for (uint32_t i = 0; i < N; ++i) {
+            const BigInteger ri = r[i];
+            if (ri >= w) mag[i] = ri - w; else { mag[i] = w - ri; neg[i] = true; }
+        }
+    }
+    (void)seed;
+    const uint64_t t = cc_of(ctx)->GetCryptoParameters()->GetPlaintextModulus();
+    for (uint32_t i = 0; i < N; ++i) mag[i] = mag[i] * big_of(t);
+    x += dcrt_from_signed(el[0], mag, neg);
+    auto result = ct->CloneEmpty();
+    result->SetElements(std::vector<DCRTPoly>{x});
+    return new CT(result);
+    TBGV_CATCH(nullptr)
+}
+
+TbgvPublicKey tbgv_pubkey_inflate_ratio_for_tests(TbgvContext ctx, TbgvPublicKey h, uint64_t num, uint64_t den) {
+    TBGV_TRY
+    if (den == 0) { set_error("den must be positive"); return nullptr; }
+    const auto& el = pk_of(h)->GetPublicElements();
+    if (el.size() != 2) { set_error("not a public key"); return nullptr; }
+    // E = floor(Q' num / den), the constant polynomial, Q' = Q / q0 of the
+    // ciphertext modulus (the key itself also has the key-switching towers P)
+    const auto qparams = cc_of(ctx)->GetCryptoParameters()->GetElementParams();
+    const BigInteger e = (q_prime(qparams) * big_of(num)) / big_of(den);
+    const uint64_t t = cc_of(ctx)->GetCryptoParameters()->GetPlaintextModulus();
+    const uint32_t N = el[0].GetRingDimension();
+    std::vector<BigInteger> mag(N, BigInteger(0));
+    std::vector<bool> neg(N, false);
+    mag[0] = e * big_of(t);
+    DCRTPoly b = el[0];
+    DCRTPoly add = dcrt_from_signed(el[0], mag, neg);
+    add.SetFormat(b.GetFormat());
+    b += add;
+    PK pk = std::make_shared<PublicKeyImpl<DCRTPoly>>(cc_of(ctx));
+    pk->SetPublicElements(std::vector<DCRTPoly>{b, el[1]});
+    pk->SetKeyTag(pk_of(h)->GetKeyTag());
+    return new PK(pk);
+    TBGV_CATCH(nullptr)
+}
+
 /* ---- raw residue transport ----------------------------------------------- */
 
 uint32_t tbgv_context_num_towers(TbgvContext ctx) {

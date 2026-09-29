@@ -192,13 +192,44 @@ pub fn commit(context: &[u8], partial: &[u8]) -> [u8; 32] {
     h.finalize().into()
 }
 
+/// Allowance for honest noise in [`check_flooding`], as a fraction
+/// `2^-FLOODING_SLACK_BITS` of the flooding range `Q'`. Honest noise measured
+/// at every decryption point of both modes is at least 119 bits below `Q'`
+/// (`openfhe-tbgv-rs/tests/key_noise_gap.rs`).
+pub const FLOODING_SLACK_BITS: u32 = 20;
+
+/// The fused value, at full precision, must lie where the partial
+/// decryptions' flooding can put it. OpenFHE floods each partial decryption
+/// with `t e`, `e` uniform in `[-Q'/2, Q'/2]`, `Q' = Q_l / q0`, so honest
+/// fusions of `n` partials stay within `t (n Q'/2 + Q' 2^-20 + 1)`. Noise
+/// beyond that, from an oversized key contribution or a malformed partial,
+/// is exactly what would stand out of the flooding and expose the
+/// ciphertext's encryption randomness to whoever fuses. Measured
+/// (`key_noise_gap.rs`): every inflation that lets the fuser read the
+/// randomness is refused, honest fusions pass with no false rejection
+/// possible (the bound is the flooding's support). Not a proof that keys are
+/// well formed: a party that shrinks its own flooding can still hide a
+/// smaller inflation inside the range (SECURITY.md, A3).
+pub fn check_flooding(ctx: &Context, partials: &[&PartialDecryption], what: &str) -> Result<()> {
+    let (within, ratio) = ctx.fuse_flooding_check(partials, FLOODING_SLACK_BITS)?;
+    if !within {
+        return Err(Error::Protocol(format!(
+            "{what}: fused value exceeds what {} flooded partial decryptions can reach (max / (n Q'/2) = {ratio:.3}): a partial decryption or a key contribution is not well formed",
+            partials.len()
+        )));
+    }
+    Ok(())
+}
+
 /// A fusion of every aggregator's partial decryption, checked to stay below
-/// `q0 / 4` before its reduction mod `t`; returns all `N` slots.
+/// `q0 / 4` before its reduction mod `t` and within the flooding range
+/// ([`check_flooding`]); returns all `N` slots.
 pub fn fuse_checked(ctx: &Context, partials: &[&PartialDecryption], what: &str) -> Result<Vec<u64>> {
     let (mx, q0) = ctx.fuse_magnitude(partials)?;
     if mx >= q0 / 4 {
         return Err(Error::Protocol(format!("vdec: {what}: fused value reaches q0/4 (a partial decryption is not what it should be, or the ciphertext's noise overflowed)")));
     }
+    check_flooding(ctx, partials, &format!("vdec: {what}"))?;
     Ok(ctx.fuse(partials, ctx.ring_dim() as usize)?)
 }
 

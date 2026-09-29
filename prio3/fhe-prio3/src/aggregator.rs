@@ -487,6 +487,13 @@ impl Aggregator {
         Ok(VerifierCommit { report_id: *report_id, aggregator: my_index, digest })
     }
 
+    /// Tests only: the masked check value of a verdict-mode report this
+    /// aggregator holds (after [`Self::prepare_masks`]), to measure its noise.
+    #[doc(hidden)]
+    pub fn check_value_for_tests(&self, report_id: &ReportId) -> Option<&Ciphertext> {
+        self.pending.get(report_id).and_then(|p| p.u.as_ref())
+    }
+
     fn verdict_context(task_id: &[u8; 32], report_id: &ReportId, aggregator: usize) -> Vec<u8> {
         let mut c = b"verdict".to_vec();
         c.extend_from_slice(task_id);
@@ -553,6 +560,7 @@ impl Aggregator {
             return Err(Error::Protocol(format!("expected {n} verifier messages, have {}", pending.partials.len())));
         }
         let refs: Vec<&PartialDecryption> = pending.partials.values().collect();
+        vdec::check_flooding(&self.ctx, &refs, "verdict")?;
         let fused = self.ctx.fuse(&refs, self.layout.result_span())?;
         if !self.circuit.verdict(&fused) {
             return Ok(Verdict::Rejected(RejectReason::ValidityCheckFailed));

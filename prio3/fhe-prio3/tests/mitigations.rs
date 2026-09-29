@@ -186,14 +186,14 @@ fn silent_mode_histogram_three_aggregators_and_noisy_report_detected() {
 
     // A second batch containing a ciphertext with overflowing noise. The
     // noise reaches the encrypted valid count too, so the verified count
-    // round refuses the batch before anything is released (its magnitude
-    // bound); a corruption that stayed below that bound would be caught by
-    // the collector's consistency check ("inconsistent").
+    // round refuses the batch before anything is released (its q0/4 or
+    // flooding bound); a corruption that stayed below those bounds would be
+    // caught by the collector's consistency check ("inconsistent").
     let mut net = Net::new(TaskConfig::new_silent(task_id(36), t.clone(), 2));
     net.expect_accept(&net.client.shard(&Measurement::Histogram(1)).unwrap());
     net.expect_accept(&net.client.shard_noisy_for_tests(&Measurement::Histogram(3), 1200, 21).unwrap());
     let err = net.collect().err().expect("corrupted batch must be refused").to_string();
-    assert!(err.contains("reaches q0/4") || err.contains("inconsistent") || err.contains("corrupted"), "{err}");
+    assert!(err.contains("reaches q0/4") || err.contains("exceeds what") || err.contains("inconsistent") || err.contains("corrupted"), "{err}");
     assert!(net.aggs[0].aggregate_share().is_err(), "nothing may be released from a refused batch");
 }
 

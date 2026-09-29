@@ -197,6 +197,21 @@ TbgvCiphertext tbgv_eval_square(TbgvContext ctx, TbgvCiphertext a);
 TbgvCiphertext tbgv_ciphertext_add_noise_for_tests(TbgvContext ctx, TbgvCiphertext ct, uint32_t log2_magnitude, uint64_t seed);
 
 /* ---- threshold decryption --------------------------------------------- */
+/* Full-precision decryption values (see tbgv.cpp). `out_over_t` may be NULL. */
+double tbgv_flooding_sigma(TbgvContext ctx);
+int tbgv_fuse_raw(TbgvContext ctx, const TbgvCiphertext* partials, size_t n, double* out_over_t, size_t out_len, double* log2_max,
+                  double* log2_q);
+int tbgv_raw_decrypt_for_tests(TbgvContext ctx, TbgvCiphertext ct, const TbgvSecretKey* sks, size_t n, double* out_over_t,
+                               size_t out_len, double* log2_max, double* log2_q);
+TbgvPublicKey tbgv_pubkey_inflate_for_tests(TbgvContext ctx, TbgvPublicKey pk, uint32_t log2_k, uint64_t seed, int constant);
+/* Every fused coefficient within t (n Q'/2 + Q' 2^-slack + 1), Q' = Q_l / q0:
+ * what n partials flooded as OpenFHE floods them can reach. */
+int tbgv_fuse_flooding_check(TbgvContext ctx, const TbgvCiphertext* partials, size_t n, uint32_t slack_bits, int* within,
+                             double* ratio);
+TbgvCiphertext tbgv_partial_decrypt_shaped_for_tests(TbgvContext ctx, TbgvCiphertext ct, TbgvSecretKey sk, int is_lead,
+                                                     uint64_t num, uint64_t den, uint64_t seed);
+TbgvPublicKey tbgv_pubkey_inflate_ratio_for_tests(TbgvContext ctx, TbgvPublicKey pk, uint64_t num, uint64_t den);
+
 TbgvCiphertext tbgv_partial_decrypt(TbgvContext ctx, TbgvCiphertext ct, TbgvSecretKey sk, int is_lead);
 /* Fuse partial decryptions (exactly one produced with is_lead=1). Writes up to
  * out_len centered values; returns number written, or 0 on error. */

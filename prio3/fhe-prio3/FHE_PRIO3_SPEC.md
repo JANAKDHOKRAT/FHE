@@ -448,11 +448,24 @@ depend on honest inputs) are never decrypted.
    rate limit per identity, and transport-level limits remain the
    deployment's job.
 6. **Well-formedness of key contributions** is not proven (no
-   zero-knowledge proof of short noise). The joint key check catches keys
-   that decrypt wrongly. It does not catch noise that is too large for the
-   flooding yet still decrypts correctly. Privacy against an aggregator
-   that is malicious *during key generation* therefore rests on an
-   assumption (`SECURITY.md` A3, §6.2).
+   zero-knowledge proof of short noise), but it is now bounded and
+   measured (`SECURITY.md` §6.2):
+   - Oversized key noise that still decrypts correctly would let whoever
+     fuses a decryption read the encryption randomness. Partial
+     decryptions are revealed at full precision; OpenFHE's flooding is
+     uniform on `[-Q'/2, Q'/2]`, `Q' = Q_l/q0`.
+   - Every fusion now checks the full-precision value against the exact
+     support of the flooding.
+   - The ceremony runs the protocol's own circuit on its test ciphertexts
+     to each decryption point, amplifies the noise by 2^64 and applies the
+     same check.
+   - Keys the ceremony accepts (inflations up to 2^59 in the public key,
+     2^116 to 2^130 in key-switching keys) leave every decryption point
+     65 bits or more below the flooding (verdict mode, measured with keys
+     from the real ceremony).
+   - Privacy against an aggregator malicious during key generation
+     therefore rests on this measured bound rather than on a bare
+     assumption. It is still not a proof (A3).
 
 ### 4.4 Verifiable decryption (`vdec.rs`)
 
@@ -533,7 +546,12 @@ run-to-run range of the table above. Per batch:
 
 So verification adds about 0.3–0.6 s per aggregator and under 0.5 s at the
 collector per batch, plus 1 s per aggregator for the silent-mode count, and
-roughly 20–40 MiB of traffic per batch. That is small next to the per-report
+roughly 20–40 MiB of traffic per batch. The full-precision flooding check
+(§4.3 item 6), added afterwards to every fusion, costs 12–24 ms per verdict
+decryption (`prepare_finish` went from 7.8 ms to 23–27 ms per report per
+aggregator, about 3% of the per-report total). At the collector it costs
+0.2–0.4 s more per verified release, and 31–37 ms per fusion at the bottom
+of the silent chain. That is small next to the per-report
 cost. A first measurement of the challenge took 5.1 s because every noise
 bit came from the operating system's generator. `vdec::draw` now seeds a
 ChaCha-based CSPRNG once per draw.
@@ -777,8 +795,30 @@ rotation keys plus the copy installed for the joint key check, each about
 ceremony only; the aggregator node that runs afterwards holds the
 installed keys alone.
 
+*Deep key check.* The joint key check above works at depth 1, and
+measurement showed that is not enough. Public-key noise that passed it
+exceeded the flooding by 2^13 at the depth-3 verdict check value, the
+per-report decryption. Rounds 6 to 8 therefore also decrypt:
+(a) the test ciphertext through a squaring chain with full-range plaintext
+factors down to the task's depth, then every rotation, compared slot by
+slot with the same chain computed in the clear (keys verified at depth);
+and (b) the protocol's own decryption points, computed by its own circuit
+(`verify::Circuit`) with the joint test ciphertext as every chunk and the
+parties' test ciphertexts as masks. Each value in (b) is doubled 64 times
+before it is partially decrypted, and every value must pass the
+full-precision flooding bound (`vdec::check_flooding`). In verdict mode,
+(b) is the masked check value and, with moments, a moment product. In
+silent mode it is the gated sum and count at the bottom of the chain (and
+a gated moment product). Measured effect: an inflation a key can carry
+through the ceremony leaves every protocol decryption point 65 bits or
+more below the flooding (`tests/key_noise_protocol.rs`). Cost: about 1.5 s
+more in verdict mode. In silent mode the measured ceremony above now takes
+300.5 s per party instead of 164.5 s, and peaks at 6.3 GiB instead of
+5.1 GiB (one silent report's circuit, run once).
+
 Not covered: the ceremony proves nothing about a party's noise
-distribution beyond what the joint key check measures, and it does not
+distribution beyond what these checks measure (the bound is measured for
+the tested parameters and inflation shapes, not proven), and it does not
 tolerate an aborting party (n-of-n: any party can stop it, as any party
 can stop decryption later).
 

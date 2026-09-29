@@ -68,10 +68,10 @@ fn every_deviation_is_caught_by_the_honest_parties() {
         (Deviation::WrongIdentity, "not signed by its pinned identity"),
         (Deviation::WrongSeed, "revealed a seed other than the one it committed to"),
         (Deviation::BlobMismatch, "pk does not match its commitment"),
-        (Deviation::GarbagePublicKey, "joint key check failed"),
-        (Deviation::GarbageRotation(0), "joint key check failed"),
-        (Deviation::OtherSecretRelin2, "joint key check failed"),
-        (Deviation::WrongPartial, "joint key check failed"),
+        (Deviation::GarbagePublicKey, "joint key check"),
+        (Deviation::GarbageRotation(0), "joint key check"),
+        (Deviation::OtherSecretRelin2, "joint key check"),
+        (Deviation::WrongPartial, "joint key check"),
         (Deviation::MisshapedPartial, "partial decryption: UnexpectedShape"),
         (Deviation::WrongTranscript, "saw another transcript"),
     ];
@@ -123,4 +123,36 @@ fn parties_on_other_parameters_or_identities_stop_at_the_first_round() {
     let e = ceremony::run(&cfg, 0, &ids[1], &pinned, [4u8; 32], &mut t).err().unwrap().to_string();
     assert!(e.contains("not the pinned key"), "{e}");
     assert!(ceremony::run(&cfg, 0, &ids[0], &pinned[..1], [4u8; 32], &mut t).is_err());
+}
+
+/// Assumption A3, at the ceremony. A party whose public-key share carries
+/// oversized noise still produces keys that decrypt correctly, so the joint
+/// key check's slot comparison passes; the flooding check on the same
+/// decryption, and on the deep check value (the test ciphertext taken to
+/// the task's full depth), stops every honest party before any client
+/// encrypts. Smaller inflations pass: the checks bound what could stand out
+/// of the flooding at the protocol's decryptions, they do not prove keys
+/// well formed.
+#[test]
+fn oversized_key_noise_is_stopped_at_the_ceremony_up_to_the_flooding_range() {
+    let _g = serial();
+    let cfg = TaskConfig::new(task_id(93), MeasurementType::Count, 3);
+    let (ids, pinned) = identities(3);
+    // the flooding range of a fresh verdict-mode decryption is 2^298
+    // (openfhe-tbgv-rs/tests/key_noise_gap.rs); 2^300 lets a fuser read the
+    // encryption randomness of what it decrypts
+    let out = run_all(&cfg, &ids, &pinned, [30u8; 32], &[Deviation::None, Deviation::InflatedPublicKeyNoise(300), Deviation::None]);
+    for i in [0, 2] {
+        let e = out[i].as_ref().err().unwrap_or_else(|| panic!("honest party {i} completed")).to_string();
+        assert!(e.contains("exceeds what 3 flooded partial decryptions can reach") || e.contains("aborted"), "party {i}: {e}");
+    }
+    assert!(out.iter().any(|r| r.as_ref().err().map(|e| e.to_string().contains("joint key check: fused value exceeds")).unwrap_or(false)));
+    // 2^120: 178 bits below the flooding of a fresh decryption, but it would
+    // stand out at the depth-3 verdict check value; the deep key check stops it
+    let out = run_all(&cfg, &ids, &pinned, [31u8; 32], &[Deviation::None, Deviation::InflatedPublicKeyNoise(120), Deviation::None]);
+    assert!(out.iter().any(|r| r.as_ref().err().map(|e| e.to_string().contains("deep key check")).unwrap_or(false)), "{:?}", out.iter().map(|r| r.as_ref().err().map(|e| e.to_string())).collect::<Vec<_>>());
+    // 2^40: the ceremony completes (tests/key_noise_protocol.rs measures what
+    // the largest accepted inflations leave at the protocol's decryptions)
+    let out = run_all(&cfg, &ids, &pinned, [32u8; 32], &[Deviation::None, Deviation::InflatedPublicKeyNoise(40), Deviation::None]);
+    assert!(out.iter().all(|r| r.is_ok()), "{:?}", out.iter().map(|r| r.as_ref().err().map(|e| e.to_string())).collect::<Vec<_>>());
 }

@@ -59,8 +59,10 @@ Severity is the impact before the fix. Status is as of this document.
 | F-7 | **Changing shares after committing.** An aggregator restored from a snapshot and given different count shares would re-decrypt and change its commitments. | Medium | **Fixed.** `count_commit` validates every share before storing anything and refuses different shares after a commit. Test: `tests/wire.rs` count cases. |
 | F-8 | **Release challenges are not signed by the collector.** Whoever reaches `/v1/release-commit` first with the inter-aggregator token (in practice, a malicious leader) can have its own challenge answered. The collector's challenge is then refused. | Low (liveness only: reveals are sealed to the collector, and a substituted opening yields nothing readable) | **Open.** A malicious leader can stop the protocol in other ways too. A fix is to sign challenges with a collector signing key declared in the task. |
 | F-9 | **No attribution.** A failed check shows that some aggregator cheated, not which one. | Low (design) | **Open.** Attribution needs per-share proofs (see F-10). |
-| F-10 | **Key contributions are not proven well formed.** Oversized noise that still decrypts correctly could exceed what the noise flooding hides. | Medium (assumption A3) | **Open, documented.** Needs lattice zero-knowledge proofs of short secrets and noise at `N = 65536`. See the decision in §4. |
+| F-10 | **Key contributions are not proven well formed.** Oversized noise that still decrypts correctly could exceed what the noise flooding hides, and let whoever fuses a decryption read the encryption randomness. Measured: a public key inflated by 2^299 does exactly that (verdict parameters). | Medium (assumption A3) | **Bounded, not proven** (F-13, F-14). Keys the ceremony accepts leave every protocol decryption point 65 bits or more below the flooding (measured, verdict mode). A proof still needs lattice zero-knowledge proofs; see the decision in §4. |
 | F-11 | **Verdict-mode validity oracle** through ciphertext malleability. | Medium (by design) | **Open, documented** (spec §4.3). Silent mode removes the per-report bit. |
+| F-13 | **`vdec`'s `q0/4` bound did not bound noise against the flooding.** Partial decryptions are revealed at full precision. The bound looked only after the reduction to `q0`, and allowed noise up to 2^13 times the flooding range. | High (with F-10) | **Fixed.** Every fusion (verdict decision, count, release, ceremony) now checks the full-precision value against the exact support of `n` flooded partials (`vdec::check_flooding`). No false rejection is possible. Every inflation that lets the fuser read the randomness is refused. Tests: `openfhe-tbgv-rs/tests/key_noise_gap.rs`. |
+| F-14 | **The ceremony checked keys only at depth 1.** Public-key noise that passed its joint key check exceeded the flooding by 2^13 at the depth-3 verdict check value, the per-report decryption. A first deep check (a squaring chain) still let the check value come within 7 bits of the flooding. | High (with F-10) | **Fixed.** The ceremony runs the protocol's own circuit on the test ciphertexts to each decryption point, amplifies the noise by 2^64 and checks it against the flooding. It also checks a full-depth squaring chain slot by slot. Accepted inflations: public key 2^59, eval-mult 2^116/2^123, rotations 2^130. With those keys the margin is 65.0 bits or more at every point, singly or all together. Tests: `tests/ceremony.rs`, `tests/key_noise_protocol.rs`, `tests/ceremony_sweep.rs`. Silent-mode thresholds are not measured (memory); an honest silent ceremony passes. |
 | F-12 | **Samples per ciphertext grow with `n`.** In the count round, each aggregator decrypts `(n − 1)·κ` checks of the count ciphertext. | Informational | Bounded and fixed per task (SECURITY.md §5). Flooding parameters must cover it (A2). |
 
 ## 4. Decision: zero-knowledge proofs of key noise (F-10)
@@ -77,7 +79,11 @@ with a security analysis of the instantiation. No audited implementation of
 that exists. Writing one here without that analysis would be the kind of
 unverified cryptography this project refuses to ship.
 
-**What we do instead.** State it as assumption A3. Bind every contribution
+**What we do instead.** Bound it and measure the bound (F-13, F-14):
+the ceremony only accepts keys whose noise, carried through the protocol's
+own circuit and amplified by 2^64, stays inside the flooding. Accepted keys
+leave every decryption point 65 bits or more below the flooding in verdict
+mode. What stays assumed is recorded as assumption A3. Bind every contribution
 to a signed transcript, so a deviation is attributable after the fact.
 Recommend that deployments that cannot trust aggregators during setup run
 the ceremony under stronger procedural controls (independent operators,

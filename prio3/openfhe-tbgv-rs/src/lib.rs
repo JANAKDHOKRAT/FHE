@@ -328,6 +328,102 @@ impl Context {
     /// `N` having uniformly random coefficients below `2^log2_magnitude`. The
     /// plaintext is unchanged, the noise is not. Models a client that submits
     /// a value that is not a proper encryption.
+    /// Standard deviation of OpenFHE's flooding noise for partial
+    /// decryptions (`NOISE_FLOODING_MULTIPARTY`), in units of `t`.
+    pub fn flooding_sigma(&self) -> Result<f64> {
+        let s = unsafe { ffi::tbgv_flooding_sigma(self.raw()) };
+        if s < 0.0 {
+            return Err(last_error());
+        }
+        Ok(s)
+    }
+
+    /// The fused value at full precision: `sum_i partial_i = m + t (noise +
+    /// flooding)` over the partials' modulus `Q_l`, before OpenFHE's fusion
+    /// reduces it to `q0`. Anyone holding the partials can compute it.
+    /// Returns `(log2 max |coefficient|, log2 Q_l)`.
+    pub fn fuse_raw_log2(&self, partials: &[&PartialDecryption]) -> Result<(f64, f64)> {
+        self.fuse_raw_inner(partials, None)
+    }
+
+    /// [`Self::fuse_raw_log2`] plus every centered coefficient divided by `t`.
+    pub fn fuse_raw_over_t(&self, partials: &[&PartialDecryption]) -> Result<(Vec<f64>, f64, f64)> {
+        let mut out = vec![0f64; self.ring_dim() as usize];
+        let (m, q) = self.fuse_raw_inner(partials, Some(&mut out))?;
+        Ok((out, m, q))
+    }
+
+    fn fuse_raw_inner(&self, partials: &[&PartialDecryption], out: Option<&mut Vec<f64>>) -> Result<(f64, f64)> {
+        let ptrs: Vec<ffi::TbgvCiphertext> = partials.iter().map(|p| p.ct.ptr).collect();
+        let (mut m, mut q) = (0f64, 0f64);
+        let (op, ol) = match out {
+            Some(v) => (v.as_mut_ptr(), v.len()),
+            None => (std::ptr::null_mut(), 0),
+        };
+        if unsafe { ffi::tbgv_fuse_raw(self.raw(), ptrs.as_ptr(), ptrs.len(), op, ol, &mut m, &mut q) } == 0 {
+            return Err(last_error());
+        }
+        Ok((m, q))
+    }
+
+    /// Whether the fused value lies where `n` partial decryptions flooded as
+    /// OpenFHE floods them can put it: every coefficient of
+    /// `sum_i partial_i` within `t (n Q'/2 + Q' 2^-slack + 1)`, `Q' = Q_l / q0`
+    /// (OpenFHE draws each party's flooding uniformly from `[-Q'/2, Q'/2]`;
+    /// `Q' 2^-slack` is the allowance for honest noise and the message).
+    /// Returns `(within, max |coefficient| / (t n Q'/2))`.
+    pub fn fuse_flooding_check(&self, partials: &[&PartialDecryption], slack_bits: u32) -> Result<(bool, f64)> {
+        let ptrs: Vec<ffi::TbgvCiphertext> = partials.iter().map(|p| p.ct.ptr).collect();
+        let (mut within, mut ratio) = (0i32, 0f64);
+        if unsafe { ffi::tbgv_fuse_flooding_check(self.raw(), ptrs.as_ptr(), ptrs.len(), slack_bits, &mut within, &mut ratio) } == 0 {
+            return Err(last_error());
+        }
+        Ok((within == 1, ratio))
+    }
+
+    /// Tests only: a partial decryption flooded uniformly in `[-W, W]`,
+    /// `W = Q' num / (2 den)`, instead of OpenFHE's `[-Q'/2, Q'/2]` (what a
+    /// party that shapes its own flooding sends).
+    pub fn partial_decrypt_shaped_for_tests(&self, ct: &Ciphertext, share: &SecretShare, lead: bool, num: u64, den: u64) -> Result<PartialDecryption> {
+        let p = unsafe { ffi::tbgv_partial_decrypt_shaped_for_tests(self.raw(), ct.ptr, share.ptr, lead as i32, num, den, 0) };
+        let ct = self.wrap_ct(p)?;
+        Ok(PartialDecryption::from_ciphertext(ct, lead))
+    }
+
+    /// Tests only: the public key with `b + t E`, `E = Q' num / den` (the
+    /// constant polynomial), `Q' = Q / q0` of the ciphertext modulus.
+    pub fn inflate_public_key_ratio_for_tests(&self, pk: &PublicKey, num: u64, den: u64) -> Result<PublicKey> {
+        let p = unsafe { ffi::tbgv_pubkey_inflate_ratio_for_tests(self.raw(), pk.ptr, num, den) };
+        if p.is_null() {
+            return Err(last_error());
+        }
+        Ok(PublicKey { ptr: p, ctx: self.clone() })
+    }
+
+    /// Tests only: `c0 + c1 * sum_i s_i` at full precision, without any
+    /// flooding, i.e. `m + t * noise`. Returns every coefficient over `t`,
+    /// `log2 max |coefficient|` and `log2 Q_l`.
+    pub fn raw_decrypt_for_tests(&self, ct: &Ciphertext, shares: &[&SecretShare]) -> Result<(Vec<f64>, f64, f64)> {
+        let ptrs: Vec<ffi::TbgvSecretKey> = shares.iter().map(|s| s.ptr).collect();
+        let mut out = vec![0f64; self.ring_dim() as usize];
+        let (mut m, mut q) = (0f64, 0f64);
+        if unsafe { ffi::tbgv_raw_decrypt_for_tests(self.raw(), ct.ptr, ptrs.as_ptr(), ptrs.len(), out.as_mut_ptr(), out.len(), &mut m, &mut q) } == 0 {
+            return Err(last_error());
+        }
+        Ok((out, m, q))
+    }
+
+    /// Tests only: the public key with `b + t E`, i.e. what a party whose key
+    /// contribution carries the extra noise `E` produces. `E = 2^log2_k` (the
+    /// constant polynomial) if `constant`, else uniform in `(-2^log2_k, 2^log2_k)`.
+    pub fn inflate_public_key_for_tests(&self, pk: &PublicKey, log2_k: u32, seed: u64, constant: bool) -> Result<PublicKey> {
+        let p = unsafe { ffi::tbgv_pubkey_inflate_for_tests(self.raw(), pk.ptr, log2_k, seed, constant as i32) };
+        if p.is_null() {
+            return Err(last_error());
+        }
+        Ok(PublicKey { ptr: p, ctx: self.clone() })
+    }
+
     pub fn add_noise_for_tests(&self, ct: &Ciphertext, log2_magnitude: u32, seed: u64) -> Result<Ciphertext> {
         self.wrap_ct(unsafe { ffi::tbgv_ciphertext_add_noise_for_tests(self.raw(), ct.ptr, log2_magnitude, seed) })
     }

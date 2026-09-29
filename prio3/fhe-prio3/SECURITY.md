@@ -31,15 +31,15 @@ assumption below says otherwise.
 | **R2** robustness against aggregators | A malicious aggregator cannot make an invalid report accepted in verdict mode, except with probability `≤ 1/p` per repetition whose check value is nonzero (§4.1). It cannot change the decrypted valid count (silent mode) or a released aggregate without the verifier aborting, except with probability `≤ 2^-80` per verification (§4.2). It **can** make valid reports rejected and stop the protocol (n-of-n). |
 | **P1** input privacy | A coalition of up to `n − 1` aggregators, any collectors and any clients learns nothing about an honest client's input beyond the released aggregates of batches with at least `min_batch_size` **valid** reports, plus the leakage listed in §6. |
 | **K1** key secrecy | No coalition of fewer than `n` aggregators learns the joint secret key or an honest share. |
-| **K2** key integrity | Keys produced by the distributed ceremony decrypt, relinearize and rotate correctly, or the ceremony aborts. |
+| **K2** key integrity | Keys produced by the distributed ceremony decrypt, relinearize and rotate correctly at the top of the chain and at the task's full depth, or the ceremony aborts. |
 
 ## 2. Assumptions
 
 | # | Assumption | Where it is used |
 |---|---|---|
 | A1 | Decision-RLWE is hard for OpenFHE 1.3.1's parameters at `HEStd_128_classic` (ring dimension and modulus chosen by OpenFHE from the depth). | semantic security of every ciphertext (P1), hiding of the check exponents (R2), security of key contributions (K1) |
-| A2 | OpenFHE's `NOISE_FLOODING_MULTIPARTY` partial decryptions are statistically simulatable from their fused plaintext for ciphertexts whose noise is within the bound OpenFHE's parameters assume, for the number of partial decryptions per ciphertext the protocol makes (§5). | P1, K1 |
-| A3 | Every key contribution in the ceremony is well formed (small secret, noise from the specified distribution). **Not verified by the protocol** (§6.2). | A2's noise bound; K2 at depth |
+| A2 | OpenFHE's `NOISE_FLOODING_MULTIPARTY` partial decryptions are statistically simulatable from their fused plaintext for ciphertexts whose noise is within the bound OpenFHE's parameters assume, for the number of partial decryptions per ciphertext the protocol makes (§5). Measured: the flooding is uniform on `[-Q'/2, Q'/2]`, `Q' = Q_l/q0`, and honest noise is 119 bits or more below it at every decryption point (§6.2). | P1, K1 |
+| A3 | Every key contribution in the ceremony is well formed (small secret, noise from the specified distribution). **Not proven; bounded by the ceremony's deep key check** so that accepted keys leave every decryption point about 64 bits or more below the flooding (measured, verdict mode, §6.2). | A2's noise bound |
 | A4 | SHA-256 is collision resistant and, for commitments to high-entropy values, modeled as a random oracle (hiding). SHAKE128 is a random oracle for challenge and CRS expansion. | R1 (Fiat–Shamir), R2 (commitments), K1/K2 (CRS, commitments) |
 | A5 | Ed25519 is EUF-CMA; X25519 + HKDF-SHA256 + AES-256-GCM is IND-CCA as a KEM-DEM. | ceremony and attestation authenticity; sealing to collectors |
 | A6 | OpenFHE 1.3.1 implements BGV-RNS as documented. The build is gated to that version, and a start-up self-test checks exact rebuild of every exchanged object at every level the task uses. | everything |
@@ -298,40 +298,114 @@ deviations), `fhe-prio3-node/tests/ceremony_node.rs` (three processes).
 * Sybil attacks (filling a batch with the adversary's own valid reports)
   are bounded only by authentication and enrolment, as in DAP.
 
-### 6.2 Not proven: well-formedness of key contributions (A3)
+### 6.2 Well-formedness of key contributions (A3): bounded and measured, not proven
 
-A malicious aggregator may contribute key material whose noise (or
-secret) is far larger than specified. What the protocol does about it:
+**The risk.** OpenFHE's `NOISE_FLOODING_MULTIPARTY` partial decryption adds
+`t·e` with `e` uniform in `[-Q'/2, Q'/2]`, `Q' = Q_l / q0` (read from
+OpenFHE 1.3.1's `MultipartyDecryptMain/Lead`; measured: kurtosis 1.80, max
+0.99997 `Q'/2`). Partial decryptions are revealed at full precision, so
+whoever fuses them sees `m + t·(noise + Σ e_i)` before any modulus
+reduction. A party whose key contribution carries oversized noise `E` makes
+the noise of every ciphertext contain `u·E` (for the public key, `u` is the
+encrypting party's randomness). Once that stands out of the flooding, the
+fuser reads `u`, and `c0 − b·u = m + t·e0` decrypts the ciphertext from its
+own bytes. Keys with oversized noise still decrypt correctly, so the joint
+key check's comparison of values cannot see them.
 
-* Wrong keys are detected by the ceremony's joint key check (square and
-  every rotation at the top of the chain, every slot), which catches any
-  contribution that breaks decryption there. Tested: uniformly random
-  contributions and a round-2 contribution under another secret are caught.
-* Keys that pass at the top of the chain but fail deeper (moderately
-  oversized noise) show up as wrong or refused results later. The release
-  checks and the collector's consistency checks refuse them; the batch is
-  lost (denial of service), not silently wrong.
-* **Not covered:** oversized noise that stays within decryption
-  correctness but exceeds what the noise flooding (A2) was sized to hide.
-  The decryption noise of honest ciphertexts could then carry information
-  that flooding no longer masks statistically. No end-to-end attack is
-  known to us. But without a proof that every contribution is well formed,
-  **privacy against a malicious aggregator during key generation rests on
-  assumption A3**.
+**Measured gap (verdict parameters, `openfhe-tbgv-rs/tests/key_noise_gap.rs`).**
 
-Closing this needs zero-knowledge proofs of short secrets/noise for
-RLWE key shares (lattice NIZKs such as those of Lyubashevsky–Nguyen–Plançon
-2022 or LaBRADOR) at ring dimension 65536 across the whole modulus chain.
-No production implementation for OpenFHE's key formats exists, and
-building one is a research-engineering project in its own right. We do not
-implement it and do not claim it.
+| Decryption point | Honest noise | Flooding `Q'` | Margin | Room above flooding |
+| --- | --- | --- | --- | --- |
+| fresh ciphertext | 2^12 t | 2^298 | 285 bits | 14.0 bits |
+| sum of 2^20 reports | 2^32 t | 2^298 | 265 bits | 14.0 bits |
+| verdict check value (depth 3) | 2^54 t | 2^174 | 119 bits | 14.0 bits |
+| silent bottom (24 squarings) | 2^44 t | 2^206 | 161 bits | 14.4 bits |
+| silent bottom, sum of 2^16 | 2^60 t | 2^206 | 145 bits | 14.4 bits |
 
-When it matters: it is **necessary** for a proof of P1/K1 against an
-aggregator that is malicious *during key generation*. It is **not needed**
-if key generation is run by aggregators that follow the protocol, i.e.
-semi-honest at setup and malicious afterwards (the ceremony binds every
-contribution to a signed transcript, so a deviation is attributable after
-the fact).
+With a public key inflated by `2^k` (constant polynomial), the fuser's
+guess of `u` from one fresh decryption stays at chance (1/3) up to
+`k = 292` and is exact from `k = 299`. Decryption stays correct and `vdec`'s
+earlier `q0/4` bound passed up to `k = 310`.
+
+**What the protocol now does.**
+
+1. *Runtime flooding bound* (`vdec::check_flooding`, shim
+   `tbgv_fuse_flooding_check`): every fusion (verdict decision, count
+   round, release, key ceremony) requires every coefficient of
+   `Σ partial_i` at full precision within `t·(n·Q'/2 + Q'·2^-20 + 1)`, the
+   support of `n` flooded partials plus the honest noise allowance. No false
+   rejection is possible for honest parties. Every inflation from `k = 292`
+   is refused, before the fuser guesses `u` better than 37% of the time.
+   It fires only after the partials are revealed, so it detects rather
+   than prevents.
+2. *Deep key check in the ceremony* (`ceremony.rs`, before any client
+   encrypts). The joint test ciphertext is taken to the task's full depth,
+   through a squaring chain whose result is compared slot by slot (keys
+   verified at depth, K2), and through the protocol's own circuit to each
+   of its decryption points: the verdict check value, the silent gated sum
+   and count, and moment products. Each circuit value's noise is multiplied
+   by 2^64 by exact doublings and must pass the flooding bound. Passing
+   means that at every decryption point the noise sits about 64 bits or
+   more below the flooding.
+
+**Measured result of the deep check (verdict parameters,
+`tests/key_noise_protocol.rs`, keys from the real ceremony with one party
+deviating).** Largest inflation each contribution can carry through the
+ceremony (`tests/ceremony_sweep.rs`): public key 2^59, eval-mult round 1
+2^116, round 2 2^123, rotation keys 2^130. With those keys, one at a time or
+all four at once, the protocol's decryption points keep this margin below
+one party's flooding:
+
+| Keys | fresh | verdict check value | released sum |
+| --- | --- | --- | --- |
+| honest | 284.7 | 118.3 | 283.5 |
+| public key 2^59 | 238.0 | 67.1 | 235.7 |
+| eval-mult round 1 2^115 | 284.8 | 66.3 | 283.7 |
+| eval-mult round 2 2^123 | 284.8 | 67.0 | 283.6 |
+| rotation keys 2^129 | 284.7 | 65.0 | 283.4 |
+| all four together | 240.0 | 65.7 | 237.7 |
+
+A margin of `m` bits bounds the statistical distance one decryption leaves
+per coefficient, against one honest party's uniform flooding, by `2^-m`.
+So an aggregator that is malicious during key generation gains at most
+about 2^-65 per coefficient per decryption. It no longer reads encryption
+randomness exactly, as it could with the top-level check alone. Two steps
+of the design were each found insufficient by measurement and replaced:
+- the depth-1 joint key check let through public-key noise that exceeded
+  the flooding at the depth-3 verdict check value by 2^13;
+- an un-amplified circuit check still let that value come within 7 bits of
+  the flooding.
+
+**What remains (stated, not hidden).**
+
+* **A bound, not a proof.** It is measured for the tested parameter sets
+  and task shapes, and the correspondence "test value noise ≥ protocol
+  value noise" rests on running the same circuit with full-range test
+  inputs. No proof covers every task shape, input distribution or key
+  structure. We tested constant-polynomial inflations of each key, singly
+  and together, not every shape an adversary could choose.
+* **Silent-mode thresholds are not measured.** An honest silent ceremony
+  passes the amplified check (two processes over TLS: 300.5 s against
+  164.5 s before, peak 6.3 GiB per party). An in-process sweep with three
+  silent parties does not fit in the 15 GiB machine used, so the
+  thresholds and margins above are verdict-mode results. The mechanism is
+  the same and honest silent margins are larger (145 bits or more).
+* **Runtime checks alone cannot close A3.** A party can trade its own
+  flooding share for signal. With its flooding shrunk to `[-Q'/6, Q'/6]`
+  and an inflation of exactly `Q'/3`, its contribution is exactly uniform
+  on `[-Q'/2, Q'/2]`, invisible to any bound or distribution test on
+  decrypted values. Yet it guesses 55.8% of `u` from one decryption (5/9
+  predicted, 1/3 by chance) and 94% from six. It is ruled out only because
+  its inflation, about 2^296, is far above what the ceremony lets a key
+  carry. The ceremony's checks are what bound A3.
+* A proof that every contribution is well formed still needs
+  zero-knowledge proofs of short secrets and noise for RLWE key shares
+  (lattice NIZKs such as Lyubashevsky–Nguyen–Plançon 2022 or LaBRADOR) at
+  ring dimension 65536 across the modulus chain. No implementation for
+  OpenFHE's key formats exists. We do not implement it and do not claim
+  it. For deployments that need more than the measured bound: run the
+  ceremony in attested TEEs with reproducible builds and independent
+  operators.
 
 ### 6.3 Other residual risks
 
@@ -361,5 +435,7 @@ the fact).
 | Lemma 1 completeness margin | `openfhe-tbgv-rs/tests/vdec_primitives.rs` |
 | Lemma 2 | `openfhe-tbgv-rs/tests/vdec_primitives.rs`, `vdec::SlotPowers::new` |
 | K1/K2 | `tests/ceremony.rs`, `openfhe-tbgv-rs/tests/crs_ceremony.rs`, `fhe-prio3-node/tests/ceremony_node.rs` |
+| A2 flooding shape, honest margins | `openfhe-tbgv-rs/tests/key_noise_gap.rs` |
+| A3 bound (runtime flooding check, deep key check) | `openfhe-tbgv-rs/tests/key_noise_gap.rs`, `tests/ceremony.rs::oversized_key_noise_is_stopped_at_the_ceremony_up_to_the_flooding_range`, `tests/key_noise_protocol.rs`, `tests/ceremony_sweep.rs` (on demand) |
 | A6 | `openfhe-tbgv-rs/src/selftest.rs` (fault injection), `build.rs` version gate |
 | wire format | `tests/wire.rs`, fuzz targets `fuzz/` |

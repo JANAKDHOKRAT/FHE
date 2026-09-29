@@ -51,7 +51,7 @@ impl Challenge {
     pub fn derive(cfg: &TaskConfig, field: &Field, layout: &Layout, report_id: &ReportId, group: usize) -> Self {
         let m = layout.input_len;
         let k = layout.repetitions;
-        let constraints = cfg.measurement_type.linear_constraints(field);
+        let constraints = cfg.measurement_type.linear_constraints();
         let mut xof = Xof::new(b"verify", &[&cfg.binding(), report_id]);
 
         let mut r: Vec<Vec<u64>> = Vec::with_capacity(k);
@@ -64,10 +64,10 @@ impl Challenge {
         for (j, rj) in r.iter().enumerate() {
             for (l, c) in constraints.iter().enumerate() {
                 let w = rj[m + l];
-                for &(i, coef) in &c.coeffs {
+                for (i, coef) in c.field_coeffs(field) {
                     lin[j][i] = field.add(lin[j][i], field.mul(w, coef));
                 }
-                constants[j] = field.add(constants[j], field.mul(w, c.constant));
+                constants[j] = field.add(constants[j], field.mul(w, c.field_constant(field)));
             }
         }
 

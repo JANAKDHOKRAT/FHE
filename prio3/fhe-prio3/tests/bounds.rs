@@ -154,3 +154,36 @@ fn bounds_are_bound_into_the_task() {
     let rt: MeasurementType = decode(&encode(&t).unwrap()).unwrap();
     assert_eq!(rt, t);
 }
+
+/// Silent mode's prime (786,433) enforces a Sum range only while the range
+/// constraint cannot reach p. A task beyond that is refused when it is
+/// configured, by every party; a task inside it enforces the range: the
+/// largest honest value passes, and an out-of-range value contributes zero.
+#[test]
+fn silent_mode_sum_range_is_enforced_up_to_what_p_allows() {
+    let _g = serial();
+    // a range the prime cannot enforce: refused before any key exists
+    for t in [MeasurementType::Sum { max_measurement: 600_000 }, MeasurementType::BoundedSumVec { bounds: vec![100, 524_288] }] {
+        let e = TaskConfig::new_silent(task_id(64), t.clone(), 2).validate().unwrap_err().to_string();
+        assert!(e.contains("reaches p = 786433"), "{t:?}: {e}");
+        assert!(keys::run_local_ceremony(&TaskConfig::new_silent(task_id(64), t, 2)).is_err());
+    }
+    // 400,000 needs 19 bits; its constraint ranges over [-400000, 648574], inside (-p, p)
+    let max = 400_000u64;
+    let b = 19u32;
+    let offset = (1u64 << b) - 1 - max;
+    let mut cfg = TaskConfig::new_silent(task_id(65), MeasurementType::Sum { max_measurement: max }, 2);
+    cfg.silent_batch_groups = 4;
+    let mut net = Net::new(cfg);
+    net.expect_accept(&net.client.shard_in_group(&Measurement::Sum(max), 0).unwrap());
+    net.expect_accept(&net.client.shard_in_group(&Measurement::Sum(0), 1).unwrap());
+    // 450,000 > max: its offset half would be 574,287, which needs 20 bits;
+    // the closest a 19-bit second half gets leaves the constraint at 50,000
+    let v = 450_000u64;
+    assert!(v + offset >= 1 << b);
+    let mut raw = bits(v, b);
+    raw.extend(bits((1 << b) - 1, b));
+    net.expect_accept(&net.client.shard_raw_in_group(&[raw], 2).unwrap());
+    let res = net.collect_full().unwrap();
+    assert_eq!((res.aggregate, res.report_count, res.valid_count), (AggregateResult::Sum(max as u128), 3, 2));
+}

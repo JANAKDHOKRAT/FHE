@@ -287,7 +287,6 @@ async fn two_collectors_with_policies_over_tls() {
     let k1 = CollectorSealKey::generate();
     let mut task = TaskConfig::new([11u8; 32], t.clone(), 2);
     task.moments = true;
-    task.max_batch_size = task.moments_max_batch().unwrap().min(1 << 20);
     task.collectors = vec![
         CollectorPolicy { elements: vec![0, 1], moments: false, seal_key: k0.public_key() },
         CollectorPolicy { elements: vec![2, 3], moments: true, seal_key: k1.public_key() },

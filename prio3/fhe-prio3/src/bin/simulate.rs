@@ -11,6 +11,7 @@
 //!   simulate --type histogram --length 64 --reports 4
 //!   simulate --type sumvec --length 1200 --bits 4 --reports 2
 //!   simulate --type bounded --bounds 100,255,5 --moments --reports 6
+//!   simulate --type sumvec --length 3 --bits 8 --mode silent --groups 4 --moments --max-batch 65535 --reports 8
 
 use fhe_prio3::messages::{decode, encode};
 use fhe_prio3::*;
@@ -31,10 +32,11 @@ struct Args {
     groups: usize,
     moments: bool,
     bounds: Vec<u64>,
+    max_batch: u64,
 }
 
 fn parse() -> Args {
-    let mut a = Args { ty: "sum".into(), aggregators: 2, reports: 4, repetitions: 0, length: 8, bits: 4, max: 100, max_weight: 2, silent: false, auth: false, groups: 0, moments: false, bounds: vec![100, 255, 5] };
+    let mut a = Args { ty: "sum".into(), aggregators: 2, reports: 4, repetitions: 0, length: 8, bits: 4, max: 100, max_weight: 2, silent: false, auth: false, groups: 0, moments: false, bounds: vec![100, 255, 5], max_batch: 0 };
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
     while i < argv.len() {
@@ -53,6 +55,7 @@ fn parse() -> Args {
                 "verdict" => false,
                 other => panic!("unknown mode {other}"),
             },
+            "--max-batch" => a.max_batch = v.parse().expect("--max-batch"),
             "--groups" => a.groups = v.parse().expect("--groups"),
             "--bounds" => a.bounds = v.split(',').map(|x| x.parse().expect("--bounds")).collect(),
             "--auth" => {
@@ -124,7 +127,9 @@ fn main() {
     }
     if a.moments {
         cfg.moments = true;
-        cfg.max_batch_size = cfg.moments_max_batch().expect("moments need SumVec").min(cfg.max_batch_size);
+    }
+    if a.max_batch > 0 {
+        cfg.max_batch_size = a.max_batch;
     }
     cfg.validate().expect("config");
     let identities: Vec<ClientIdentity> = (0..a.reports).map(|_| ClientIdentity::generate()).collect();
@@ -132,7 +137,10 @@ fn main() {
         if a.auth { Some(StaticRegistry::new(identities.iter().map(|i| i.public_key()))) } else { None };
 
     println!("type={:?} mode={:?} auth={:?} aggregators={} repetitions={} reports={} groups={}", ty, cfg.mode, cfg.auth, a.aggregators, cfg.repetitions, a.reports, cfg.silent_batch_groups);
-    println!("plain_mod={} mult_depth={} soundness=2^-{:.1} per report", cfg.plain_mod, cfg.mult_depth(), cfg.soundness_bits());
+    println!("plain_mod={} mult_depth={} soundness=2^-{:.1} per report max_batch_size={}", cfg.plain_mod, cfg.mult_depth(), cfg.soundness_bits(), cfg.max_batch_size);
+    if let Some(d) = cfg.moment_digit_bits() {
+        println!("moments: digit width {d} bits");
+    }
 
     let t0 = Instant::now();
     let (material, shares) = keys::run_local_ceremony(&cfg).expect("ceremony");

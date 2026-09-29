@@ -122,8 +122,8 @@ pub struct Aggregator {
     sums: Option<Vec<Ciphertext>>,
     /// Silent mode: encrypted number of valid reports (slot 0).
     valid_count_sum: Option<Ciphertext>,
-    /// Post-validation moments: one accumulator per value pair (a <= b),
-    /// product at slot 0 of group 0.
+    /// Post-validation moments: one accumulator per `Layout::moment_terms`
+    /// entry, digit products at group 0's element slots `i*D`.
     moment_sums: Option<Vec<Ciphertext>>,
     silent_batch: SilentBatch,
     /// Silent mode: decrypted valid count, once the count round has run.
@@ -477,9 +477,9 @@ impl Aggregator {
                 y.push(self.circuit.fold_to_group0(&prod, group)?);
             }
             if self.layout.moments.is_some() {
-                // Products are non-zero only at the group's element-0 slot,
-                // where G holds this report's validity bit.
-                let mut folded = Vec::with_capacity(self.layout.moment_pairs());
+                // Products are non-zero only at the group's element slots
+                // `i*D` (class 0), where G holds this report's validity bit.
+                let mut folded = Vec::new();
                 for p in self.circuit.moment_products(&masked, group)? {
                     let gated = self.ctx.mult(&p, &g)?;
                     folded.push(self.circuit.fold_to_group0(&gated, group)?);
@@ -575,6 +575,15 @@ impl Aggregator {
             None => None,
         };
         self.moment_sums = match &st.moment_sums {
+            // the accumulator count follows the task's digit width; a state
+            // written under another decomposition cannot be continued
+            Some(v) if v.len() != self.layout.moment_terms().len() => {
+                return Err(Error::Protocol(format!(
+                    "restore: {} moment accumulators stored, this task has {}",
+                    v.len(),
+                    self.layout.moment_terms().len()
+                )))
+            }
             Some(v) => Some(de(v)?),
             None => None,
         };
@@ -728,12 +737,11 @@ impl Aggregator {
         let pairs = self.cfg.collector_moment_pairs(collector)?;
         if !pairs.is_empty() {
             let sums = self.moment_sums.as_ref().ok_or_else(|| Error::Protocol("moments enabled but no products accumulated".into()))?;
-            let n = self.cfg.measurement_type.num_elements();
-            for &(a, b) in &pairs {
-                // accumulator index of pair (a <= b) in row-major (a, b >= a) order
-                let idx = pair_index(n, a, b);
-                debug_assert!(idx < sums.len());
-                moment_partials.push(self.codec.encode(self.share.partial_decrypt(&sums[idx], self.index == 0)?.ciphertext())?);
+            // accumulators of the collector's pairs, in accumulator order
+            for (idx, t) in self.layout.moment_terms().into_iter().enumerate() {
+                if pairs.contains(&(t.a, t.b)) {
+                    moment_partials.push(self.codec.encode(self.share.partial_decrypt(&sums[idx], self.index == 0)?.ciphertext())?);
+                }
             }
         }
         let _ = elements;
@@ -757,31 +765,5 @@ impl Aggregator {
         let key = self.cfg.collectors.get(collector).map(|p| p.seal_key).ok_or_else(|| Error::Config(format!("no sealing key for collector {collector}")))?;
         let share = self.aggregate_share_for(collector)?;
         crate::seal::seal(&share, &key)
-    }
-}
-
-/// Index of pair `(a <= b)` among the `(a <= b)` pairs of `n` values in the
-/// accumulator order of `Circuit::moment_products` (row-major over `a`,
-/// then `b` from `a`).
-pub fn pair_index(n: usize, a: usize, b: usize) -> usize {
-    debug_assert!(a <= b && b < n);
-    // pairs before row a: sum_{i<a} (n - i) = a*n - a(a-1)/2
-    a * n - a * a.saturating_sub(1) / 2 + (b - a)
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn pair_index_matches_accumulator_order() {
-        for n in 1..7 {
-            let mut idx = 0;
-            for a in 0..n {
-                for b in a..n {
-                    assert_eq!(super::pair_index(n, a, b), idx, "n={n} a={a} b={b}");
-                    idx += 1;
-                }
-            }
-            assert_eq!(idx, n * (n + 1) / 2);
-        }
     }
 }

@@ -1,10 +1,11 @@
 //! `fhe-prio3-node`: key setup, aggregator, collector and client commands.
 //!
-//! Key material: `keygen` runs the n-of-n ceremony and writes the public
-//! material plus one sealed share file per aggregator. The ceremony messages
-//! are the serialized objects of `fhe_prio3::keys`; running the parties on
-//! separate machines uses the same functions with the files moved between
-//! them.
+//! Key material: in a deployment every aggregator runs `init-identity` once
+//! and then `ceremony` on its own machine, together: the distributed
+//! ceremony of `fhe_prio3::ceremony` over HTTPS, after which each machine
+//! holds the attested public material and only its own sealed share.
+//! `keygen` runs every party in one process (a dealer that sees every
+//! share) and exists for tests and trials.
 
 use clap::{Parser, Subcommand};
 use fhe_prio3::messages::{decode, encode};
@@ -26,7 +27,53 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Run the key ceremony locally and write material + sealed shares.
+    /// Create (or load) this aggregator's long-term identity, sealed under
+    /// FHE_PRIO3_SEAL_KEY, and print its public key for `aggregator-keys.txt`.
+    InitIdentity {
+        #[arg(long)]
+        index: usize,
+        #[arg(long)]
+        out_dir: PathBuf,
+    },
+    /// Distributed key ceremony: run on every aggregator's own machine at
+    /// the same time. Writes `material.bin` (attested by every aggregator),
+    /// this aggregator's `share-<i>.sealed` and `transcript.txt`. No machine
+    /// ever holds another aggregator's share.
+    Ceremony {
+        #[arg(long)]
+        task: PathBuf,
+        #[arg(long)]
+        index: usize,
+        /// This aggregator's sealed identity (from `init-identity`).
+        #[arg(long)]
+        identity: PathBuf,
+        /// Every aggregator's identity key, line i = aggregator i.
+        #[arg(long)]
+        aggregator_keys: PathBuf,
+        /// 32 random bytes as hex, agreed by all aggregators for this run.
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        listen: std::net::SocketAddr,
+        /// Base URLs of every aggregator's ceremony server by index, comma separated.
+        #[arg(long)]
+        aggregators: String,
+        #[arg(long)]
+        token: String,
+        #[arg(long)]
+        tls_cert: PathBuf,
+        #[arg(long)]
+        tls_key: PathBuf,
+        #[arg(long)]
+        ca: PathBuf,
+        #[arg(long)]
+        out_dir: PathBuf,
+        /// Longest wait for any one peer message or blob, in seconds.
+        #[arg(long, default_value_t = 3600)]
+        timeout_secs: u64,
+    },
+    /// Single-machine ceremony for tests and trials: one process generates
+    /// every aggregator's share (a dealer). Use `ceremony` for deployments.
     Keygen {
         /// Task configuration file (bincode, from `task-config`).
         #[arg(long)]
@@ -61,6 +108,11 @@ enum Cmd {
         /// Release second moments for a regression (SumVec / bounded tasks).
         #[arg(long, default_value_t = false)]
         moments: bool,
+        /// Largest batch (default: 2^20 verdict, 2^16 silent). With moments,
+        /// a smaller batch allows wider digits and fewer multiplications per
+        /// report (`TaskConfig::moment_digit_bits`).
+        #[arg(long)]
+        max_batch: Option<u64>,
         /// Release policy, repeatable, one per collector in id order:
         /// `<hex sealing public key>:<e0,e1,...>[:moments]`.
         #[arg(long = "collector")]
@@ -173,6 +225,17 @@ enum Cmd {
         #[arg(long)]
         identities_dir: Option<PathBuf>,
     },
+    /// Derive the `shards` shard tasks of a base task without any keys:
+    /// writes `shard-<i>/task.bin`. Every aggregator machine then runs
+    /// `ceremony` once per shard task (the distributed path).
+    ShardTasks {
+        #[arg(long)]
+        task: PathBuf,
+        #[arg(long)]
+        shards: usize,
+        #[arg(long)]
+        out_dir: PathBuf,
+    },
     /// Router for a sharded deployment.
     Router {
         /// Directory written by `keygen-shards`.
@@ -236,21 +299,27 @@ fn parse_type(s: &str) -> anyhow::Result<MeasurementType> {
 /// aggregator index as associated data.
 fn load_or_create_identities(dir: &PathBuf, n: usize) -> anyhow::Result<Vec<AggregatorIdentity>> {
     std::fs::create_dir_all(dir)?;
-    let mut ids = Vec::with_capacity(n);
-    for i in 0..n {
-        let path = dir.join(format!("aggregator-{i}.identity.sealed"));
-        let label = format!("aggregator-identity:{i}");
-        let id = if path.exists() {
-            let b = secret::unseal(label.as_bytes(), &std::fs::read(&path)?)?;
-            AggregatorIdentity::from_secret_bytes(b.as_slice().try_into().map_err(|_| anyhow::anyhow!("identity must be 32 bytes"))?)
-        } else {
-            let id = AggregatorIdentity::generate();
-            std::fs::write(&path, secret::seal(label.as_bytes(), &id.secret_bytes())?)?;
-            id
-        };
-        ids.push(id);
-    }
-    Ok(ids)
+    (0..n).map(|i| load_or_create_identity(&dir.join(identity_file(i)), i)).collect()
+}
+
+fn identity_file(i: usize) -> String {
+    format!("aggregator-{i}.identity.sealed")
+}
+
+fn load_or_create_identity(path: &std::path::Path, i: usize) -> anyhow::Result<AggregatorIdentity> {
+    let label = format!("aggregator-identity:{i}");
+    Ok(if path.exists() {
+        let b = secret::unseal(label.as_bytes(), &std::fs::read(path)?)?;
+        AggregatorIdentity::from_secret_bytes(b.as_slice().try_into().map_err(|_| anyhow::anyhow!("identity must be 32 bytes"))?)
+    } else {
+        let id = AggregatorIdentity::generate();
+        std::fs::write(path, secret::seal(label.as_bytes(), &id.secret_bytes())?)?;
+        id
+    })
+}
+
+fn share_label(i: usize, cfg: &TaskConfig) -> String {
+    format!("share:{i}:{}", hex::encode(cfg.task_id))
 }
 
 /// Writes `aggregator-keys.txt`: the public identity keys, one per line,
@@ -302,7 +371,49 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().init();
     let cli = Cli::parse();
     match cli.cmd {
-        Cmd::TaskConfig { out, r#type, aggregators, mode, min_batch, auth_quota, task_id, moments, collectors } => {
+        Cmd::InitIdentity { index, out_dir } => {
+            std::fs::create_dir_all(&out_dir)?;
+            let path = out_dir.join(identity_file(index));
+            let id = load_or_create_identity(&path, index)?;
+            println!("{}", hex::encode(id.public_key()));
+            eprintln!("identity of aggregator {index} in {} (public key above, line {index} of aggregator-keys.txt)", path.display());
+        }
+        Cmd::Ceremony { task, index, identity, aggregator_keys, session, listen, aggregators, token, tls_cert, tls_key, ca, out_dir, timeout_secs } => {
+            let cfg: TaskConfig = read(&task)?;
+            let label = format!("aggregator-identity:{index}");
+            let secret_bytes = secret::unseal(label.as_bytes(), &std::fs::read(&identity)?)?;
+            let identity = AggregatorIdentity::from_secret_bytes(secret_bytes.as_slice().try_into().map_err(|_| anyhow::anyhow!("identity must be 32 bytes"))?);
+            let pinned = fhe_prio3_node::client::parse_aggregator_keys(&std::fs::read_to_string(&aggregator_keys)?)?;
+            let session: [u8; 32] = hex::decode(session.trim())?.as_slice().try_into().map_err(|_| anyhow::anyhow!("session must be 32 bytes of hex"))?;
+            std::fs::create_dir_all(&out_dir)?;
+            let started = std::time::Instant::now();
+            let out = fhe_prio3_node::ceremony_node::run(fhe_prio3_node::ceremony_node::CeremonyNodeConfig {
+                task: cfg.clone(),
+                index,
+                identity,
+                pinned,
+                session,
+                listen,
+                peers: aggregators.split(',').map(|s| s.trim().trim_end_matches('/').to_string()).collect(),
+                token,
+                tls_cert,
+                tls_key,
+                ca_pem: std::fs::read(&ca)?,
+                work_dir: out_dir.join(format!("ceremony-{}", hex::encode(&session[..8]))),
+                timeout: std::time::Duration::from_secs(timeout_secs),
+            })
+            .await?;
+            std::fs::write(out_dir.join("material.bin"), encode(&out.material)?)?;
+            std::fs::write(out_dir.join(format!("share-{index}.sealed")), secret::seal(share_label(index, &cfg).as_bytes(), &out.share)?)?;
+            std::fs::write(out_dir.join("transcript.txt"), format!("{}\n", hex::encode(out.transcript)))?;
+            println!(
+                "ceremony complete in {:.1} s: material.bin (attested by all {} aggregators), share-{index}.sealed, transcript {}",
+                started.elapsed().as_secs_f64(),
+                cfg.num_aggregators,
+                hex::encode(out.transcript)
+            );
+        }
+        Cmd::TaskConfig { out, r#type, aggregators, mode, min_batch, auth_quota, task_id, moments, max_batch, collectors } => {
             let ty = parse_type(&r#type)?;
             let id: [u8; 32] = match task_id {
                 Some(h) => hex::decode(h)?.as_slice().try_into().map_err(|_| anyhow::anyhow!("task id must be 32 bytes"))?,
@@ -322,7 +433,9 @@ async fn main() -> anyhow::Result<()> {
             }
             if moments {
                 cfg.moments = true;
-                cfg.max_batch_size = cfg.moments_max_batch().ok_or_else(|| anyhow::anyhow!("moments need a vector type"))?.min(cfg.max_batch_size);
+            }
+            if let Some(n) = max_batch {
+                cfg.max_batch_size = n;
             }
             for spec in &collectors {
                 cfg.collectors.push(parse_policy(spec)?);
@@ -330,6 +443,9 @@ async fn main() -> anyhow::Result<()> {
             cfg.validate()?;
             std::fs::write(&out, encode(&cfg)?)?;
             println!("wrote {} (digest {})", out.display(), hex::encode(cfg.digest()));
+            if let Some(d) = cfg.moment_digit_bits() {
+                println!("moments: {d}-bit digits for batches of up to {}", cfg.max_batch_size);
+            }
         }
         Cmd::Keygen { task, out_dir, identities_dir } => {
             let cfg: TaskConfig = read(&task)?;
@@ -452,6 +568,15 @@ async fn main() -> anyhow::Result<()> {
                     let sealed = secret::seal(format!("share:{j}:{}", hex::encode(cfg.task_id)).as_bytes(), s)?;
                     std::fs::write(dir.join(format!("share-{j}.sealed")), sealed)?;
                 }
+                println!("shard {i}: task {} written to {}", hex::encode(cfg.task_id), dir.display());
+            }
+        }
+        Cmd::ShardTasks { task, shards, out_dir } => {
+            let base: TaskConfig = read(&task)?;
+            for (i, cfg) in fhe_prio3::sharding::shard_configs(&base, shards)?.iter().enumerate() {
+                let dir = out_dir.join(format!("shard-{i}"));
+                std::fs::create_dir_all(&dir)?;
+                std::fs::write(dir.join("task.bin"), encode(cfg)?)?;
                 println!("shard {i}: task {} written to {}", hex::encode(cfg.task_id), dir.display());
             }
         }

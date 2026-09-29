@@ -76,7 +76,8 @@ pub struct AggregateShare {
     pub task_id: [u8; 32],
     /// Collector this share is released to; `partials` covers exactly the
     /// chunks `TaskConfig::collector_chunks` lists for it and
-    /// `moment_partials` exactly `TaskConfig::collector_moment_pairs`.
+    /// `moment_partials` the accumulators (`Layout::moment_pair_terms`) of
+    /// exactly `TaskConfig::collector_moment_pairs`.
     pub collector: u32,
     pub aggregator: usize,
     /// SHA-256 over the sorted identifiers of the reports in the batch.
@@ -87,7 +88,8 @@ pub struct AggregateShare {
     /// Silent mode: partial decryption of the encrypted valid-report count,
     /// so the collector can verify it rather than trust it.
     pub valid_count_partial: Option<Vec<u8>>,
-    /// Post-validation moments: one partial decryption per (a <= b) pair.
+    /// Post-validation moments: one partial decryption per accumulator of
+    /// the collector's pairs, in `Layout::moment_terms` order.
     pub moment_partials: Vec<Vec<u8>>,
 }
 

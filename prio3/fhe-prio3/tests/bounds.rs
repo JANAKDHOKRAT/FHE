@@ -115,8 +115,9 @@ fn moments_over_mixed_widths_match_plaintext() {
     let t = MeasurementType::BoundedSumVec { bounds: vec![100, 5, 15] };
     let mut cfg = TaskConfig::new(task_id(63), t.clone(), 2);
     cfg.moments = true;
-    cfg.max_batch_size = cfg.moments_max_batch().unwrap().min(1 << 20);
-    assert_eq!(cfg.moments_max_batch().unwrap(), (cfg.plain_mod - 1) >> (7 + 4));
+    // 2^20 reports: 127^2 * 2^20 exceeds p, so the 7-bit value is split
+    // into 6-bit digits (63^2 * 2^20 < p): two digits
+    assert_eq!((cfg.max_batch_size, cfg.moment_digit_bits()), (1 << 20, Some(6)));
     let mut net = Net::new(cfg);
     let rows = vec![vec![10u64, 1, 8], vec![20, 5, 7], vec![100, 3, 15], vec![40, 1, 11], vec![0, 0, 8], vec![55, 5, 15]];
     for r in &rows {

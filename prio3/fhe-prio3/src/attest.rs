@@ -40,6 +40,9 @@ impl AggregatorIdentity {
     pub fn public_key(&self) -> [u8; 32] {
         self.key.verifying_key().to_bytes()
     }
+    pub fn sign(&self, msg: &[u8]) -> Signature {
+        self.key.sign(msg)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

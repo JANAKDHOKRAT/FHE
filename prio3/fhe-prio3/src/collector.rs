@@ -95,6 +95,11 @@ impl Collector {
         let elements = self.cfg.collector_elements(collector)?;
         let chunks = self.cfg.collector_chunks(&self.layout, collector);
         let pairs = self.cfg.collector_moment_pairs(collector)?;
+        let terms: Vec<_> = if pairs.is_empty() {
+            Vec::new()
+        } else {
+            self.layout.moment_terms().into_iter().filter(|t| pairs.contains(&(t.a, t.b))).collect()
+        };
         if shares.len() != n {
             return Err(Error::Protocol(format!("expected {n} aggregate shares, got {}", shares.len())));
         }
@@ -115,11 +120,16 @@ impl Collector {
             if s.partials.len() != chunks.len() {
                 return Err(Error::Protocol("wrong number of chunk partials for this collector".into()));
             }
-            if s.moment_partials.len() != pairs.len() {
+            if s.moment_partials.len() != terms.len() {
                 return Err(Error::Protocol("wrong number of moment partials for this collector".into()));
             }
         }
         let count = shares[0].report_count;
+        // every bound below (and the digit width) assumes at most
+        // max_batch_size reports; aggregators admit no more
+        if count > self.cfg.max_batch_size {
+            return Err(Error::Protocol("aggregate inconsistent: report count exceeds max_batch_size".into()));
+        }
         let valid = match self.cfg.mode {
             VerificationMode::Verdict => count,
             VerificationMode::Silent => {
@@ -164,19 +174,24 @@ impl Collector {
             let l = values.len();
             let pos = |e: usize| values.iter().position(|&x| x == e).expect("pair within elements");
             let mut second = vec![vec![0u128; l]; l];
-            for (idx, &(a, b)) in pairs.iter().enumerate() {
+            for (idx, &t) in terms.iter().enumerate() {
                 let partials = self.decode_partials(shares, |s| Ok(s.moment_partials[idx].as_slice()))?;
                 let refs: Vec<&PartialDecryption> = partials.iter().collect();
-                let v = self.ctx.fuse(&refs, 1)?[0] as u128;
-                // Each second moment (a, b) is a sum of `valid` products each at
-                // most (2^bits_a - 1)(2^bits_b - 1); anything larger means a
-                // corrupted contribution.
+                let span = self.layout.moment_term_span(t);
+                let slots = self.ctx.fuse(&refs, span)?;
+                let acc = self.layout.moment_term_sum(t, &slots, valid).map_err(|e| Error::Protocol(format!("aggregate inconsistent: {e}")))?;
+                let (pa, pb) = (pos(t.a), pos(t.b));
+                second[pa][pb] += acc;
+                if pa != pb {
+                    second[pb][pa] = second[pa][pb];
+                }
+            }
+            for &(a, b) in &pairs {
+                // the recombined sum of `valid` products of a b_a-bit and a b_b-bit value
                 let cap = (valid as u128) * ((1u128 << map[a].1) - 1) * ((1u128 << map[b].1) - 1);
-                if v > cap {
+                if second[pos(a)][pos(b)] > cap {
                     return Err(Error::Protocol(format!("aggregate inconsistent: second moment ({a},{b}) exceeds its bound")));
                 }
-                second[pos(a)][pos(b)] = v;
-                second[pos(b)][pos(a)] = v;
             }
             let first: Vec<u128> = values.iter().map(|&e| all[e]).collect();
             Some(RegressionResult::from_moments(valid, first, second))

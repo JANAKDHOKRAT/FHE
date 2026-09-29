@@ -256,7 +256,16 @@ TbgvRotKeys tbgv_rotkeys_next(TbgvContext ctx, TbgvSecretKey sk, TbgvRotKeys pre
     TBGV_CATCH(nullptr)
 }
 TbgvRotKeys tbgv_rotkeys_add(TbgvContext ctx, TbgvRotKeys a, TbgvRotKeys b, const char* tag) {
-    TBGV_TRY return new RotMap(cc_of(ctx)->MultiAddEvalAutomorphismKeys(rk_of(a), rk_of(b), tag)); TBGV_CATCH(nullptr)
+    TBGV_TRY
+    // OpenFHE keeps only the indices present in both maps; a contribution
+    // missing an index would silently drop that key from the joint set.
+    const auto& ma = *rk_of(a);
+    const auto& mb = *rk_of(b);
+    if (ma.size() != mb.size()) { set_error("rotation key maps cover different indices"); return nullptr; }
+    for (const auto& kv : ma)
+        if (mb.find(kv.first) == mb.end()) { set_error("rotation key maps cover different indices"); return nullptr; }
+    return new RotMap(cc_of(ctx)->MultiAddEvalAutomorphismKeys(rk_of(a), rk_of(b), tag));
+    TBGV_CATCH(nullptr)
 }
 int tbgv_context_install_rotkeys(TbgvContext ctx, TbgvRotKeys keys, const char* tag) {
     TBGV_TRY
@@ -303,6 +312,220 @@ TbgvRotKeys tbgv_rotkeys_deserialize(TbgvContext ctx, const uint8_t* buf, size_t
         }
     }
     return new RotMap(map);
+    TBGV_CATCH(nullptr)
+}
+
+/* ---- distributed key ceremony ------------------------------------------ */
+
+namespace {
+
+using ParamsPtr = std::shared_ptr<DCRTPoly::Params>;
+
+std::shared_ptr<CryptoParametersRNS> rns_params(TbgvContext ctx) {
+    auto cp = std::dynamic_pointer_cast<CryptoParametersRNS>(cc_of(ctx)->GetCryptoParameters());
+    if (!cp) throw std::runtime_error("not an RNS context");
+    if (cp->GetKeySwitchTechnique() != HYBRID) throw std::runtime_error("the ceremony expects hybrid key switching");
+    return cp;
+}
+
+ParamsPtr basis_params(TbgvContext ctx, uint32_t basis) {
+    auto cp = rns_params(ctx);
+    ParamsPtr p = basis == 0 ? cp->GetParamsPK() : basis == 1 ? cp->GetParamsQP() : nullptr;
+    if (!p) throw std::runtime_error("unknown or absent key basis");
+    return p;
+}
+
+// Every residue of `count` polynomials over `params` below its tower modulus.
+bool residues_ok(const ParamsPtr& params, const uint64_t* v, size_t len, size_t count) {
+    const auto& towers = params->GetParams();
+    const size_t n = params->GetRingDimension();
+    if (v == nullptr || len != count * towers.size() * n) { set_error("residue count does not match the key shape"); return false; }
+    for (size_t c = 0; c < count; ++c)
+        for (size_t t = 0; t < towers.size(); ++t) {
+            const uint64_t q = towers[t]->GetModulus().ConvertToInt<uint64_t>();
+            const uint64_t* x = v + (c * towers.size() + t) * n;
+            for (size_t i = 0; i < n; ++i)
+                if (x[i] >= q) { set_error("residue is not below its tower modulus"); return false; }
+        }
+    return true;
+}
+
+DCRTPoly poly_from(const ParamsPtr& params, const uint64_t* v) {
+    DCRTPoly x(params, Format::EVALUATION, true);
+    const size_t n = params->GetRingDimension();
+    for (size_t t = 0; t < params->GetParams().size(); ++t) {
+        auto tower = x.GetElementAtIndex(t);
+        NativeVector vec(n, tower.GetModulus());
+        for (size_t i = 0; i < n; ++i) vec[i] = NativeInteger(v[t * n + i]);
+        tower.SetValues(std::move(vec), Format::EVALUATION);
+        x.SetElementAtIndex(t, std::move(tower));
+    }
+    return x;
+}
+
+// Writes `x` (over `params`, EVALUATION format) at `out`.
+bool poly_to(const DCRTPoly& x, const ParamsPtr& params, uint64_t* out) {
+    const size_t n = params->GetRingDimension();
+    if (x.GetFormat() != Format::EVALUATION || x.GetNumOfElements() != params->GetParams().size() || x.GetRingDimension() != n) {
+        set_error("key polynomial does not have the expected shape");
+        return false;
+    }
+    for (size_t t = 0; t < x.GetNumOfElements(); ++t) {
+        const auto& tw = x.GetElementAtIndex(t);
+        if (tw.GetModulus() != params->GetParams()[t]->GetModulus()) { set_error("key polynomial is over another basis"); return false; }
+        const auto& vals = tw.GetValues();
+        for (size_t i = 0; i < n; ++i) out[t * n + i] = vals[i].ConvertToInt<uint64_t>();
+    }
+    return true;
+}
+
+std::vector<DCRTPoly> polys_from(const ParamsPtr& params, const uint64_t* v, size_t count) {
+    std::vector<DCRTPoly> out;
+    out.reserve(count);
+    const size_t stride = params->GetParams().size() * params->GetRingDimension();
+    for (size_t c = 0; c < count; ++c) out.push_back(poly_from(params, v + c * stride));
+    return out;
+}
+
+}  // namespace
+
+uint32_t tbgv_key_basis_towers(TbgvContext ctx, uint32_t basis) {
+    TBGV_TRY return static_cast<uint32_t>(basis_params(ctx, basis)->GetParams().size()); TBGV_CATCH(0)
+}
+int tbgv_key_basis_moduli(TbgvContext ctx, uint32_t basis, uint64_t* out, size_t out_len) {
+    TBGV_TRY
+    const auto p = basis_params(ctx, basis);
+    if (out == nullptr || out_len != p->GetParams().size()) { set_error("moduli buffer has the wrong length"); return 0; }
+    for (size_t t = 0; t < out_len; ++t) out[t] = p->GetParams()[t]->GetModulus().ConvertToInt<uint64_t>();
+    return 1;
+    TBGV_CATCH(0)
+}
+uint32_t tbgv_key_num_parts(TbgvContext ctx) {
+    TBGV_TRY return rns_params(ctx)->GetNumPartQ(); TBGV_CATCH(0)
+}
+
+TbgvPublicKey tbgv_pubkey_template(TbgvContext ctx, const uint64_t* a, size_t len) {
+    TBGV_TRY
+    const auto params = basis_params(ctx, 0);
+    if (!residues_ok(params, a, len, 1)) return nullptr;
+    PK pk = std::make_shared<PublicKeyImpl<DCRTPoly>>(cc_of(ctx));
+    pk->SetPublicElements(std::vector<DCRTPoly>{DCRTPoly(params, Format::EVALUATION, true), poly_from(params, a)});
+    return new PK(pk);
+    TBGV_CATCH(nullptr)
+}
+int tbgv_keygen_share(TbgvContext ctx, TbgvPublicKey tmpl, TbgvPublicKey* out_pk, TbgvSecretKey* out_sk) {
+    TBGV_TRY
+    // fresh = true: b = e - a*s against the template's a, nothing added.
+    auto kp = cc_of(ctx)->MultipartyKeyGen(pk_of(tmpl), false, true);
+    if (!kp.good()) { set_error("MultipartyKeyGen failed"); return 0; }
+    *out_pk = new PK(kp.publicKey);
+    *out_sk = new SK(kp.secretKey);
+    return 1;
+    TBGV_CATCH(0)
+}
+int tbgv_pubkey_export(TbgvContext ctx, TbgvPublicKey pk, uint32_t element, uint64_t* out, size_t out_len) {
+    TBGV_TRY
+    const auto params = basis_params(ctx, 0);
+    const auto& el = pk_of(pk)->GetPublicElements();
+    if (el.size() != 2 || element > 1) { set_error("public key element out of range"); return 0; }
+    if (out == nullptr || out_len != params->GetParams().size() * params->GetRingDimension()) { set_error("residue buffer has the wrong length"); return 0; }
+    return poly_to(el[element], params, out) ? 1 : 0;
+    TBGV_CATCH(0)
+}
+TbgvPublicKey tbgv_pubkey_with_b(TbgvContext ctx, TbgvPublicKey tmpl, const uint64_t* b, size_t len) {
+    TBGV_TRY
+    const auto params = basis_params(ctx, 0);
+    if (!residues_ok(params, b, len, 1)) return nullptr;
+    const auto& el = pk_of(tmpl)->GetPublicElements();
+    if (el.size() != 2) { set_error("template is not a public key"); return nullptr; }
+    PK pk = std::make_shared<PublicKeyImpl<DCRTPoly>>(cc_of(ctx));
+    pk->SetPublicElements(std::vector<DCRTPoly>{poly_from(params, b), el[1]});
+    return new PK(pk);
+    TBGV_CATCH(nullptr)
+}
+TbgvPublicKey tbgv_pubkey_add(TbgvContext ctx, TbgvPublicKey p1, TbgvPublicKey p2, const char* tag) {
+    TBGV_TRY
+    // OpenFHE keeps the first key's a; the shares must have been made against the same one.
+    const auto& e1 = pk_of(p1)->GetPublicElements();
+    const auto& e2 = pk_of(p2)->GetPublicElements();
+    if (e1.size() != 2 || e2.size() != 2 || !(e1[1] == e2[1])) { set_error("public key shares were made against different a"); return nullptr; }
+    return new PK(cc_of(ctx)->MultiAddPubKeys(pk_of(p1), pk_of(p2), tag));
+    TBGV_CATCH(nullptr)
+}
+
+TbgvEvalKey tbgv_evalkey_template(TbgvContext ctx, const uint64_t* a, size_t len) {
+    TBGV_TRY
+    const auto params = basis_params(ctx, 1);
+    const size_t parts = rns_params(ctx)->GetNumPartQ();
+    if (!residues_ok(params, a, len, parts)) return nullptr;
+    EK ek = std::make_shared<EvalKeyRelinImpl<DCRTPoly>>(cc_of(ctx));
+    ek->SetAVector(polys_from(params, a, parts));
+    ek->SetBVector(std::vector<DCRTPoly>(parts, DCRTPoly(params, Format::EVALUATION, true)));
+    return new EK(ek);
+    TBGV_CATCH(nullptr)
+}
+int tbgv_evalkey_export(TbgvContext ctx, TbgvEvalKey key, uint32_t which, uint64_t* out, size_t out_len) {
+    TBGV_TRY
+    const auto params = basis_params(ctx, 1);
+    const size_t parts = rns_params(ctx)->GetNumPartQ();
+    const size_t stride = params->GetParams().size() * params->GetRingDimension();
+    if (which > 1) { set_error("eval key vector out of range"); return 0; }
+    const auto& v = which == 0 ? ek_of(key)->GetAVector() : ek_of(key)->GetBVector();
+    if (v.size() != parts) { set_error("eval key has the wrong number of parts"); return 0; }
+    if (out == nullptr || out_len != parts * stride) { set_error("residue buffer has the wrong length"); return 0; }
+    for (size_t c = 0; c < parts; ++c)
+        if (!poly_to(v[c], params, out + c * stride)) return 0;
+    return 1;
+    TBGV_CATCH(0)
+}
+TbgvEvalKey tbgv_evalkey_build(TbgvContext ctx, const uint64_t* a, size_t a_len, const uint64_t* b, size_t b_len) {
+    TBGV_TRY
+    const auto params = basis_params(ctx, 1);
+    const size_t parts = rns_params(ctx)->GetNumPartQ();
+    if (!residues_ok(params, a, a_len, parts) || !residues_ok(params, b, b_len, parts)) return nullptr;
+    EK ek = std::make_shared<EvalKeyRelinImpl<DCRTPoly>>(cc_of(ctx));
+    ek->SetAVector(polys_from(params, a, parts));
+    ek->SetBVector(polys_from(params, b, parts));
+    return new EK(ek);
+    TBGV_CATCH(nullptr)
+}
+TbgvEvalKey tbgv_evalkey_with_b(TbgvContext ctx, TbgvEvalKey tmpl, const uint64_t* b, size_t b_len) {
+    TBGV_TRY
+    const auto params = basis_params(ctx, 1);
+    const size_t parts = rns_params(ctx)->GetNumPartQ();
+    if (ek_of(tmpl)->GetAVector().size() != parts) { set_error("template has the wrong number of parts"); return nullptr; }
+    if (!residues_ok(params, b, b_len, parts)) return nullptr;
+    EK ek = std::make_shared<EvalKeyRelinImpl<DCRTPoly>>(cc_of(ctx));
+    ek->SetAVector(ek_of(tmpl)->GetAVector());
+    ek->SetBVector(polys_from(params, b, parts));
+    return new EK(ek);
+    TBGV_CATCH(nullptr)
+}
+int tbgv_evalkey_same_a(TbgvEvalKey k1, TbgvEvalKey k2) {
+    TBGV_TRY
+    const auto& a1 = ek_of(k1)->GetAVector();
+    const auto& a2 = ek_of(k2)->GetAVector();
+    if (a1.size() != a2.size()) return 0;
+    for (size_t i = 0; i < a1.size(); ++i)
+        if (!(a1[i] == a2[i])) return 0;
+    return 1;
+    TBGV_CATCH(-1)
+}
+TbgvRotKeys tbgv_rotkeys_single(TbgvContext ctx, int32_t index, TbgvEvalKey key) {
+    TBGV_TRY
+    const uint32_t m = cc_of(ctx)->GetCyclotomicOrder();
+    auto map = std::make_shared<std::map<uint32_t, EK>>();
+    (*map)[FindAutomorphismIndex2n(index, m)] = ek_of(key);
+    return new RotMap(map);
+    TBGV_CATCH(nullptr)
+}
+TbgvEvalKey tbgv_rotkeys_get(TbgvContext ctx, TbgvRotKeys keys, int32_t index) {
+    TBGV_TRY
+    const uint32_t m = cc_of(ctx)->GetCyclotomicOrder();
+    const auto& map = *rk_of(keys);
+    auto it = map.find(FindAutomorphismIndex2n(index, m));
+    if (map.size() != 1 || it == map.end()) { set_error("rotation key map does not hold exactly this index"); return nullptr; }
+    return new EK(it->second);
     TBGV_CATCH(nullptr)
 }
 

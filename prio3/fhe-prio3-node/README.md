@@ -250,11 +250,60 @@ Sharding therefore buys throughput in proportion to the *machines* added,
 not from splitting one saturated machine; on one 4-core box the
 single-set numbers in the spec are what it delivers.
 
+## Key setup across machines (`ceremony`)
+
+Each aggregator generates its own key share on its own machine; no
+machine, file or process ever holds another aggregator's share. The
+aggregators run `fhe-prio3-node ceremony` at the same time, each serving
+its signed messages over HTTPS and reading the others'
+(`fhe_prio3::ceremony`, spec §6b "Distributed key ceremony"):
+
+```sh
+# once per aggregator machine i, with that machine's own FHE_PRIO3_SEAL_KEY
+fhe-prio3-node init-identity --index $i --out-dir /srv/agg    # prints its public key
+# collect the n printed keys, line i = aggregator i, into aggregator-keys.txt,
+# distribute it (and task.bin) to every aggregator and to clients; agree on a session:
+SESSION=$(openssl rand -hex 32)
+# on every machine, at the same time:
+fhe-prio3-node ceremony --task task.bin --index $i \
+    --identity /srv/agg/aggregator-$i.identity.sealed --aggregator-keys aggregator-keys.txt \
+    --session $SESSION --listen 0.0.0.0:9000 \
+    --aggregators https://agg0:9000,https://agg1:9000,https://agg2:9000 \
+    --token "$TOKEN" --tls-cert agg.pem --tls-key agg.key --ca ca.pem --out-dir /srv/agg
+# -> /srv/agg/material.bin (identical on every machine, attested by all),
+#    /srv/agg/share-$i.sealed (this machine's share only), /srv/agg/transcript.txt
+```
+
+What it defends against, in order: a party choosing the common `a` with a
+trapdoor (it is expanded from a hash of seeds committed before any was
+revealed); a rogue public-key share chosen after seeing the others'
+(every contribution is committed, signed, before any is revealed); a
+malformed contribution (only `b` residues travel, checked for length and
+against every tower modulus in the shim before OpenFHE builds anything,
+never through OpenFHE's deserializer); a well-formed but wrong contribution
+or partial decryption (a joint key check encrypts a jointly random vector
+under the joint key, squares it, rotates it by every index and decrypts
+with every party's committed partial decryption; a single wrong slot
+aborts); equivocation (every party signs the hash of the whole transcript
+and of the joint material, and attests the material). Any party can stop
+the ceremony (n-of-n); a stopping party's server answers 410 with its
+reason and the others stop instead of waiting. The transcript digest is
+printed and written so operators can compare it out of band.
+
+For a sharded deployment, `shard-tasks --task task.bin --shards S --out-dir
+shards/` writes each shard's task, and the aggregators run `ceremony` once
+per shard task (a fresh session each).
+
+`keygen` and `keygen-shards` run every party in one process (a dealer that
+sees every share). They remain for tests and trials; a deployment uses
+`ceremony`.
+
 ## Setup
 
 ```sh
 export FHE_PRIO3_SEAL_KEY=$(openssl rand -hex 32)
 fhe-prio3-node task-config --out task.bin --type sum:100 --aggregators 2 --mode verdict --auth-quota 1
+# keys: `ceremony` on each aggregator machine (above), or for a single-machine trial:
 fhe-prio3-node keygen --task task.bin --out-dir keys/        # material.bin, share-0.sealed, share-1.sealed
 fhe-prio3-node client-identity --out client.key              # prints the public key to enrol
 
@@ -270,12 +319,15 @@ fhe-prio3-node submit --task task.bin --material keys/material.bin --leader http
 fhe-prio3-node close --leader https://agg0:8443 --ca ca.pem --token "$TOKEN"
 ```
 
-`keygen` runs the whole ceremony in one process. The ceremony is a sequence
-of serialized messages (`fhe_prio3::keys`); running it across machines
-means moving those files between parties in the documented order, which is
-an operational procedure rather than new code.
-
 ## Tests
+
+`cargo test --release --test ceremony_node` runs the distributed ceremony
+as three OS processes of the binary, each with its own seal key, identity
+and output directory, over TLS: the three write byte-identical attested
+material and transcripts, each machine holds only its own share (which
+does not open under another machine's seal key), and the shares run the
+protocol. A party started on another task configuration makes all three
+stop without writing any key material.
 
 `cargo test --release --test e2e` starts two aggregators and a collector on
 random localhost ports with certificates generated on the fly, then runs:

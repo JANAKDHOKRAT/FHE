@@ -245,49 +245,100 @@ impl Circuit {
         (0..self.layout.repetitions).all(|j| fused.get(self.layout.result_slot(j)) == Some(&0))
     }
 
-    /// Post-validation second moments for one report in `group`: for every
-    /// value pair `a <= b` a ciphertext holding `v_a * v_b` at the group's
-    /// element-0 slot and zero elsewhere. Depth 3: weighted bits (1),
-    /// alignment mask (2), product (3). Each value is recomposed from its
-    /// own bit slots with plaintext weights `2^t` and zero everywhere else,
-    /// so nothing the client wrote outside that value's bit slots enters,
-    /// whatever the widths of neighbouring values.
+    /// Post-validation second moments for one report in `group`, one
+    /// ciphertext per [`crate::layout::MomentTerm`] of the layout in its order.
+    ///
+    /// Each value is split into digits of `D` bits. Digit `i` of value `v`
+    /// is recomposed from the value's own bit slots with plaintext weights
+    /// `2^(t mod D)` (zero everywhere else, so nothing the client wrote
+    /// outside that value's bit slots enters, whatever the widths of
+    /// neighbouring values), summed over a window of `D` elements
+    /// ([`Self::window_sum`]) into element `i*D` after alignment, and
+    /// masked to those positions. A term with shift `s` is the slot-wise
+    /// product of one value's digits with the other's moved by `s` digits,
+    /// so position `i` holds `d_a[i] * d_b[i+s]` (see [`crate::layout::MomentTerm`]) at the
+    /// group's element slot `i*D` and every other slot is zero.
+    ///
+    /// Depth 3: weighted bits (1), alignment mask (2), product (3). Costs
+    /// per report: per value `log2(window)` window rotations plus at most
+    /// `popcount` offset rotations, one alignment rotation and `k_v - 1`
+    /// digit shifts; per pair `k_a + k_b - 1` multiplications (`k_a` for a
+    /// square).
     pub fn moment_products(&self, chunks: &[Ciphertext], group: usize) -> Result<Vec<Ciphertext>> {
         let l = &self.layout;
         let map = l.moments.as_ref().expect("moments enabled");
         let stride = l.element_stride();
         let window = l.moment_window();
+        let d = l.moment_digit as usize;
         let ctx = &self.ctx;
-        let mut ind0 = vec![0u64; l.row];
-        ind0[l.group_slot(group, 0)] = 1;
-        let ind0 = ctx.plaintext(&ind0)?;
-        let mut values = Vec::with_capacity(map.len());
+        // per value: its digits moved down by 0, 1, .., k-1 digit positions
+        let mut values: Vec<Vec<Ciphertext>> = Vec::with_capacity(map.len());
         for &(start, bits) in map {
             // the value's bits live in one chunk (checked by the config)
             let k = l.chunk_of(start);
             let local = start - l.chunk_range(k).start;
             let mut w = vec![0u64; l.row];
             for t in 0..bits as usize {
-                w[l.group_slot(group, local + t)] = 1u64 << t;
+                w[l.group_slot(group, local + t)] = 1u64 << (t % d);
             }
-            // z is zero outside this value's bit slots, so the tree's window
-            // may exceed the value's width without touching a neighbour.
-            let mut z = ctx.mult_plain(&chunks[k], &ctx.plaintext(&w)?)?;
-            let mut d = 1usize;
-            while d < window {
-                z = ctx.add(&z, &ctx.rotate(&z, (stride * d) as i32)?)?;
-                d *= 2;
-            }
+            let z = ctx.mult_plain(&chunks[k], &ctx.plaintext(&w)?)?;
+            let z = self.window_sum(z, window, stride)?;
             let aligned = if local == 0 { z } else { ctx.rotate(&z, (local * stride) as i32)? };
-            values.push(ctx.mult_plain(&aligned, &ind0)?);
-        }
-        let mut out = Vec::with_capacity(l.moment_pairs());
-        for a in 0..values.len() {
-            for b in a..values.len() {
-                out.push(if a == b { ctx.square(&values[a])? } else { ctx.mult(&values[a], &values[b])? });
+            let digits = l.moment_digits(bits);
+            let mut m = vec![0u64; l.row];
+            for i in 0..digits {
+                m[l.group_slot(group, i * d)] = 1;
             }
+            let mut shifted = vec![ctx.mult_plain(&aligned, &ctx.plaintext(&m)?)?];
+            for _ in 1..digits {
+                let next = ctx.rotate(shifted.last().expect("one"), (d * stride) as i32)?;
+                shifted.push(next);
+            }
+            values.push(shifted);
+        }
+        let terms = l.moment_terms();
+        let mut out = Vec::with_capacity(terms.len());
+        for t in terms {
+            let (x, y) = if t.shift >= 0 { (&values[t.a][0], &values[t.b][t.shift as usize]) } else { (&values[t.a][(-t.shift) as usize], &values[t.b][0]) };
+            out.push(if t.a == t.b && t.shift == 0 { ctx.square(x)? } else { ctx.mult(x, y)? });
         }
         Ok(out)
+    }
+
+    /// Slot `x` of the result is `z[x] + z[x + stride] + .. + z[x + (w-1)*stride]`.
+    /// Doubling sums `P_1, P_2, P_4, ..` cover windows of powers of two; the
+    /// set bits of `w` pick some of them, each moved to its offset by
+    /// rotations by powers of two below it. Only rotations by `stride * 2^j`
+    /// with `2^(j+1) <= w` are used (`Layout::moment_rotations`).
+    fn window_sum(&self, z: Ciphertext, w: usize, stride: usize) -> Result<Ciphertext> {
+        let ctx = &self.ctx;
+        let mut acc: Option<Ciphertext> = None;
+        let mut offset = 0usize;
+        let mut p = z;
+        let mut span = 1usize;
+        loop {
+            if w & span != 0 {
+                let mut t = p.try_clone()?;
+                let mut bit = 1usize;
+                while bit <= offset {
+                    if offset & bit != 0 {
+                        t = ctx.rotate(&t, (stride * bit) as i32)?;
+                    }
+                    bit *= 2;
+                }
+                acc = Some(match acc {
+                    None => t,
+                    Some(a) => ctx.add(&a, &t)?,
+                });
+                offset += span;
+            }
+            if 2 * span > w {
+                break;
+            }
+            p = ctx.add(&p, &ctx.rotate(&p, (stride * span) as i32)?)?;
+            span *= 2;
+        }
+        Ok(acc.expect("w >= 1"))
     }
 
     /// `x^(p-1)` slot-wise by left-to-right square-and-multiply.

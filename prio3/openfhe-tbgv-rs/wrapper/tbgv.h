@@ -69,6 +69,7 @@ TbgvEvalKey tbgv_evalkey_deserialize(TbgvContext ctx, const uint8_t* buf, size_t
 /* ---- joint rotation key ceremony (one sequential round) ---------------- */
 TbgvRotKeys tbgv_rotkeys_first(TbgvContext ctx, TbgvSecretKey sk, const int32_t* indices, size_t n);
 TbgvRotKeys tbgv_rotkeys_next(TbgvContext ctx, TbgvSecretKey sk, TbgvRotKeys prev, const int32_t* indices, size_t n, const char* joint_tag);
+/* Fails unless both maps cover the same indices (OpenFHE would drop the others). */
 TbgvRotKeys tbgv_rotkeys_add(TbgvContext ctx, TbgvRotKeys a, TbgvRotKeys b, const char* joint_tag);
 /* Installs `keys` under `joint_tag`, merging with keys already installed
  * for that tag (used to install per-index keys one at a time). */
@@ -111,6 +112,40 @@ void tbgv_rotkeys_free(TbgvRotKeys keys);
 int tbgv_rotkeys_serialize(TbgvRotKeys keys, uint8_t** out, size_t* out_len);
 TbgvRotKeys tbgv_rotkeys_deserialize(TbgvContext ctx, const uint8_t* buf, size_t len);
 
+/* ---- distributed key ceremony -------------------------------------------
+ * Parties contribute key material against a common random `a` (a CRS drawn
+ * from a jointly generated seed) instead of the first party's. Key
+ * polynomials cross the network as raw residues in EVALUATION format and
+ * are rebuilt here; residues are validated against the tower moduli before
+ * any OpenFHE object is built. Basis 0 is the public-key basis, basis 1 the
+ * key-switching basis QP; a key-switching key has `tbgv_key_num_parts`
+ * polynomials per vector. Residue layout: polynomial, tower, coefficient. */
+uint32_t tbgv_key_basis_towers(TbgvContext ctx, uint32_t basis);
+int tbgv_key_basis_moduli(TbgvContext ctx, uint32_t basis, uint64_t* out, size_t out_len);
+uint32_t tbgv_key_num_parts(TbgvContext ctx);
+/* A public key (b = 0, a) to generate shares against. */
+TbgvPublicKey tbgv_pubkey_template(TbgvContext ctx, const uint64_t* a, size_t len);
+/* Fresh secret share s and public share (e - a*s, a) for the template's a. */
+int tbgv_keygen_share(TbgvContext ctx, TbgvPublicKey tmpl, TbgvPublicKey* out_pk, TbgvSecretKey* out_sk);
+/* Element 0 (b) or 1 (a) of a public key on the public-key basis. */
+int tbgv_pubkey_export(TbgvContext ctx, TbgvPublicKey pk, uint32_t element, uint64_t* out, size_t out_len);
+/* The template's a with the given b. */
+TbgvPublicKey tbgv_pubkey_with_b(TbgvContext ctx, TbgvPublicKey tmpl, const uint64_t* b, size_t len);
+/* b1 + b2 under the tag; fails unless both keys have the same a. */
+TbgvPublicKey tbgv_pubkey_add(TbgvContext ctx, TbgvPublicKey p1, TbgvPublicKey p2, const char* tag);
+/* A key-switching key (b = 0, a) that tbgv_multkey_round1_next and
+ * tbgv_rotkeys_next (via tbgv_rotkeys_single) generate against. */
+TbgvEvalKey tbgv_evalkey_template(TbgvContext ctx, const uint64_t* a, size_t len);
+/* which: 0 = a-vector, 1 = b-vector. */
+int tbgv_evalkey_export(TbgvContext ctx, TbgvEvalKey key, uint32_t which, uint64_t* out, size_t out_len);
+TbgvEvalKey tbgv_evalkey_build(TbgvContext ctx, const uint64_t* a, size_t a_len, const uint64_t* b, size_t b_len);
+TbgvEvalKey tbgv_evalkey_with_b(TbgvContext ctx, TbgvEvalKey tmpl, const uint64_t* b, size_t b_len);
+/* 1 if both a-vectors are equal, 0 if not, -1 on error. */
+int tbgv_evalkey_same_a(TbgvEvalKey k1, TbgvEvalKey k2);
+/* A one-entry rotation key map for rotation `index`, and its inverse. */
+TbgvRotKeys tbgv_rotkeys_single(TbgvContext ctx, int32_t index, TbgvEvalKey key);
+TbgvEvalKey tbgv_rotkeys_get(TbgvContext ctx, TbgvRotKeys keys, int32_t index);
+
 /* ---- plaintext / ciphertext ------------------------------------------- */
 /* values must be centered: -(p-1)/2 <= v <= (p-1)/2 */
 TbgvPlaintext tbgv_plaintext_new(TbgvContext ctx, const int64_t* values, size_t n);
@@ -134,6 +169,7 @@ TbgvCiphertext tbgv_eval_sub_plain(TbgvContext ctx, TbgvCiphertext a, TbgvPlaint
 TbgvCiphertext tbgv_eval_mult_plain(TbgvContext ctx, TbgvCiphertext a, TbgvPlaintext b);
 TbgvCiphertext tbgv_eval_rotate(TbgvContext ctx, TbgvCiphertext a, int32_t index);
 TbgvCiphertext tbgv_eval_negate(TbgvContext ctx, TbgvCiphertext a);
+
 /* a*a with relinearisation; cheaper than tbgv_eval_mult(a, a). */
 TbgvCiphertext tbgv_eval_square(TbgvContext ctx, TbgvCiphertext a);
 

@@ -11,6 +11,10 @@ use openfhe_tbgv_rs::{Context, EvalMultKey, Params, PublicKey, RotationKeys, Sec
 /// same configuration and checks the resulting parameters match.
 pub fn make_context(cfg: &TaskConfig) -> Result<Context> {
     cfg.validate()?;
+    // OpenFHE caches contexts in an unsynchronised process-global factory;
+    // parties created on several threads (the ceremony tests) take turns.
+    static CONTEXT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _g = CONTEXT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let ctx = Context::new(Params { plain_mod: cfg.plain_mod, mult_depth: cfg.mult_depth(), security_bits: cfg.security_bits })?;
     // Fails loudly if p is not compatible with the chosen ring dimension.
     ctx.plaintext(&[1])?;

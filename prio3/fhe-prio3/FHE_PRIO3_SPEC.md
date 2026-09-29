@@ -591,28 +591,148 @@ with an invalid report, a replay, an undecodable body (400), an oversized
 body (413), a helper refusing client endpoints (404), wrong tokens (401), a
 leader restart from its database mid-batch, batch close and post-close
 rejection, in 12 s including the ceremony; and a silent batched Sum with an
-out-of-range report in 234 s. Two production gaps remain in the node and
-are stated in its README: the ceremony runs in one process (the
-per-party steps exist as library functions; moving their messages between
-machines is an operational procedure), and the leader is a single point of
-coordination (a helper never initiates anything).
+out-of-range report in 234 s. Key setup across machines is the
+distributed ceremony below. One production gap remains in the node and is
+stated in its README: the leader is a single point of coordination (a
+helper never initiates anything).
+
+### Distributed key ceremony (`ceremony.rs`, node command `ceremony`)
+
+`keys::run_local_ceremony` generates every share in one process: a
+dealer, which the n-of-n trust model does not allow in a deployment. The
+distributed ceremony runs one party per aggregator machine; a share never
+leaves the machine that generated it. OpenFHE's multiparty key generation
+cannot be used across machines as it stands, for two reasons found in its
+1.3.1 source: every party's key material is generated against the random
+`a` of the *first* party's key (`MultipartyKeyGen` takes `pk[1]`,
+`KeySwitchGenInternal` takes `ekPrev->GetAVector()`), and
+`MultiAddPubKeys`/`MultiAddEvalKeys` keep the first key's `a` without
+checking the second's, while `MultiAddEvalAutomorphismKeys` silently drops
+any rotation index missing from one side. A first party choosing `a` with
+a trapdoor could read the others' `b = e − a·s` as their secrets. The
+ceremony therefore:
+
+1. *Common reference string.* Each party commits `H(seed_i)` (round 1),
+   then reveals (round 2); `a` for the public key, the eval-mult key and
+   every rotation key is expanded by SHAKE128 from `H(task, session,
+   seed_0..seed_{n−1})` with exact rejection sampling per tower. No party
+   can steer it. The shim builds OpenFHE template keys from these residues
+   (`tbgv_pubkey_template`, `tbgv_evalkey_template`) and every party,
+   the first included, generates against them.
+2. *Commit before reveal.* Public-key share, round-1 eval-mult and
+   rotation contributions are committed (signed SHA-256, round 3) before
+   any is released (round 4); round-2 eval-mult contributions likewise
+   (rounds 5–6). A rogue share (`b_n = b* − Σ others`) needs the others'
+   shares first.
+3. *Residues only.* Only `b` polynomials travel (and both vectors of a
+   round-2 contribution); the receiver rebuilds each key from its own copy
+   of `a`, after the shim has checked the exact length and every residue
+   against its tower modulus. No received byte reaches OpenFHE's
+   deserializer. Sums check equal `a` and equal index sets (the OpenFHE
+   gaps above).
+4. *Joint key check.* Each party encrypts a jointly random vector under the
+   joint key (committed in round 5, revealed in 6); the sum `x` gives
+   `T = x² + w_0·x + Σ_k w_k·rot_k(x)` with weights fixed by all the test
+   ciphertexts, which exercises the public key, the eval-mult key and every
+   rotation key at the top of the chain. Partial decryptions of `T` are
+   committed (round 7) before they are revealed with the test seeds (round
+   8), so no party can pick its partial to make a wrong `T` decrypt right;
+   the fused result must equal the value computed from the seeds in every
+   slot.
+5. *Agreement.* Round 9: each party signs the hash of the whole transcript
+   and of the joint material, and attests the material (§ attestation);
+   every party checks all of them.
+
+Messages carry the task digest, a session id agreed out of band, the round
+and the sender, signed with the sender's pinned Ed25519 identity. Tests
+(`tests/ceremony.rs`): three parties produce identical attested material
+and transcripts and distinct shares, and the shares run the protocol
+(accept, reject, aggregate); each of nine deviations by one party is caught
+by the honest parties where it should be: a message under another
+identity, a seed other than the committed one, a blob other than the
+committed one (commitment check); a public-key share, a rotation
+contribution or a round-2 contribution of uniform garbage, or a
+well-formed partial decryption under another secret (joint key check); a
+partial of another ciphertext (packed-format shape check); a signature over
+another transcript (round 9). Parties on another task configuration stop
+at round 1. `openfhe-tbgv-rs/tests/crs_ceremony.rs` checks the shim
+primitives (joint keys from residues decrypt squares and rotations; a
+share against another `a`, a residue at its modulus, a wrong length and
+mismatched rotation maps are refused). `fhe-prio3-node/tests/ceremony_node.rs`
+runs it as three OS processes over TLS, each with its own seal key.
+
+Not covered: the ceremony proves nothing about a party's noise
+distribution beyond what the joint key check measures, and it does not
+tolerate an aborting party (n-of-n: any party can stop it, as any party
+can stop decryption later).
 
 ### Post-validation computation: regression (`moments = true`)
 
 For a `SumVec` task whose last value is the target, the aggregators also
-accumulate `sum v_a v_b` for every pair over valid reports: values are
-recomposed from their bits with plaintext weights `2^t` (so nothing outside
-the bit slots enters), aligned onto one slot, masked, multiplied (depth 3),
-gated by the validity bit in silent mode, and folded. The collector fuses
-the pair sums, checks each against its bound `valid · (2^(2 bits) − 1)`, and
-solves the normal equations with an intercept. `regression.rs` checks the
-first and second moments and the coefficients against the plaintext
-computation on the same records in both modes, with an out-of-range record
-rejected (verdict) or contributing nothing (silent). Limit: products must
-stay below `p`, so `2·bits < log2 p` and the batch is capped at
-`(p−1)/2^(2 bits)` records: 65536 for 8-bit values in verdict mode, 3072 for
-4-bit values in silent mode. This is the honest reach of a 20-bit plaintext
-modulus, and the reason the regression pilot is a pilot.
+accumulate `sum v_a v_b` for every pair over valid reports, and the
+collector solves the normal equations with an intercept.
+
+*Digit decomposition.* A sum of products must stay below `p` to be exact,
+and silent mode's `p = 786,433` holds only twelve squares of 8-bit
+values. Each value is therefore split into digits of `D` bits,
+`v = Σ_i 2^(iD) d_i`, and the aggregators accumulate digit products
+instead: `v_a v_b = Σ_{i,j} 2^((i+j)D) d_{a,i} d_{b,j}`. `D`
+(`TaskConfig::moment_digit_bits`) is the largest width with
+`(2^min(D,w) − 1)² · max_batch_size ≤ p − 1` for the widest value `w`, so
+no accumulator slot can reach `p` for any batch the aggregators admit; the
+collector recombines exactly in 128-bit integers. When the widest square
+already fits, `D = w` and the circuit is the single-digit one. Digits are
+formed in SIMD: the value's bits are weighted `2^(t mod D)`, summed over an
+exact window of `D` elements (doubling sums composed at offsets from
+power-of-two rotations), aligned and masked, so digit `i` sits at element
+`i·D`. A product of one value's digits with the other's shifted by `s`
+digits (one rotation by `D` elements per shift, chained) yields at position
+`i` the product `d_{a,i} d_{b,i+s}`: `k_a + k_b − 1` multiplications per
+pair and `k` per square (whose cross terms count twice), one accumulator
+each, depth 3 as before; in silent mode each is gated by the validity bit,
+which holds that bit at every element slot of the report's class. The
+collector checks every digit cell against `valid · (2^{w_i} − 1)(2^{w_j} − 1)`
+(below `p` by the choice of `D`, so a larger value is a corrupted
+contribution, not a wrap), requires every other decrypted slot of an
+accumulator to be zero, refuses a report count above `max_batch_size`,
+and checks the recombined moment against `valid · (2^{b_a} − 1)(2^{b_b} − 1)`.
+
+*A bug this replaces.* The former cap was `(p − 1) >> (b_1 + b_2)` for the
+two widest values, which ignores the square of the widest (`2·b_1` bits):
+for 7- and 4-bit values it admitted batches in which the 7-bit square sum
+wraps modulo `p`, undetected (`config.rs::the_former_cap_let_the_widest_square_wrap`).
+The shipped `tests/bounds.rs` configuration (widths 7, 3, 4 at `2^20`
+reports) was such a task; it now uses 6-bit digits.
+
+*Tests.* `layout.rs` checks, in plaintext and independently of FHE, that
+the digit cells cover every digit product exactly once, and that the slot
+pipeline and the recombination are exact on every layout kind, every
+digit width and every group, with batches at the largest size the digit
+width allows and every value at its maximum (the undecomposed square
+would wrap) or random, and junk in every slot outside a value's bits; both
+mutations tried (a power-of-two window, a square's cross terms counted
+once) fail it. `regression.rs` checks moments and coefficients against the
+plaintext fit in verdict mode (single digit), silent mode with 4-bit values
+and 2-bit digits, and silent mode with 8-bit values at `max_batch_size =
+2^16` (2-bit digits, four per value) on 16 records whose sums of squares
+exceed `p`; an invalid record contributes nothing.
+
+*Cost.* Per report the moments cost `Σ_pairs (k_a + k_b − 1)` products and
+as many gatings: 33 for three 8-bit values in 2-bit digits, against 6 with
+single digits. Measured (silent mode, `SumVec(3, 8 bits)`, 4 groups, 2
+aggregators in one process on this 4-vCPU machine, `simulate`, 4 reports):
+32.1 s per report per aggregator amortised over the batch including its
+close, against 4.7 s for silent-mode reports without moments; aggregate
+share 1.1 s and 54.7 MiB per aggregator, unshard 0.7 s, result exact. An operator trades
+batch size for cost with `max_batch_size`: for three 8-bit values, 12
+reports allow single digits, 87,381 allow 2-bit digits. An attempt to run
+the digit products lower in the modulus chain was measured and dropped:
+OpenFHE's `Compress` leaves ciphertexts whose later products decrypt
+wrong under FLEXIBLEAUTOEXT, and aligning by adding a zero at a lower
+level decrypts right in isolation but not after the validity gating (the
+product's noise is not divided down enough); the collector's digit bound
+check refused both, and the shipped circuit keeps the products at full
+height.
 
 ### Per-element bounds: `BoundedSumVec`
 
@@ -636,8 +756,8 @@ bits; the collector's consistency check holds per element
 task binding, so a client encoding under other bounds is rejected. The
 second-moment circuit now recomposes each value from its own bit slots
 with a per-value weight mask, so values of different widths coexist, and
-the batch cap for moments follows the two widest values:
-`(p − 1) / 2^(b_1 + b_2)`. `tests/bounds.rs`: every element at its bound
+the digit width for moments follows the widest value (see the regression
+section). `tests/bounds.rs`: every element at its bound
 passes; bound + 1 with a zero, wrapped or saturated offset half fails;
 inconsistent offset bits fail; the tail element fails; opposite violations
 fail across twelve fresh challenges; silent mode contributes zero;

@@ -259,8 +259,11 @@ disappears: a forged related report either adds `x + δ` (if valid) or `0`
 to a sum the adversary cannot isolate without controlling the rest of the
 batch, which is exactly DAP's Sybil bound. The price is the cost in Section 5, and one new
 weakness: a report that is not a proper encryption cannot be rejected, and
-its garbage contribution corrupts the batch total. The collector detects
-this (Section 3.8) and refuses the batch, but cannot attribute it; with
+its garbage contribution corrupts the batch total. When its noise also
+reaches the encrypted valid count, the verified count round refuses the
+batch before anything is released (the fusion reaches `q_0/4`, §4.4;
+`tests/mitigations.rs`). Otherwise the collector's consistency check
+detects it (Section 3.8) and refuses the batch. Neither can attribute it; with
 authentication on, the set of identities in the batch is known, which
 bounds the search. In verdict mode the same report is simply rejected.
 

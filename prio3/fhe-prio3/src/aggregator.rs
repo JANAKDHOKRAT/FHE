@@ -560,7 +560,15 @@ impl Aggregator {
             return Err(Error::Protocol(format!("expected {n} verifier messages, have {}", pending.partials.len())));
         }
         let refs: Vec<&PartialDecryption> = pending.partials.values().collect();
-        vdec::check_flooding(&self.ctx, &refs, "verdict")?;
+        // Noise beyond the flooding range (vdec::check_flooding) comes from a
+        // malformed client ciphertext or from a malformed key or partial, and
+        // the two cannot be told apart here: the report is rejected, like any
+        // other check value that is not a decryption of zero. Every honest
+        // aggregator fuses the same partials, so they agree. Keys are bounded
+        // before any report by the ceremony's deep key check (SECURITY.md §6.2).
+        if !self.ctx.fuse_flooding_check(&refs, vdec::FLOODING_SLACK_BITS)?.0 {
+            return Ok(Verdict::Rejected(RejectReason::ValidityCheckFailed));
+        }
         let fused = self.ctx.fuse(&refs, self.layout.result_span())?;
         if !self.circuit.verdict(&fused) {
             return Ok(Verdict::Rejected(RejectReason::ValidityCheckFailed));

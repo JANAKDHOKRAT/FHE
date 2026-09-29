@@ -330,14 +330,17 @@ earlier `q0/4` bound passed up to `k = 310`.
 **What the protocol now does.**
 
 1. *Runtime flooding bound* (`vdec::check_flooding`, shim
-   `tbgv_fuse_flooding_check`): every fusion (verdict decision, count
-   round, release, key ceremony) requires every coefficient of
+   `tbgv_fuse_flooding_check`). Every fusion requires every coefficient of
    `Σ partial_i` at full precision within `t·(n·Q'/2 + Q'·2^-20 + 1)`, the
-   support of `n` flooded partials plus the honest noise allowance. No false
-   rejection is possible for honest parties. Every inflation from `k = 292`
-   is refused, before the fuser guesses `u` better than 37% of the time.
-   It fires only after the partials are revealed, so it detects rather
-   than prevents.
+   support of `n` flooded partials plus the honest noise allowance. A
+   violation aborts the count round, the release and the key ceremony. At
+   the per-report verdict decision it rejects the report
+   (`ValidityCheckFailed`): there a malformed client ciphertext and a
+   malformed key or partial cannot be told apart, and a client must not be
+   able to make aggregators abort. No false rejection is possible for
+   honest parties. Every inflation from `k = 292` is refused, before the
+   fuser guesses `u` better than 37% of the time. It fires only after the
+   partials are revealed, so it detects rather than prevents.
 2. *Deep key check in the ceremony* (`ceremony.rs`, before any client
    encrypts). The joint test ciphertext is taken to the task's full depth,
    through a squaring chain whose result is compared slot by slot (keys

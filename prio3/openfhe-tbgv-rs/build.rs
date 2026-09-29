@@ -55,12 +55,22 @@ fn main() {
     println!("cargo:rustc-env=TBGV_OPENFHE_VERSION={version}");
     println!("cargo:rerun-if-changed={lib_dir}/OpenFHE/OpenFHEConfigVersion.cmake");
 
+    // The shim includes both "openfhe.h" style paths (resolved in the
+    // subdirectories below) and "openfhe/pke/..." paths, which resolve from
+    // the directory above `include_dir`. That directory must be on the
+    // search path explicitly: it is found implicitly only when OpenFHE is
+    // installed under a prefix the compiler searches by default (/usr/local).
+    let include_root = Path::new(&include_dir)
+        .parent()
+        .unwrap_or_else(|| panic!("OpenFHE include dir {include_dir} has no parent directory"))
+        .to_path_buf();
     let mut build = cc::Build::new();
     build
         .cpp(true)
         .std("c++17")
         .opt_level(2)
         .file("wrapper/tbgv.cpp")
+        .include(&include_root)
         .include(&include_dir)
         .include(format!("{include_dir}/core"))
         .include(format!("{include_dir}/pke"))

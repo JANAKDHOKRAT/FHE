@@ -606,6 +606,169 @@ TbgvCiphertext tbgv_eval_negate(TbgvContext ctx, TbgvCiphertext a) {
     TBGV_TRY return new CT(cc_of(ctx)->EvalNegate(ct_of(a))); TBGV_CATCH(nullptr)
 }
 
+/* ---- verifiable decryption --------------------------------------------- */
+
+namespace {
+
+// Negacyclic shift of a coefficient-form tower by k in [0, 2N): X^k * p.
+NativePoly monomial_times(const NativePoly& p, uint32_t k) {
+    const size_t n = p.GetRingDimension();
+    const NativeInteger q = p.GetModulus();
+    const auto& v = p.GetValues();
+    NativeVector out(n, q);
+    const bool flip_all = k >= n;
+    const size_t s = k % n;
+    for (size_t i = 0; i < n; ++i) {
+        size_t j = i + s;
+        bool neg = flip_all;
+        if (j >= n) {
+            j -= n;
+            neg = !neg;
+        }
+        out[j] = (neg && v[i] != NativeInteger(0)) ? q - v[i] : v[i];
+    }
+    NativePoly r = p;
+    r.SetValues(std::move(out), Format::COEFFICIENT);
+    return r;
+}
+
+// A DCRTPoly over `params` from small signed coefficients.
+DCRTPoly small_poly(const std::shared_ptr<DCRTPoly::Params>& params, const int8_t* c) {
+    DCRTPoly x(params, Format::COEFFICIENT, true);
+    const size_t n = params->GetRingDimension();
+    for (size_t t = 0; t < x.GetNumOfElements(); ++t) {
+        auto tower = x.GetElementAtIndex(t);
+        const NativeInteger q = tower.GetModulus();
+        NativeVector vec(n, q);
+        for (size_t i = 0; i < n; ++i) {
+            const int64_t a = c[i];
+            vec[i] = a >= 0 ? NativeInteger(static_cast<uint64_t>(a)) : q - NativeInteger(static_cast<uint64_t>(-a));
+        }
+        tower.SetValues(std::move(vec), Format::COEFFICIENT);
+        x.SetElementAtIndex(t, std::move(tower));
+    }
+    x.SetFormat(Format::EVALUATION);
+    return x;
+}
+
+}  // namespace
+
+TbgvCiphertext tbgv_ciphertext_mult_monomial(TbgvContext ctx, TbgvCiphertext h, uint32_t k) {
+    TBGV_TRY
+    const CT& ct = ct_of(h);
+    if (ct->GetCryptoContext().get() != cc_of(ctx).get()) { set_error("ciphertext belongs to a different context"); return nullptr; }
+    const auto& el = ct->GetElements();
+    if (el.empty()) { set_error("ciphertext has no elements"); return nullptr; }
+    const uint32_t n = el[0].GetRingDimension();
+    if (k >= 2 * n) { set_error("monomial exponent must be below 2N"); return nullptr; }
+    std::vector<DCRTPoly> out;
+    out.reserve(el.size());
+    for (const auto& e : el) {
+        if (e.GetFormat() != Format::EVALUATION) { set_error("ciphertext element not in EVALUATION format"); return nullptr; }
+        DCRTPoly x = e;
+        x.SetFormat(Format::COEFFICIENT);
+        for (size_t t = 0; t < x.GetNumOfElements(); ++t) x.SetElementAtIndex(t, monomial_times(x.GetElementAtIndex(t), k));
+        x.SetFormat(Format::EVALUATION);
+        out.push_back(std::move(x));
+    }
+    CT r = ct->Clone();
+    r->SetElements(std::move(out));
+    return new CT(r);
+    TBGV_CATCH(nullptr)
+}
+
+TbgvCiphertext tbgv_zero_encryption(TbgvContext ctx, TbgvPublicKey pk, TbgvCiphertext reference, const int8_t* u,
+                                    const int8_t* e0, const int8_t* e1, size_t n) {
+    TBGV_TRY
+    if (u == nullptr || e0 == nullptr || e1 == nullptr) { set_error("null argument"); return nullptr; }
+    const CT& ref = ct_of(reference);
+    if (ref->GetCryptoContext().get() != cc_of(ctx).get()) { set_error("reference belongs to a different context"); return nullptr; }
+    const auto& rel = ref->GetElements();
+    if (rel.size() != 2) { set_error("reference must have two elements"); return nullptr; }
+    if (n != rel[0].GetRingDimension()) { set_error("coefficient vectors must have the ring dimension"); return nullptr; }
+    const auto& pke = pk_of(pk)->GetPublicElements();
+    if (pke.size() != 2) { set_error("not a public key"); return nullptr; }
+    const size_t towers = rel[0].GetNumOfElements();
+    if (pke[0].GetNumOfElements() < towers) { set_error("public key has fewer towers than the reference"); return nullptr; }
+    for (size_t t = 0; t < towers; ++t)
+        if (pke[0].GetElementAtIndex(t).GetModulus() != rel[0].GetElementAtIndex(t).GetModulus()) {
+            set_error("public key towers do not match the reference's");
+            return nullptr;
+        }
+    DCRTPoly b = pke[0];
+    DCRTPoly a = pke[1];
+    if (b.GetNumOfElements() > towers) {
+        b.DropLastElements(b.GetNumOfElements() - towers);
+        a.DropLastElements(a.GetNumOfElements() - towers);
+    }
+    const auto params = rel[0].GetParams();
+    const DCRTPoly up = small_poly(params, u);
+    const DCRTPoly t = small_poly(params, e0);
+    const DCRTPoly s = small_poly(params, e1);
+    const NativeInteger pt(cc_of(ctx)->GetCryptoParameters()->GetPlaintextModulus());
+    // (b u + t e0, a u + t e1): an encryption of zero, BGV noise a multiple of t
+    DCRTPoly c0 = b * up + t.Times(pt);
+    DCRTPoly c1 = a * up + s.Times(pt);
+    CT r = ref->Clone();
+    r->SetElements({std::move(c0), std::move(c1)});
+    return new CT(r);
+    TBGV_CATCH(nullptr)
+}
+
+int tbgv_monomial_slots(TbgvContext ctx, uint64_t* out, size_t out_len) {
+    TBGV_TRY
+    const CC& cc = cc_of(ctx);
+    const auto ep = cc->GetEncodingParams();
+    const uint64_t t = ep->GetPlaintextModulus();
+    const uint32_t m = cc->GetCyclotomicOrder();
+    const size_t n = m / 2;
+    if (out == nullptr || out_len != n) { set_error("output must hold the ring dimension"); return 0; }
+    auto vp = std::make_shared<NativePoly::Params>(m, NativeInteger(t), NativeInteger(1));
+    Plaintext pt = PlaintextFactory::MakePlaintext(PACKED_ENCODING, vp, ep);
+    NativeVector coeffs(n, NativeInteger(t));
+    coeffs[1] = NativeInteger(1);
+    NativePoly x(vp, Format::COEFFICIENT, true);
+    x.SetValues(std::move(coeffs), Format::COEFFICIENT);
+    pt->GetElement<NativePoly>() = std::move(x);
+    pt->SetScalingFactorInt(NativeInteger(1));
+    pt->Decode();
+    const auto& v = pt->GetPackedValue();
+    if (v.size() < n) { set_error("decoded fewer slots than the ring dimension"); return 0; }
+    for (size_t i = 0; i < n; ++i) out[i] = v[i] >= 0 ? static_cast<uint64_t>(v[i]) : t - static_cast<uint64_t>(-v[i]);
+    return 1;
+    TBGV_CATCH(0)
+}
+
+int tbgv_fuse_magnitude(TbgvContext ctx, const TbgvCiphertext* partials, size_t n, uint64_t* max_abs, uint64_t* q0) {
+    TBGV_TRY
+    if (n == 0 || partials == nullptr || max_abs == nullptr || q0 == nullptr) { set_error("bad arguments"); return 0; }
+    const auto cp = std::dynamic_pointer_cast<CryptoParametersBGVRNS>(cc_of(ctx)->GetCryptoParameters());
+    if (!cp) { set_error("not a BGV-RNS context"); return 0; }
+    // exactly the first half of MultipartyBGVRNS::MultipartyDecryptFusion
+    DCRTPoly b = ct_of(partials[0])->GetElements().at(0);
+    for (size_t i = 1; i < n; ++i) b += ct_of(partials[i])->GetElements().at(0);
+    b.SetFormat(Format::COEFFICIENT);
+    const size_t sizeQl = b.GetNumOfElements();
+    for (size_t i = sizeQl - 1; i > 0; --i) {
+        b.ModReduce(cp->GetPlaintextModulus(), cp->GettModqPrecon(), cp->GetNegtInvModq(i), cp->GetNegtInvModqPrecon(i),
+                    cp->GetqlInvModq(i), cp->GetqlInvModqPrecon(i));
+    }
+    const NativePoly& p0 = b.GetElementAtIndex(0);
+    const NativeInteger q = p0.GetModulus();
+    const NativeInteger half = q >> 1;
+    uint64_t mx = 0;
+    const auto& v = p0.GetValues();
+    for (size_t i = 0; i < v.GetLength(); ++i) {
+        const NativeInteger x = v[i];
+        const uint64_t a = (x > half ? q - x : x).ConvertToInt<uint64_t>();
+        if (a > mx) mx = a;
+    }
+    *max_abs = mx;
+    *q0 = q.ConvertToInt<uint64_t>();
+    return 1;
+    TBGV_CATCH(0)
+}
+
 TbgvCiphertext tbgv_ciphertext_add_noise_for_tests(TbgvContext ctx, TbgvCiphertext h, uint32_t log2_magnitude, uint64_t seed) {
     TBGV_TRY
     CT ct = ct_of(h)->Clone();

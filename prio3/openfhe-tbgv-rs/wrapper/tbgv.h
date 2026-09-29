@@ -146,6 +146,23 @@ int tbgv_evalkey_same_a(TbgvEvalKey k1, TbgvEvalKey k2);
 TbgvRotKeys tbgv_rotkeys_single(TbgvContext ctx, int32_t index, TbgvEvalKey key);
 TbgvEvalKey tbgv_rotkeys_get(TbgvContext ctx, TbgvRotKeys keys, int32_t index);
 
+/* ---- verifiable decryption ---------------------------------------------
+ * Blinded known-answer checks of partial decryptions (fhe-prio3 vdec.rs). */
+/* X^k * ct for k in [0, 2N): each slot multiplied by the k-th power of its
+ * root of unity; no noise growth, metadata unchanged. */
+TbgvCiphertext tbgv_ciphertext_mult_monomial(TbgvContext ctx, TbgvCiphertext ct, uint32_t k);
+/* (b u + t e0, a u + t e1) over the towers of `reference`, with its metadata:
+ * an encryption of zero under `pk` with the given small coefficients
+ * (length n = ring dimension). */
+TbgvCiphertext tbgv_zero_encryption(TbgvContext ctx, TbgvPublicKey pk, TbgvCiphertext reference, const int8_t* u,
+                                    const int8_t* e0, const int8_t* e1, size_t n);
+/* Slot values (in [0, t)) of the plaintext polynomial X; out_len = N. */
+int tbgv_monomial_slots(TbgvContext ctx, uint64_t* out, size_t out_len);
+/* The fused value that decryption reads, before it is reduced mod t:
+ * largest |coefficient| (centered) after mod-reducing to the first tower,
+ * and that tower's modulus. */
+int tbgv_fuse_magnitude(TbgvContext ctx, const TbgvCiphertext* partials, size_t n, uint64_t* max_abs, uint64_t* q0);
+
 /* ---- plaintext / ciphertext ------------------------------------------- */
 /* values must be centered: -(p-1)/2 <= v <= (p-1)/2 */
 TbgvPlaintext tbgv_plaintext_new(TbgvContext ctx, const int64_t* values, size_t n);

@@ -25,11 +25,13 @@ pub mod error;
 pub mod field;
 pub mod keys;
 pub mod layout;
+pub mod local;
 pub mod messages;
 pub mod packed;
 pub mod seal;
 pub mod sharding;
 pub mod types;
+pub mod vdec;
 pub mod verify;
 pub mod xof;
 
@@ -41,5 +43,9 @@ pub use auth::{ClientIdentity, ClientRegistry, StaticRegistry};
 pub use config::{AuthPolicy, CollectorPolicy, TaskConfig, VerificationMode};
 pub use seal::{CollectorSealKey, SealedShare};
 pub use error::{Error, RejectReason, Result};
-pub use messages::{AggregateShare, CountShare, MaskMessage, PublicMaterial, Report, VerifierMessage};
+pub use collector::PendingRelease;
+pub use messages::{
+    AggregateShare, CountCommit, CountOpening, CountReveal, CountShare, MaskCommit, MaskMessage, PublicMaterial, ReleaseChallenge, ReleaseCommit, ReleaseOpening, ReleaseReveal, Report,
+    VerifierCommit, VerifierMessage,
+};
 pub use types::{AggregateResult, BatchResult, Measurement, MeasurementType, RegressionResult};

@@ -113,19 +113,26 @@ fn every_exchanged_object_is_canonical_and_the_sizes_are_as_measured() {
     println!("WIRE verdict chunk: packed {} bytes, OpenFHE {} bytes ({:.1}% smaller)", report.chunks[0].len(), openfhe_len, 100.0 * (1.0 - report.chunks[0].len() as f64 / openfhe_len as f64));
 
     // masks and verifier partials from a real verdict round
+    let mask_commits: Vec<MaskCommit> = net.aggs.iter_mut().map(|a| a.prepare_init(&report).unwrap()).collect();
     let mut masks = Vec::new();
     for a in net.aggs.iter_mut() {
-        masks.push(a.prepare_init(&report).unwrap());
+        let others: Vec<MaskCommit> = mask_commits.iter().filter(|c| c.aggregator != a.index()).cloned().collect();
+        masks.push(a.prepare_mask_reveal(&report.report_id, &others).unwrap());
     }
     for m in &masks {
         let c = net.aggs[0].codec();
         let ct = c.decode(&m.mask, Expect::Exactly(fresh)).unwrap();
         assert_eq!(c.encode(&ct).unwrap(), m.mask);
     }
-    let mut verifiers = Vec::new();
+    let mut commits = Vec::new();
     for a in net.aggs.iter_mut() {
         let others: Vec<MaskMessage> = masks.iter().filter(|m| m.aggregator != a.index()).cloned().collect();
-        verifiers.push(a.prepare_masks(&report.report_id, &others).unwrap());
+        commits.push(a.prepare_masks(&report.report_id, &others).unwrap());
+    }
+    let mut verifiers = Vec::new();
+    for a in net.aggs.iter_mut() {
+        let others: Vec<VerifierCommit> = commits.iter().filter(|c| c.aggregator != a.index()).cloned().collect();
+        verifiers.push(a.prepare_reveal(&report.report_id, &others).unwrap());
     }
     let (pm, _) = net.aggs[0].codec().parse(&verifiers[1].partial, Expect::Partial).unwrap();
     assert_eq!(pm.num_elements, 1);
@@ -147,7 +154,7 @@ fn every_exchanged_object_is_canonical_and_the_sizes_are_as_measured() {
         let ct = c.decode(&s.partials[0], Expect::Partial).unwrap();
         assert_eq!(c.encode(&ct).unwrap(), s.partials[0]);
     }
-    let r = net.collector.unshard(&shares).unwrap();
+    let r = net.finish_release(0, shares).unwrap();
     assert_eq!(r.aggregate, AggregateResult::Sum(42));
     // every aggregator's internal message bound covers the masks of the others
     assert_eq!(net.aggs[0].max_message_bytes(), 2 * codec_len(&net));
@@ -415,44 +422,55 @@ fn legacy_openfhe_bytes_and_the_crash_recipes_are_refused() {
 fn hostile_partial_decryptions_are_refused_at_every_receiver() {
     let _g = serial();
     let mut net = verdict_net(94, MeasurementType::Count, 2);
-    let report = net.client.shard(&Measurement::Count(true)).unwrap();
-    let masks: Vec<MaskMessage> = net.aggs.iter_mut().map(|a| a.prepare_init(&report).unwrap()).collect();
-    let mut verifiers = Vec::new();
-    for a in net.aggs.iter_mut() {
-        let others: Vec<MaskMessage> = masks.iter().filter(|m| m.aggregator != a.index()).cloned().collect();
-        verifiers.push(a.prepare_masks(&report.report_id, &others).unwrap());
-    }
-    // a verifier partial with another valid scaling factor, one tower fewer,
-    // two elements, or a residue above its modulus: refused, never a crash
     let p = net.cfg.plain_mod;
-    let base = verifiers[0].partial.clone();
-    let sf = u64::from_le_bytes(base[16..24].try_into().unwrap());
-    let mut variants: Vec<(&str, Vec<u8>)> = Vec::new();
-    let mut v1 = base.clone();
-    v1[16..24].copy_from_slice(&(if sf + 1 < p { sf + 1 } else { 1 }).to_le_bytes());
-    variants.push(("other scaling factor", v1));
-    let mut v2 = base.clone();
-    v2[5] = 2;
-    variants.push(("two elements", v2));
-    let mut v3 = base.clone();
-    let towers = u16::from_le_bytes([base[6], base[7]]);
-    v3[6..8].copy_from_slice(&(towers - 1).to_le_bytes());
-    let level = u32::from_le_bytes(base[8..12].try_into().unwrap());
-    v3[8..12].copy_from_slice(&(level + 1).to_le_bytes());
-    variants.push(("one tower fewer", v3));
-    for (what, bad) in variants {
-        let mut msg = verifiers[0].clone();
-        msg.partial = bad;
+    // a verifier partial with another valid scaling factor, one tower fewer,
+    // or two elements: refused, never a crash. Bytes other than the
+    // committed ones stop at the commitment; to reach the parser, the
+    // malicious aggregator 0 commits to the hostile bytes themselves.
+    let variants: Vec<(&str, fn(&[u8], u64) -> Vec<u8>)> = vec![
+        ("other scaling factor", |b, p| {
+            let mut v = b.to_vec();
+            let sf = u64::from_le_bytes(b[16..24].try_into().unwrap());
+            v[16..24].copy_from_slice(&(if sf + 1 < p { sf + 1 } else { 1 }).to_le_bytes());
+            v
+        }),
+        ("two elements", |b, _| {
+            let mut v = b.to_vec();
+            v[5] = 2;
+            v
+        }),
+        ("one tower fewer", |b, _| {
+            let mut v = b.to_vec();
+            let towers = u16::from_le_bytes([b[6], b[7]]);
+            v[6..8].copy_from_slice(&(towers - 1).to_le_bytes());
+            let level = u32::from_le_bytes(b[8..12].try_into().unwrap());
+            v[8..12].copy_from_slice(&(level + 1).to_le_bytes());
+            v
+        }),
+    ];
+    for (what, make) in variants {
+        let report = net.client.shard(&Measurement::Count(true)).unwrap();
+        let mc: Vec<MaskCommit> = net.aggs.iter_mut().map(|a| a.prepare_init(&report).unwrap()).collect();
+        let masks = [net.aggs[0].prepare_mask_reveal(&report.report_id, &mc[1..]).unwrap(), net.aggs[1].prepare_mask_reveal(&report.report_id, &mc[..1]).unwrap()];
+        let c0 = net.aggs[0].prepare_masks(&report.report_id, &masks[1..]).unwrap();
+        let c1 = net.aggs[1].prepare_masks(&report.report_id, &masks[..1]).unwrap();
+        let v0 = net.aggs[0].prepare_reveal(&report.report_id, &[c1]).unwrap();
+        let bad = make(&v0.partial, p);
+        let mut context = b"verdict".to_vec();
+        context.extend_from_slice(&net.cfg.task_id);
+        context.extend_from_slice(&report.report_id);
+        context.extend_from_slice(&0u64.to_le_bytes());
+        // (bytes other than the committed ones: tests/malicious_aggregator.rs)
+        let mut msg = v0.clone();
+        msg.partial = bad.clone();
+        let forged = VerifierCommit { digest: fhe_prio3::vdec::commit(&context, &bad), ..c0 };
+        net.aggs[1].prepare_reveal(&report.report_id, &[forged]).unwrap();
         let e = net.aggs[1].prepare_finish(&report.report_id, &[msg]).err().unwrap_or_else(|| panic!("{what} accepted"));
         assert!(e.to_string().contains("packed ciphertext refused"), "{what}: {e}");
         println!("REFUSED verifier partial, {what}: {e}");
     }
-    // a refused message leaves the pending report intact: the honest round
-    // still completes on both aggregators afterwards
-    for a in net.aggs.iter_mut() {
-        let others: Vec<VerifierMessage> = verifiers.iter().filter(|v| v.aggregator != a.index()).cloned().collect();
-        assert_eq!(a.prepare_finish(&report.report_id, &others).unwrap(), Verdict::Accepted);
-    }
+    // honest rounds complete on the same aggregators afterwards
+    net.expect_accept(&net.client.shard(&Measurement::Count(true)).unwrap());
 
     // collector: shares with disagreeing or out-of-bound partial shapes
     let mut net = verdict_net(95, MeasurementType::Count, 2);
@@ -462,17 +480,17 @@ fn hostile_partial_decryptions_are_refused_at_every_receiver() {
     let mut disagree = rt.clone();
     let sf = u64::from_le_bytes(disagree[1].partials[0][16..24].try_into().unwrap());
     disagree[1].partials[0][16..24].copy_from_slice(&(if sf + 1 < p { sf + 1 } else { 1 }).to_le_bytes());
-    let e = net.collector.unshard(&disagree).unwrap_err();
-    assert!(e.to_string().contains("disagree"), "{e}");
+    let e = net.collector.release_challenge(0, disagree).err().expect("refused");
+    assert!(e.to_string().contains("partial decryption of accumulator 0") && e.to_string().contains("UnexpectedShape"), "{e}");
     let mut oob = rt.clone();
     oob[0].partials[0][16..24].copy_from_slice(&0u64.to_le_bytes());
     oob[1].partials[0][16..24].copy_from_slice(&0u64.to_le_bytes());
-    let e = net.collector.unshard(&oob).unwrap_err();
+    let e = net.collector.release_challenge(0, oob).err().expect("refused");
     assert!(e.to_string().contains("scaling_factor_int"), "{e}");
     let mut legacy = rt.clone();
     legacy[0].partials[0] = b"not a packed ciphertext at all, long enough to pass the header length check".to_vec();
-    assert!(net.collector.unshard(&legacy).unwrap_err().to_string().contains("BadMagic"));
-    assert_eq!(net.collector.unshard(&rt).unwrap().aggregate, AggregateResult::Count(1));
+    assert!(net.collector.release_challenge(0, legacy).err().expect("refused").to_string().contains("BadMagic"));
+    assert_eq!(net.finish_release(0, rt).unwrap().aggregate, AggregateResult::Count(1));
 }
 
 /// Silent mode: the count-round and aggregate partials live at the last
@@ -493,15 +511,15 @@ fn silent_mode_low_level_partials() {
         let ct = c.decode(&s.partial, Expect::Exactly(m)).unwrap();
         assert_eq!(c.encode(&ct).unwrap(), s.partial);
     }
+    // a count share of the wrong shape is refused before anything is committed
     let mut bad = counts.clone();
     bad[0].partial[12] = if m.noise_scale_deg == 2 { 1 } else { 2 }; // valid bound, wrong shape
-    let e = net.aggs[1].count_finish(&bad).unwrap_err();
+    let e = net.aggs[1].count_commit(&bad).err().expect("refused");
     assert!(e.to_string().contains("UnexpectedShape"), "{e}");
-    for a in net.aggs.iter_mut() {
-        assert_eq!(a.count_finish(&counts).unwrap(), 1);
-    }
-    let shares: Vec<AggregateShare> = net.aggs.iter_mut().map(|a| a.aggregate_share().unwrap()).collect();
-    let r = net.collector.unshard(&shares).unwrap();
+    let mut bad = counts.clone();
+    bad[1].checks[0][12] ^= 3;
+    assert!(net.aggs[0].count_commit(&bad).is_err());
+    let r = net.collect_full().unwrap();
     assert_eq!((r.aggregate, r.report_count, r.valid_count), (AggregateResult::Count(1), 2, 1));
 }
 

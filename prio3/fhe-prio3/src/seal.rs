@@ -11,7 +11,7 @@
 //! the aggregator index. One fresh key per message.
 
 use crate::error::{Error, Result};
-use crate::messages::{AggregateShare, decode, encode};
+use crate::messages::{AggregateShare, ReleaseReveal, decode, encode};
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
 use hkdf::Hkdf;
@@ -21,6 +21,9 @@ use sha2::Sha256;
 use x25519_dalek::{EphemeralSecret, PublicKey, StaticSecret};
 
 pub const SEAL_DOMAIN: &[u8] = b"fhe-prio3/1 sealed-share";
+/// Domain of sealed release reveals (`vdec` check partials): a sealed
+/// reveal never opens as a share, nor a share as a reveal.
+pub const SEAL_REVEAL_DOMAIN: &[u8] = b"fhe-prio3/1 sealed-reveal";
 
 /// A collector's long-term sealing key pair.
 pub struct CollectorSealKey {
@@ -52,19 +55,19 @@ pub struct SealedShare {
     pub ciphertext: Vec<u8>,
 }
 
-fn aad(task_id: &[u8; 32], collector: u32, aggregator: usize) -> Vec<u8> {
-    let mut a = Vec::with_capacity(SEAL_DOMAIN.len() + 44);
-    a.extend_from_slice(SEAL_DOMAIN);
+fn aad(domain: &[u8], task_id: &[u8; 32], collector: u32, aggregator: usize) -> Vec<u8> {
+    let mut a = Vec::with_capacity(domain.len() + 44);
+    a.extend_from_slice(domain);
     a.extend_from_slice(task_id);
     a.extend_from_slice(&collector.to_le_bytes());
     a.extend_from_slice(&(aggregator as u64).to_le_bytes());
     a
 }
 
-fn derive_key(shared: &[u8; 32], ephemeral: &[u8; 32], recipient: &[u8; 32]) -> Result<[u8; 32]> {
+fn derive_key(domain: &[u8], shared: &[u8; 32], ephemeral: &[u8; 32], recipient: &[u8; 32]) -> Result<[u8; 32]> {
     let hk = Hkdf::<Sha256>::new(None, shared);
-    let mut info = Vec::with_capacity(SEAL_DOMAIN.len() + 64);
-    info.extend_from_slice(SEAL_DOMAIN);
+    let mut info = Vec::with_capacity(domain.len() + 64);
+    info.extend_from_slice(domain);
     info.extend_from_slice(ephemeral);
     info.extend_from_slice(recipient);
     let mut key = [0u8; 32];
@@ -72,8 +75,7 @@ fn derive_key(shared: &[u8; 32], ephemeral: &[u8; 32], recipient: &[u8; 32]) -> 
     Ok(key)
 }
 
-/// Seals `share` (which must carry `collector`) to the collector's public key.
-pub fn seal(share: &AggregateShare, collector_key: &[u8; 32]) -> Result<SealedShare> {
+fn seal_bytes(domain: &[u8], task_id: [u8; 32], collector: u32, aggregator: usize, plain: &[u8], collector_key: &[u8; 32]) -> Result<SealedShare> {
     let recipient = PublicKey::from(*collector_key);
     let eph = EphemeralSecret::random_from_rng(rand_core::OsRng);
     let eph_pk = PublicKey::from(&eph).to_bytes();
@@ -81,15 +83,31 @@ pub fn seal(share: &AggregateShare, collector_key: &[u8; 32]) -> Result<SealedSh
     if !shared.was_contributory() {
         return Err(Error::Protocol("collector sealing key is a low-order point".into()));
     }
-    let key = derive_key(shared.as_bytes(), &eph_pk, collector_key)?;
+    let key = derive_key(domain, shared.as_bytes(), &eph_pk, collector_key)?;
     let cipher = Aes256Gcm::new_from_slice(&key).expect("32-byte key");
     let mut nonce = [0u8; 12];
     rand_core::OsRng.fill_bytes(&mut nonce);
-    let plain = encode(share)?;
     let ciphertext = cipher
-        .encrypt(Nonce::from_slice(&nonce), Payload { msg: &plain, aad: &aad(&share.task_id, share.collector, share.aggregator) })
+        .encrypt(Nonce::from_slice(&nonce), Payload { msg: plain, aad: &aad(domain, &task_id, collector, aggregator) })
         .map_err(|_| Error::Protocol("seal".into()))?;
-    Ok(SealedShare { task_id: share.task_id, collector: share.collector, aggregator: share.aggregator, ephemeral: eph_pk, nonce, ciphertext })
+    Ok(SealedShare { task_id, collector, aggregator, ephemeral: eph_pk, nonce, ciphertext })
+}
+
+fn open_bytes(domain: &[u8], sealed: &SealedShare, key: &CollectorSealKey) -> Result<Vec<u8>> {
+    let shared = key.secret.diffie_hellman(&PublicKey::from(sealed.ephemeral));
+    if !shared.was_contributory() {
+        return Err(Error::Protocol("ephemeral key is a low-order point".into()));
+    }
+    let k = derive_key(domain, shared.as_bytes(), &sealed.ephemeral, &key.public_key())?;
+    let cipher = Aes256Gcm::new_from_slice(&k).expect("32-byte key");
+    cipher
+        .decrypt(Nonce::from_slice(&sealed.nonce), Payload { msg: &sealed.ciphertext, aad: &aad(domain, &sealed.task_id, sealed.collector, sealed.aggregator) })
+        .map_err(|_| Error::Protocol("sealed message does not open: wrong collector key, wrong kind or tampered".into()))
+}
+
+/// Seals `share` (which must carry `collector`) to the collector's public key.
+pub fn seal(share: &AggregateShare, collector_key: &[u8; 32]) -> Result<SealedShare> {
+    seal_bytes(SEAL_DOMAIN, share.task_id, share.collector, share.aggregator, &encode(share)?, collector_key)
 }
 
 /// Opens a sealed share with the collector's secret. Fails on any change to
@@ -97,20 +115,25 @@ pub fn seal(share: &AggregateShare, collector_key: &[u8; 32]) -> Result<SealedSh
 /// or the aggregator index, and when the opened share disagrees with the
 /// envelope's header.
 pub fn open(sealed: &SealedShare, key: &CollectorSealKey) -> Result<AggregateShare> {
-    let shared = key.secret.diffie_hellman(&PublicKey::from(sealed.ephemeral));
-    if !shared.was_contributory() {
-        return Err(Error::Protocol("ephemeral key is a low-order point".into()));
-    }
-    let k = derive_key(shared.as_bytes(), &sealed.ephemeral, &key.public_key())?;
-    let cipher = Aes256Gcm::new_from_slice(&k).expect("32-byte key");
-    let plain = cipher
-        .decrypt(Nonce::from_slice(&sealed.nonce), Payload { msg: &sealed.ciphertext, aad: &aad(&sealed.task_id, sealed.collector, sealed.aggregator) })
-        .map_err(|_| Error::Protocol("sealed share does not open: wrong collector key or tampered".into()))?;
-    let share: AggregateShare = decode(&plain)?;
+    let share: AggregateShare = decode(&open_bytes(SEAL_DOMAIN, sealed, key)?)?;
     if share.task_id != sealed.task_id || share.collector != sealed.collector || share.aggregator != sealed.aggregator {
         return Err(Error::Protocol("sealed share header does not match its content".into()));
     }
     Ok(share)
+}
+
+/// Seals a release reveal (check partials) to the collector's public key.
+pub fn seal_reveal(r: &ReleaseReveal, collector_key: &[u8; 32]) -> Result<SealedShare> {
+    seal_bytes(SEAL_REVEAL_DOMAIN, r.task_id, r.collector, r.aggregator, &encode(r)?, collector_key)
+}
+
+/// Opens a sealed release reveal (same checks as [`open`]).
+pub fn open_reveal(sealed: &SealedShare, key: &CollectorSealKey) -> Result<ReleaseReveal> {
+    let r: ReleaseReveal = decode(&open_bytes(SEAL_REVEAL_DOMAIN, sealed, key)?)?;
+    if r.task_id != sealed.task_id || r.collector != sealed.collector || r.aggregator != sealed.aggregator {
+        return Err(Error::Protocol("sealed reveal header does not match its content".into()));
+    }
+    Ok(r)
 }
 
 #[cfg(test)]
@@ -127,6 +150,7 @@ mod tests {
             partials: vec![vec![1, 2, 3], vec![4, 5]],
             valid_count_partial: Some(vec![9]),
             moment_partials: vec![vec![6, 7]],
+            accumulators: vec![vec![8]],
         }
     }
 

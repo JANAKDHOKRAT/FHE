@@ -13,10 +13,53 @@
 //! internally.
 
 mod ffi;
+mod selftest;
+
+pub use selftest::{rebuild_verified, verify_rebuild_once, RebuildReport};
 
 use std::ffi::{CStr, CString};
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+
+/// The OpenFHE version this crate was built against; `build.rs` accepts
+/// only tested versions.
+pub const OPENFHE_VERSION: &str = env!("TBGV_OPENFHE_VERSION");
+
+/// Resolved paths of the OpenFHE shared libraries loaded in this process.
+pub fn loaded_openfhe_libraries() -> Result<Vec<String>> {
+    let s = take_string(unsafe { ffi::tbgv_loaded_openfhe_libraries() })?;
+    Ok(s.lines().filter(|l| !l.is_empty()).map(str::to_string).collect())
+}
+
+/// Checks that the OpenFHE libraries loaded at run time are the version
+/// this crate was built and tested against. The binaries link OpenFHE by
+/// major version (`libOPENFHEpke.so.1`), so without this check a different
+/// 1.x library would be used silently. Runs once per process; every
+/// [`Context`] constructor calls it.
+pub fn check_loaded_openfhe() -> Result<()> {
+    static OUTCOME: OnceLock<std::result::Result<(), String>> = OnceLock::new();
+    OUTCOME
+        .get_or_init(|| {
+            let libs = loaded_openfhe_libraries().map_err(|e| e.0)?;
+            let suffix = format!(".so.{OPENFHE_VERSION}");
+            for needed in ["libOPENFHEcore", "libOPENFHEpke"] {
+                if !libs.iter().any(|l| l.rsplit('/').next().is_some_and(|f| f.starts_with(needed))) {
+                    return Err(format!("{needed} is not loaded in this process (loaded: {libs:?})"));
+                }
+            }
+            for l in &libs {
+                let file = l.rsplit('/').next().unwrap_or(l);
+                if !file.ends_with(&suffix) {
+                    return Err(format!(
+                        "loaded OpenFHE library {l} is not version {OPENFHE_VERSION}, the version this build was tested against"
+                    ));
+                }
+            }
+            Ok(())
+        })
+        .clone()
+        .map_err(Error)
+}
 
 /// Error raised by the underlying library, carrying OpenFHE's message.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -102,6 +145,7 @@ impl Context {
     /// `FLEXIBLEAUTOEXT` scaling. The ring dimension is chosen by OpenFHE from
     /// the security level and the modulus chain.
     pub fn new(params: Params) -> Result<Self> {
+        check_loaded_openfhe()?;
         let p = unsafe { ffi::tbgv_context_new(params.plain_mod, params.mult_depth, params.security_bits) };
         if p.is_null() {
             return Err(last_error());
@@ -123,6 +167,11 @@ impl Context {
     pub fn row_slots(&self) -> usize {
         (self.ring_dim() / 2) as usize
     }
+    /// Number of RNS towers minus two. This is an upper bound on the depth
+    /// the context was created for, not that depth: in
+    /// `NOISE_FLOODING_MULTIPARTY` mode with `FLEXIBLEAUTOEXT`, OpenFHE 1.3.1
+    /// gives a depth-`d` context `d + 4` towers (measured for `d = 3` and
+    /// `d = 25`), so this returns `d + 2`.
     pub fn mult_depth(&self) -> u32 {
         unsafe { ffi::tbgv_context_mult_depth(self.raw()) }
     }
@@ -137,6 +186,7 @@ impl Context {
         take_buffer(ok, buf, len)
     }
     pub fn deserialize(bytes: &[u8]) -> Result<Self> {
+        check_loaded_openfhe()?;
         let p = unsafe { ffi::tbgv_context_deserialize(bytes.as_ptr(), bytes.len()) };
         if p.is_null() {
             return Err(last_error());
@@ -197,7 +247,25 @@ impl Context {
     /// a fresh encryption made by the caller under the joint key; it supplies
     /// the key tag, the encoding and the tower parameters. The shim rejects
     /// any metadata or residue outside the documented bounds before building.
+    ///
+    /// Refused until [`verify_rebuild_once`] has passed for this context's
+    /// parameters in this process, and for objects deeper than the level it
+    /// verified: the rebuild is exact only if the loaded OpenFHE gives the
+    /// metadata the meaning the tested version gives it.
     pub fn build_ciphertext(&self, reference: &Ciphertext, meta: &CiphertextMeta, residues: &[u64]) -> Result<Ciphertext> {
+        match rebuild_verified(self)? {
+            None => {
+                return Err(Error("ciphertext rebuild has not been verified on this OpenFHE library for these parameters; call verify_rebuild_once at startup".into()))
+            }
+            Some(d) if meta.level > d => {
+                return Err(Error(format!("rebuild at level {} is deeper than the verified depth {d}", meta.level)));
+            }
+            Some(_) => {}
+        }
+        self.build_ciphertext_unverified(reference, meta, residues)
+    }
+
+    pub(crate) fn build_ciphertext_unverified(&self, reference: &Ciphertext, meta: &CiphertextMeta, residues: &[u64]) -> Result<Ciphertext> {
         self.wrap_ct(unsafe {
             ffi::tbgv_ciphertext_build(
                 self.raw(),

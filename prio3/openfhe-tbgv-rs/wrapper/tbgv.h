@@ -153,6 +153,10 @@ size_t tbgv_fuse(TbgvContext ctx, const TbgvCiphertext* partials, size_t n, int6
  * alone does not decrypt. */
 size_t tbgv_decrypt_single(TbgvContext ctx, TbgvSecretKey sk, TbgvCiphertext ct, int64_t* out, size_t out_len);
 
+/* Resolved paths of the OpenFHE shared libraries loaded in this process,
+ * one per line (empty string if none are loaded). */
+char* tbgv_loaded_openfhe_libraries(void);
+
 #ifdef __cplusplus
 }
 #endif

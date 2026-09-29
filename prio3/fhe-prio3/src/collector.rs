@@ -6,7 +6,7 @@ use crate::config::{TaskConfig, VerificationMode};
 use crate::error::{Error, Result};
 use crate::layout::Layout;
 use crate::messages::{AggregateShare, PublicMaterial};
-use crate::packed::{Codec, Expect};
+use crate::packed::{check_stored, Codec, Expect};
 use crate::types::{AggregateResult, BatchResult, RegressionResult};
 use openfhe_tbgv_rs::{Context, PartialDecryption};
 
@@ -23,10 +23,25 @@ impl Collector {
     pub fn new(cfg: TaskConfig, material: &PublicMaterial) -> Result<Self> {
         cfg.validate()?;
         let ctx = Context::deserialize(&material.context)?;
+        // Partial decryptions are rebuilt from residues and metadata; refuse
+        // to run on an OpenFHE that does not rebuild them exactly.
+        openfhe_tbgv_rs::verify_rebuild_once(&ctx, cfg.mult_depth())?;
         let layout = cfg.layout(ctx.row_slots())?;
         let pk = ctx.deserialize_public_key(&material.public_key)?;
         let codec = Codec::new(&ctx, &pk, &material.public_key)?;
         Ok(Self { cfg, ctx, layout, codec })
+    }
+
+    /// Checks that a stored aggregate share (one a collector node kept while
+    /// waiting for the others) is in the packed format, so that a node
+    /// restarted on state from before it refuses to start with a clear
+    /// reason instead of failing when the last share arrives.
+    pub fn check_stored_share(&self, share: &AggregateShare) -> Result<()> {
+        let what = format!("stored aggregate share from aggregator {}", share.aggregator);
+        for p in share.partials.iter().chain(&share.moment_partials).chain(share.valid_count_partial.as_ref()) {
+            check_stored(self.codec.format(), p, Expect::Partial, &what)?;
+        }
+        Ok(())
     }
 
     /// Decodes every aggregator's partial decryption of one released

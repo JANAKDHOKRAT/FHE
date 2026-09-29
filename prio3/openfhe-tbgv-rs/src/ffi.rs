@@ -86,4 +86,5 @@ unsafe extern "C" {
     pub fn tbgv_partial_decrypt(ctx: TbgvContext, ct: TbgvCiphertext, sk: TbgvSecretKey, is_lead: c_int) -> TbgvCiphertext;
     pub fn tbgv_fuse(ctx: TbgvContext, partials: *const TbgvCiphertext, n: usize, out: *mut i64, out_len: usize) -> usize;
     pub fn tbgv_decrypt_single(ctx: TbgvContext, sk: TbgvSecretKey, ct: TbgvCiphertext, out: *mut i64, out_len: usize) -> usize;
+    pub fn tbgv_loaded_openfhe_libraries() -> *mut c_char;
 }

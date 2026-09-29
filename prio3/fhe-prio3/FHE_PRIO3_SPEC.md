@@ -922,14 +922,116 @@ per-tower widths are what give these savings.
   short are refused with their reasons. The batch then closes with the
   right sum.
 
+**Out-of-range values, demonstrated** (`openfhe-tbgv-rs/tests/openfhe_loader_facts.rs`).
+OpenFHE's loader stores a residue at or above its tower modulus as it is,
+and the old admission check (key tag, elements, level, degree, towers,
+encoding) still passes. Three values were written into one residue of a
+real ciphertext: the original plus the modulus, the modulus itself, and
+`2^64 − 1`. All three were accepted. The first decrypts to the original
+plaintext with different bytes, which is a second encoding of the same
+report and therefore a second report id: without client authentication,
+anyone could replay an honest report under a new id. The other two put
+OpenFHE's arithmetic outside the range it is defined for. The packed
+format refuses all of them.
+
+**Guarding the rebuild against a different OpenFHE.** The rebuild is exact
+only while OpenFHE gives level, noise degree and scaling factor the meaning
+the tested version gives them. Three layers enforce that:
+
+1. *Build time* (`openfhe-tbgv-rs/build.rs`). The crate builds only against
+   OpenFHE versions on a tested list, currently 1.3.1. The version is read
+   from the CMake package file OpenFHE installs, and the versioned shared
+   libraries must be present. Adding a version means running the test suites
+   against it first.
+2. *Load time* (`check_loaded_openfhe`, run by every `Context` constructor).
+   The binaries link OpenFHE by major version (`libOPENFHEpke.so.1`), so a
+   different 1.x library could be loaded without a rebuild. The resolved file
+   names of the OpenFHE libraries loaded in the process must end in the
+   tested version, or no context is created.
+3. *Run time* (`verify_rebuild_once`, run by `Aggregator::new` and
+   `Collector::new`). With throwaway 2-of-2 threshold keys in the same
+   context, the self-test builds fresh encryptions, a sum, a plaintext
+   product, a product, a product of a rebuilt operand, rotations, and
+   squarings down to the task's depth. It rebuilds each object and its lead
+   and main partial decryptions from residues and metadata, and requires:
+   * identical metadata and residues;
+   * OpenFHE's own key and type check to pass when original and rebuilt
+     object are combined;
+   * decryption equal to the expected values in every slot of both rows;
+   * byte-identical re-serialization for fresh encryptions;
+   * fusion of the rebuilt partial decryptions equal to fusion of the
+     originals.
+
+   The throwaway keys are removed afterwards. `Context::build_ciphertext`
+   refuses to run until the self-test has passed for the context's
+   parameters, and refuses objects deeper than the level it verified. So a
+   library that rebuilds differently stops the node at startup instead of
+   silently computing something else.
+
+   Unit tests inject faulty rebuilds and check that each is caught: an
+   ignored scaling factor, an ignored noise degree, one altered residue, a
+   wrong level, and a reference encrypted under another key. The last one
+   changes nothing in the metadata or residues, and is caught only by the
+   key and decryption checks.
+
+   Measured cost, once per process at startup: 1.7 s in verdict mode (36
+   objects to level 3) and 30.4 s in silent mode (102 objects to level 25).
+
+   Found while building this: the shim's `Context::mult_depth` returned the
+   tower count minus two on the assumption that towers = depth + 2. OpenFHE
+   1.3.1 actually gives a depth-`d` context `d + 4` towers (measured for
+   `d = 3` and `d = 25`). The function is now documented as the upper bound
+   it is; the self-test takes the task's depth explicitly.
+
+**Fuzzing** (`fhe-prio3/fuzz`, cargo-fuzz with libFuzzer and
+AddressSanitizer). The parser and encoder (`WireFormat`) have no OpenFHE
+dependency, so the fuzz targets drive them with small synthetic formats:
+ring dimensions 1 to 16 and towers of 1 to 64 bits. A whole valid payload is
+then a few hundred bytes, and every branch is reachable, including padding
+bits, which the real parameters never produce.
+
+* `parse` feeds arbitrary bytes to the parser. Anything accepted must
+  satisfy every bound, parse identically under the matching expectation, be
+  accepted as a partial exactly when it has one element, and re-encode to
+  exactly the input.
+* `roundtrip` builds valid metadata and residues, encodes and parses them,
+  and requires the same values back at the predicted length. A residue
+  equal to its modulus must be refused by the encoder.
+
+A first run of 10 minutes (66.8 million `parse` inputs) and 5 minutes
+(16.3 million `roundtrip` inputs) found no crash and no property
+violation. The corpus it kept reaches every parser outcome: acceptance with
+one and with two elements, and each refusal, including nonzero padding. The
+corpus is committed. CI fuzzes each target for 5 minutes on every change
+and for an hour nightly (`.github/workflows/prio3.yml`); the seeded
+mutation test above still runs with the ordinary tests.
+
+**Upgrading a node across this change.** The stored-state layout is
+unchanged, but a database written by an earlier build holds other parties'
+ciphertexts in OpenFHE's format. Tested with such databases
+(`fhe-prio3/tests/upgrade.rs`, `fhe-prio3-node/tests/upgrade_node.rs`):
+
+| Stored state | What this build does |
+| --- | --- |
+| Verdict mode, batch open | Resumes and closes the batch correctly |
+| Silent mode, reports pending in a batch | Aggregator node refuses to start, with the reason |
+| Count share or aggregate shares already released | Aggregator node refuses to start, with the reason |
+| Collector with shares waiting for the rest | Collector node refuses to start, with the reason |
+| Collector with the result already stored | Starts; the result stays readable |
+
+Released shares cannot be issued again, since a partial decryption is
+released once per ciphertext. A batch released but not collected before
+the upgrade can therefore only be collected by the build that released it.
+The rule is to finish collecting every batch before upgrading. A stored
+ciphertext that is in the packed format but invalid is reported as corrupt,
+not as an old state.
+
 **What it does not do.** It says nothing about noise. Any residues below
 their moduli form a valid ciphertext of some plaintext with some noise, so
-§4.3 item 2 is unchanged. It authenticates nothing. It also makes the
-format this project's to maintain. An OpenFHE upgrade that changes the
-modulus chain changes the fingerprint, so all parties of a task must run
-the same parameters, as before. The rebuild uses only OpenFHE's public
-element and metadata accessors, and the shim test checks it for exactness
-on every object kind above. That test is what to re-run after an upgrade.
+§4.3 item 2 is unchanged. It authenticates nothing. Key-ceremony material
+and a node's own saved accumulators still use OpenFHE's format and loader.
+Neither is input from another party during operation, and a compromised
+ceremony peer or a tampered database remains outside the threat model.
 
 ## 7. Changes relative to `fhe-vdaf-1` / `fhe-vdaf-2`
 

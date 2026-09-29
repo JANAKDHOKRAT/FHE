@@ -403,7 +403,12 @@ async fn main() -> anyhow::Result<()> {
                 timeout: std::time::Duration::from_secs(timeout_secs),
             })
             .await?;
-            std::fs::write(out_dir.join("material.bin"), encode(&out.material)?)?;
+            // streamed: an in-memory encoding would double the gigabytes of
+            // rotation keys at the process's peak (silent mode)
+            let mut w = std::io::BufWriter::new(std::fs::File::create(out_dir.join("material.bin"))?);
+            bincode::serialize_into(&mut w, &out.material)?;
+            std::io::Write::flush(&mut w)?;
+            drop(w);
             std::fs::write(out_dir.join(format!("share-{index}.sealed")), secret::seal(share_label(index, &cfg).as_bytes(), &out.share)?)?;
             std::fs::write(out_dir.join("transcript.txt"), format!("{}\n", hex::encode(out.transcript)))?;
             println!(

@@ -661,6 +661,19 @@ share against another `a`, a residue at its modulus, a wrong length and
 mismatched rotation maps are refused). `fhe-prio3-node/tests/ceremony_node.rs`
 runs it as three OS processes over TLS, each with its own seal key.
 
+Measured, silent mode (`SumVec(3, 8 bits)` with moments: ring dimension
+65,536, 18 rotation indices), two `ceremony` processes over TLS on this
+one 4-vCPU machine: 164.5 s each, identical transcripts, byte-identical
+material of 2.25 GB (2.0 GB of it rotation keys) on both, a 15 MB sealed
+share each, peak resident memory 5.1 GiB per party. The first run peaked
+at 7.1 GiB and the kernel killed one party: the CLI encoded the material
+in memory before writing it, doubling the rotation keys at the peak; it
+now streams it to the file. The remaining peak is the serialized joint
+rotation keys plus the copy installed for the joint key check, each about
+2 GB. Each party needs that much memory on its own machine for the
+ceremony only; the aggregator node that runs afterwards holds the
+installed keys alone.
+
 Not covered: the ceremony proves nothing about a party's noise
 distribution beyond what the joint key check measures, and it does not
 tolerate an aborting party (n-of-n: any party can stop it, as any party

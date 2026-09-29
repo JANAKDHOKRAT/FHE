@@ -8,6 +8,7 @@
 //! aggregator-to-collector calls carry a bearer token over TLS.
 
 pub mod aggregator_node;
+pub mod ceremony_node;
 pub mod client;
 pub mod collector_node;
 pub mod router;

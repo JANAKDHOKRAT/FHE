@@ -20,7 +20,6 @@ fn verdict_mode_regression_matches_plaintext() {
     let t = MeasurementType::SumVec { length: 3, bits: 4 };
     let mut cfg = TaskConfig::new(task_id(50), t.clone(), 2);
     cfg.moments = true;
-    cfg.max_batch_size = cfg.moments_max_batch().unwrap().min(1 << 20);
     let mut net = Net::new(cfg);
     let rows = records();
     for r in &rows {
@@ -45,7 +44,6 @@ fn silent_batched_regression_excludes_invalid_records() {
     let mut cfg = TaskConfig::new_silent(task_id(51), t.clone(), 2);
     cfg.moments = true;
     cfg.silent_batch_groups = 4;
-    cfg.max_batch_size = cfg.moments_max_batch().unwrap();
     let mut net = Net::new(cfg);
     let rows = records();
     for (i, r) in rows.iter().enumerate() {
@@ -57,6 +55,45 @@ fn silent_batched_regression_excludes_invalid_records() {
     let plain = regression_plain(&rows);
     let reg = res.regression.expect("moments enabled");
     assert_eq!((res.report_count, res.valid_count), (7, 6));
+    assert_eq!((reg.n, &reg.first, &reg.second), (plain.n, &plain.first, &plain.second));
+    for (a, b) in reg.beta.iter().zip(&plain.beta) {
+        assert!((a - b).abs() < 1e-9, "{:?} vs {:?}", reg.beta, plain.beta);
+    }
+}
+
+/// Silent mode with 8-bit values, a batch of 16 and room for 65,536
+/// reports. The former cap was 12 reports; the sums of squares here exceed
+/// p = 786,433, so an undecomposed accumulator would wrap. With 2-bit
+/// digits every accumulator slot stays below p and the collector
+/// recombines the exact integers.
+#[test]
+fn silent_eight_bit_regression_beyond_the_former_cap() {
+    let _g = serial();
+    let t = MeasurementType::SumVec { length: 3, bits: 8 };
+    let mut cfg = TaskConfig::new_silent(task_id(52), t.clone(), 2);
+    cfg.moments = true;
+    cfg.silent_batch_groups = 4;
+    assert_eq!((cfg.max_batch_size, cfg.moment_digit_bits()), (1 << 16, Some(2)));
+    let mut net = Net::new(cfg.clone());
+    let rows: Vec<Vec<u64>> = (0..16u64)
+        .map(|i| {
+            let x1 = 200 + (i * 37) % 56;
+            let x2 = 100 + (i * 53) % 156;
+            vec![x1, x2, x1 / 2 + x2 / 3 + i % 7]
+        })
+        .collect();
+    for (i, r) in rows.iter().enumerate() {
+        net.expect_accept(&net.client.shard_in_group(&Measurement::SumVec(r.clone()), (i % 4) as u32).unwrap());
+    }
+    // invalid (a non-bit in the target): admitted, contributes nothing
+    let mut raw = vec![1u64; 24];
+    raw[20] = 2;
+    net.expect_accept(&net.client.shard_raw_elements_in_group(&[raw], 1).unwrap());
+    let res = net.collect_full().unwrap();
+    let plain = regression_plain(&rows);
+    assert!(plain.second.iter().flatten().any(|&m| m >= cfg.plain_mod as u128), "test must exceed p");
+    let reg = res.regression.expect("moments enabled");
+    assert_eq!((res.report_count, res.valid_count), (17, 16));
     assert_eq!((reg.n, &reg.first, &reg.second), (plain.n, &plain.first, &plain.second));
     for (a, b) in reg.beta.iter().zip(&plain.beta) {
         assert!((a - b).abs() < 1e-9, "{:?} vs {:?}", reg.beta, plain.beta);

@@ -79,8 +79,10 @@ sets (`src/sharding.rs` here, router and `keygen-shards` there).
 use fhe_prio3::*;
 
 let cfg = TaskConfig::new(task_id, MeasurementType::Sum { max_measurement: 100 }, 2);
-// Key ceremony: in production each party runs the steps in `keys` over the
-// network; `run_local_ceremony` executes them in one process.
+// Key ceremony: in production each aggregator runs `ceremony::run` on its
+// own machine over a `ceremony::Transport` (the node crate's `ceremony`
+// command does it over HTTPS) and keeps only its own share;
+// `run_local_ceremony` generates every share in one process, for tests.
 let (material, shares) = keys::run_local_ceremony(&cfg)?;
 
 let client = Client::new(cfg.clone(), &material.context, &material.public_key)?;

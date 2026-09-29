@@ -17,6 +17,7 @@
 pub mod aggregator;
 pub mod attest;
 pub mod auth;
+pub mod ceremony;
 pub mod client;
 pub mod collector;
 pub mod config;

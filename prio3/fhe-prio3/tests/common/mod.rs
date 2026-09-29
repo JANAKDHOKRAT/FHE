@@ -37,6 +37,11 @@ impl Net {
 
     pub fn with_registry(cfg: TaskConfig, registry: Option<Arc<dyn ClientRegistry>>) -> Self {
         let (full, shares) = keys::run_local_ceremony(&cfg).expect("ceremony");
+        Self::with_keys(cfg, full, &shares, registry)
+    }
+
+    /// From material and shares made elsewhere (e.g. the distributed ceremony).
+    pub fn with_keys(cfg: TaskConfig, full: PublicMaterial, shares: &[Vec<u8>], registry: Option<Arc<dyn ClientRegistry>>) -> Self {
         let mut full: PublicMaterial = {
             let bytes = encode(&full).unwrap();
             drop(full);

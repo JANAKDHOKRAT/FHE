@@ -598,6 +598,131 @@ impl RotationKeys {
     }
 }
 
+/// The two polynomial bases of key material: the public key lives on the
+/// public-key basis, every key-switching key (eval-mult and rotation keys)
+/// on the extended basis `QP`, with [`Context::key_num_parts`] polynomials
+/// per vector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyBasis {
+    PublicKey = 0,
+    KeySwitch = 1,
+}
+
+/// Distributed key ceremony: key material generated against a common
+/// random `a` and exchanged as raw residues (layout: polynomial, tower,
+/// coefficient; EVALUATION format). Residues are validated against the tower
+/// moduli before OpenFHE builds anything, so received bytes never reach
+/// OpenFHE's deserializer.
+impl Context {
+    /// Moduli of the towers of `basis`.
+    pub fn key_basis_moduli(&self, basis: KeyBasis) -> Result<Vec<u64>> {
+        let n = unsafe { ffi::tbgv_key_basis_towers(self.raw(), basis as u32) } as usize;
+        if n == 0 {
+            return Err(last_error());
+        }
+        let mut out = vec![0u64; n];
+        if unsafe { ffi::tbgv_key_basis_moduli(self.raw(), basis as u32, out.as_mut_ptr(), n) } == 0 {
+            return Err(last_error());
+        }
+        Ok(out)
+    }
+
+    /// Polynomials per vector of a key-switching key (hybrid key switching's `dnum`).
+    pub fn key_num_parts(&self) -> Result<usize> {
+        match unsafe { ffi::tbgv_key_num_parts(self.raw()) } {
+            0 => Err(last_error()),
+            n => Ok(n as usize),
+        }
+    }
+
+    /// Residues of one polynomial on `basis`.
+    pub fn key_poly_len(&self, basis: KeyBasis) -> Result<usize> {
+        Ok(self.key_basis_moduli(basis)?.len() * self.ring_dim() as usize)
+    }
+}
+
+impl PublicKey {
+    /// `(b = 0, a)`: what [`PublicKey::share`] generates against.
+    pub fn template(ctx: &Context, a: &[u64]) -> Result<Self> {
+        Self::wrap(ctx, unsafe { ffi::tbgv_pubkey_template(ctx.raw(), a.as_ptr(), a.len()) })
+    }
+    /// A fresh secret share `s` and the public share `(e - a s, a)` for the template's `a`.
+    pub fn share(ctx: &Context, template: &PublicKey) -> Result<(PublicKey, SecretShare)> {
+        let mut pk = std::ptr::null_mut();
+        let mut sk = std::ptr::null_mut();
+        if unsafe { ffi::tbgv_keygen_share(ctx.raw(), template.ptr, &mut pk, &mut sk) } == 0 {
+            return Err(last_error());
+        }
+        Ok((PublicKey { ptr: pk, ctx: ctx.clone() }, SecretShare { ptr: sk, ctx: ctx.clone() }))
+    }
+    /// Residues of `b` (element 0) or `a` (element 1).
+    pub fn export(&self, element: u32) -> Result<Vec<u64>> {
+        let mut out = vec![0u64; self.ctx.key_poly_len(KeyBasis::PublicKey)?];
+        if unsafe { ffi::tbgv_pubkey_export(self.ctx.raw(), self.ptr, element, out.as_mut_ptr(), out.len()) } == 0 {
+            return Err(last_error());
+        }
+        Ok(out)
+    }
+    /// The template's `a` with the given `b`.
+    pub fn with_b(ctx: &Context, template: &PublicKey, b: &[u64]) -> Result<Self> {
+        Self::wrap(ctx, unsafe { ffi::tbgv_pubkey_with_b(ctx.raw(), template.ptr, b.as_ptr(), b.len()) })
+    }
+    /// `(b1 + b2, a)` under `joint_tag`; fails unless both have the same `a`.
+    pub fn add(ctx: &Context, p1: &PublicKey, p2: &PublicKey, joint_tag: &str) -> Result<Self> {
+        let t = c_tag(joint_tag)?;
+        Self::wrap(ctx, unsafe { ffi::tbgv_pubkey_add(ctx.raw(), p1.ptr, p2.ptr, t.as_ptr()) })
+    }
+    fn wrap(ctx: &Context, p: ffi::TbgvPublicKey) -> Result<Self> {
+        if p.is_null() {
+            return Err(last_error());
+        }
+        Ok(Self { ptr: p, ctx: ctx.clone() })
+    }
+}
+
+impl EvalMultKey {
+    /// A key-switching key `(b = 0, a)` to generate round-1 eval-mult
+    /// contributions ([`EvalMultKey::round1_next`]) or rotation contributions
+    /// ([`RotationKeys::single`], [`RotationKeys::next`]) against.
+    pub fn template(ctx: &Context, a: &[u64]) -> Result<Self> {
+        Self::wrap(ctx, unsafe { ffi::tbgv_evalkey_template(ctx.raw(), a.as_ptr(), a.len()) })
+    }
+    /// Residues of the `a` vector (`which = 0`) or the `b` vector (`which = 1`).
+    pub fn export(&self, which: u32) -> Result<Vec<u64>> {
+        let mut out = vec![0u64; self.ctx.key_num_parts()? * self.ctx.key_poly_len(KeyBasis::KeySwitch)?];
+        if unsafe { ffi::tbgv_evalkey_export(self.ctx.raw(), self.ptr, which, out.as_mut_ptr(), out.len()) } == 0 {
+            return Err(last_error());
+        }
+        Ok(out)
+    }
+    /// A key from both vectors' residues.
+    pub fn build(ctx: &Context, a: &[u64], b: &[u64]) -> Result<Self> {
+        Self::wrap(ctx, unsafe { ffi::tbgv_evalkey_build(ctx.raw(), a.as_ptr(), a.len(), b.as_ptr(), b.len()) })
+    }
+    /// The template's `a` vector with the given `b` vector.
+    pub fn with_b(ctx: &Context, template: &EvalMultKey, b: &[u64]) -> Result<Self> {
+        Self::wrap(ctx, unsafe { ffi::tbgv_evalkey_with_b(ctx.raw(), template.ptr, b.as_ptr(), b.len()) })
+    }
+    pub fn same_a(&self, other: &EvalMultKey) -> Result<bool> {
+        match unsafe { ffi::tbgv_evalkey_same_a(self.ptr, other.ptr) } {
+            1 => Ok(true),
+            0 => Ok(false),
+            _ => Err(last_error()),
+        }
+    }
+}
+
+impl RotationKeys {
+    /// The one-entry map holding `key` for rotation `index`.
+    pub fn single(ctx: &Context, index: i32, key: &EvalMultKey) -> Result<Self> {
+        Self::wrap(ctx, unsafe { ffi::tbgv_rotkeys_single(ctx.raw(), index, key.ptr) })
+    }
+    /// The key of a one-entry map for rotation `index`.
+    pub fn get(&self, index: i32) -> Result<EvalMultKey> {
+        EvalMultKey::wrap(&self.ctx, unsafe { ffi::tbgv_rotkeys_get(self.ctx.raw(), self.ptr, index) })
+    }
+}
+
 /// The metadata that travels with a ciphertext's residues: together they
 /// determine the ciphertext exactly (for objects in EVALUATION format built
 /// from the receiver's own reference).

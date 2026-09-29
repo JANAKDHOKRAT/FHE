@@ -23,7 +23,6 @@ fn verdict_two_collectors_disjoint_elements_and_moments() {
     let k1 = CollectorSealKey::generate();
     let mut cfg = TaskConfig::new(task_id(70), t.clone(), 2);
     cfg.moments = true;
-    cfg.max_batch_size = cfg.moments_max_batch().unwrap().min(1 << 20);
     cfg.collectors = vec![policy(&[0, 1], false, &k0), policy(&[2, 3], true, &k1)];
     cfg.validate().unwrap();
     // chunks are cut between element 1 and element 2: two chunks
@@ -174,7 +173,6 @@ fn policy_validation() {
     assert!(ok(vec![policy(&[0, 1, 2, 3], true, &k)]).is_err());
     let mut cfg = TaskConfig::new(task_id(73), t.clone(), 2);
     cfg.moments = true;
-    cfg.max_batch_size = cfg.moments_max_batch().unwrap();
     cfg.collectors = vec![policy(&[0], true, &k), policy(&[1, 2, 3], true, &k)];
     assert!(cfg.validate().is_err());
     cfg.collectors = vec![policy(&[0, 1], true, &k), policy(&[2, 3], true, &k)];

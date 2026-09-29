@@ -61,6 +61,22 @@ unsafe extern "C" {
     pub fn tbgv_rotkeys_serialize(keys: TbgvRotKeys, out: *mut *mut u8, out_len: *mut usize) -> c_int;
     pub fn tbgv_rotkeys_deserialize(ctx: TbgvContext, buf: *const u8, len: usize) -> TbgvRotKeys;
 
+    pub fn tbgv_key_basis_towers(ctx: TbgvContext, basis: u32) -> u32;
+    pub fn tbgv_key_basis_moduli(ctx: TbgvContext, basis: u32, out: *mut u64, out_len: usize) -> c_int;
+    pub fn tbgv_key_num_parts(ctx: TbgvContext) -> u32;
+    pub fn tbgv_pubkey_template(ctx: TbgvContext, a: *const u64, len: usize) -> TbgvPublicKey;
+    pub fn tbgv_keygen_share(ctx: TbgvContext, tmpl: TbgvPublicKey, out_pk: *mut TbgvPublicKey, out_sk: *mut TbgvSecretKey) -> c_int;
+    pub fn tbgv_pubkey_export(ctx: TbgvContext, pk: TbgvPublicKey, element: u32, out: *mut u64, out_len: usize) -> c_int;
+    pub fn tbgv_pubkey_with_b(ctx: TbgvContext, tmpl: TbgvPublicKey, b: *const u64, len: usize) -> TbgvPublicKey;
+    pub fn tbgv_pubkey_add(ctx: TbgvContext, p1: TbgvPublicKey, p2: TbgvPublicKey, tag: *const c_char) -> TbgvPublicKey;
+    pub fn tbgv_evalkey_template(ctx: TbgvContext, a: *const u64, len: usize) -> TbgvEvalKey;
+    pub fn tbgv_evalkey_export(ctx: TbgvContext, key: TbgvEvalKey, which: u32, out: *mut u64, out_len: usize) -> c_int;
+    pub fn tbgv_evalkey_build(ctx: TbgvContext, a: *const u64, a_len: usize, b: *const u64, b_len: usize) -> TbgvEvalKey;
+    pub fn tbgv_evalkey_with_b(ctx: TbgvContext, tmpl: TbgvEvalKey, b: *const u64, b_len: usize) -> TbgvEvalKey;
+    pub fn tbgv_evalkey_same_a(k1: TbgvEvalKey, k2: TbgvEvalKey) -> c_int;
+    pub fn tbgv_rotkeys_single(ctx: TbgvContext, index: i32, key: TbgvEvalKey) -> TbgvRotKeys;
+    pub fn tbgv_rotkeys_get(ctx: TbgvContext, keys: TbgvRotKeys, index: i32) -> TbgvEvalKey;
+
     pub fn tbgv_plaintext_new(ctx: TbgvContext, values: *const i64, n: usize) -> TbgvPlaintext;
     pub fn tbgv_plaintext_free(pt: TbgvPlaintext);
     pub fn tbgv_encrypt(ctx: TbgvContext, pk: TbgvPublicKey, pt: TbgvPlaintext) -> TbgvCiphertext;

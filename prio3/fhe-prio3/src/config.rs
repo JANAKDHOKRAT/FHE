@@ -222,31 +222,28 @@ impl TaskConfig {
         Ok(out)
     }
 
-    /// Largest batch for which every second-moment sum stays below `p`
-    /// (each product is below `2^(2 bits)`). `None` when moments are off.
-    /// Bit widths of the two widest values, for the product bound.
-    fn widest_pair(&self) -> Option<(u32, u32)> {
-        let map = self.measurement_type.value_slots()?;
-        let mut w: Vec<u32> = map.iter().map(|&(_, b)| b).collect();
-        w.sort_unstable_by(|a, b| b.cmp(a));
-        match w.len() {
-            0 => None,
-            1 => Some((w[0], w[0])),
-            _ => Some((w[0], w[1])),
-        }
+    /// Width of the widest value, whose square bounds every product of two
+    /// values and of two digits. `None` when the type has no values.
+    fn widest_value(&self) -> Option<u32> {
+        self.measurement_type.value_slots()?.iter().map(|&(_, b)| b).max()
     }
 
-    pub fn moments_max_batch(&self) -> Option<u64> {
+    /// Digit width `D` of the second-moment decomposition: the largest
+    /// `D <= widest` with `(2^min(D, widest) - 1)^2 * max_batch_size <= p - 1`.
+    /// Every accumulator slot sums at most `max_batch_size` products of two
+    /// digits of at most `D` bits, so it never reaches `p` and the
+    /// collector recombines the exact integer moments. When the widest
+    /// value's square already fits, `D = widest` and each value is a single
+    /// digit. `None` when moments are off or the type has no values.
+    pub fn moment_digit_bits(&self) -> Option<u32> {
         if !self.moments {
             return None;
         }
-        match self.measurement_type {
-            MeasurementType::SumVec { .. } | MeasurementType::BoundedSumVec { .. } => {
-                let (a, b) = self.widest_pair()?;
-                Some((self.plain_mod - 1) >> (a + b))
-            }
-            _ => None,
-        }
+        let w = self.widest_value()?;
+        (1..=w).rev().find(|&d| {
+            let m = (1u128 << d) - 1;
+            m * m * self.max_batch_size as u128 <= (self.plain_mod - 1) as u128
+        })
     }
 
     /// Silent mode with 78-bit soundness (`4 * log2(786433)`), depth 25,
@@ -296,13 +293,13 @@ impl TaskConfig {
                     if map.len() < 2 {
                         return Err(Error::Config("moments need at least two values (features + target)".into()));
                     }
-                    let (a, b) = self.widest_pair().expect("two values");
-                    if (a + b) as u64 >= 64 - self.plain_mod.leading_zeros() as u64 {
-                        return Err(Error::Config("moments: the two widest values' bits must sum below log2(plain_mod) so products are exact".into()));
+                    let w = self.widest_value().expect("two values");
+                    // recombined moments are u128: max_batch_size * (2^w - 1)^2 < 2^128
+                    if 2 * w + (64 - self.max_batch_size.leading_zeros()) > 128 {
+                        return Err(Error::Config(format!("moments: {w}-bit values over batches of {} overflow 128-bit moments", self.max_batch_size)));
                     }
-                    let cap = self.moments_max_batch().expect("checked");
-                    if self.max_batch_size > cap {
-                        return Err(Error::Config(format!("moments: max_batch_size must be at most {cap} for {a}+{b}-bit products under p = {}", self.plain_mod)));
+                    if self.moment_digit_bits().is_none() {
+                        return Err(Error::Config("moments: max_batch_size must be below plain_mod".into()));
                     }
                 }
                 None => return Err(Error::Config("moments are only defined for SumVec and BoundedSumVec".into())),
@@ -368,6 +365,10 @@ impl TaskConfig {
                     }
                 }
                 l.moments = Some(map);
+                l.moment_digit = self.moment_digit_bits().ok_or_else(|| Error::Config("moments: max_batch_size must be below plain_mod".into()))?;
+                if !l.moment_slots_fit() {
+                    return Err(Error::Config("moments: the digits of the widest pair do not fit in a row of this layout".into()));
+                }
             }
         }
         Ok(l)
@@ -410,6 +411,49 @@ impl TaskConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The digit width is the widest for which every digit product summed
+    /// over `max_batch_size` reports stays below `p`, over both primes,
+    /// value mixes and batch sizes from 1 to `p - 1`.
+    #[test]
+    fn moment_digit_width_is_the_widest_that_cannot_wrap() {
+        for silent in [false, true] {
+            for bounds in [vec![255u64, 255, 255], vec![100, 5, 15], vec![65535, 1], vec![1, 1]] {
+                let t = MeasurementType::BoundedSumVec { bounds };
+                let mut c = if silent { TaskConfig::new_silent([0; 32], t.clone(), 2) } else { TaskConfig::new([0; 32], t.clone(), 2) };
+                c.moments = true;
+                let w = t.value_slots().unwrap().iter().map(|&(_, b)| b).max().unwrap();
+                let fits = |d: u32, n: u64| ((1u128 << d) - 1).pow(2) * n as u128 <= (c.plain_mod - 1) as u128;
+                for n in [1u64, 2, 12, 13, 1000, 1 << 16, 1 << 20, c.plain_mod - 1] {
+                    if n >= c.plain_mod {
+                        continue;
+                    }
+                    c.max_batch_size = n;
+                    let d = c.moment_digit_bits().unwrap();
+                    assert!((1..=w).contains(&d));
+                    assert!(fits(d, n), "silent={silent} w={w} n={n} d={d}");
+                    assert!(d == w || !fits(d + 1, n), "silent={silent} w={w} n={n} d={d} not the widest");
+                    c.validate().unwrap();
+                }
+            }
+        }
+    }
+
+    /// The batch cap before the digit decomposition was `(p-1) >> (a+b)`
+    /// for the two widest values `a >= b`. It ignored the square of the
+    /// widest value (`2a` bits): for 7- and 4-bit values it admitted
+    /// batches whose 7-bit square sum wraps modulo `p`.
+    #[test]
+    fn the_former_cap_let_the_widest_square_wrap() {
+        let p = DEFAULT_PLAIN_MOD;
+        let former_cap = (p - 1) >> (7 + 4);
+        assert!(former_cap as u128 * 127 * 127 >= p as u128);
+        let mut c = TaskConfig::new([0; 32], MeasurementType::BoundedSumVec { bounds: vec![100, 5, 15] }, 2);
+        c.moments = true;
+        c.max_batch_size = former_cap;
+        let d = c.moment_digit_bits().unwrap();
+        assert!(d < 7 && ((1u128 << d) - 1).pow(2) * former_cap as u128 <= (p - 1) as u128);
+    }
     #[test]
     fn depths() {
         let v = TaskConfig::new([0; 32], MeasurementType::Count, 2);

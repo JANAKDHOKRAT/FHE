@@ -70,6 +70,7 @@ jobs:
           - { name: protocol-wire, dir: prio3/fhe-prio3, args: "--test wire" }
           - { name: protocol, dir: prio3/fhe-prio3, args: "--test protocol" }
           - { name: protocol-bounds, dir: prio3/fhe-prio3, args: "--test bounds" }
+          - { name: protocol-ceremony, dir: prio3/fhe-prio3, args: "--test ceremony" }
           - { name: protocol-mitigations, dir: prio3/fhe-prio3, args: "--test mitigations" }
           - { name: protocol-policy, dir: prio3/fhe-prio3, args: "--test policy" }
           - { name: protocol-regression, dir: prio3/fhe-prio3, args: "--test regression" }

@@ -193,19 +193,9 @@ fn three_machines_run_the_ceremony_over_tls_and_the_keys_work() {
     let client = Client::new(cfg.clone(), &material.context, &material.public_key).unwrap();
     for v in [17u64, 100, 0, 42] {
         let report = client.shard(&Measurement::Sum(v)).unwrap();
-        let masks: Vec<MaskMessage> = aggs.iter_mut().map(|a| a.prepare_init(&report).unwrap()).collect();
-        let mut verifiers = Vec::new();
-        for a in aggs.iter_mut() {
-            let others: Vec<MaskMessage> = masks.iter().filter(|x| x.aggregator != a.index()).cloned().collect();
-            verifiers.push(a.prepare_masks(&report.report_id, &others).unwrap());
-        }
-        for a in aggs.iter_mut() {
-            let others: Vec<VerifierMessage> = verifiers.iter().filter(|x| x.aggregator != a.index()).cloned().collect();
-            assert_eq!(a.prepare_finish(&report.report_id, &others).unwrap(), Verdict::Accepted);
-        }
+        assert!(fhe_prio3::local::verdict(&mut aggs, &report).unwrap().iter().all(|v| *v == Verdict::Accepted));
     }
-    let released: Vec<AggregateShare> = aggs.iter_mut().map(|a| a.aggregate_share().unwrap()).collect();
-    let result = Collector::new(cfg.clone(), &material).unwrap().unshard(&released).unwrap();
+    let result = fhe_prio3::local::release(&mut aggs, &Collector::new(cfg.clone(), &material).unwrap(), 0).unwrap();
     assert_eq!(result.aggregate, AggregateResult::Sum(159));
 }
 

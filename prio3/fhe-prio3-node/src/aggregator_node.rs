@@ -126,16 +126,26 @@ impl AggregatorNode {
     pub fn router(&self) -> Router {
         let public = DefaultBodyLimit::max(self.inner.max_report_bytes + (64 << 10));
         let internal = DefaultBodyLimit::max(self.inner.max_message_bytes + (64 << 10));
+        // verifiable decryption: check ciphertexts of every aggregator (count
+        // round) or of every released accumulator group (release)
+        let verify = DefaultBodyLimit::max(256 << 20);
         Router::new()
             .route("/v1/status", get(status))
             .route("/v1/group", get(group_ticket))
             .route("/v1/submit", post(submit).layer(public))
             .route("/v1/close", post(close).layer(public))
             .route("/v1/report", post(internal_report).layer(internal))
+            .route("/v1/mask-commits", post(internal_mask_commits).layer(internal.clone()))
             .route("/v1/masks", post(internal_masks).layer(internal))
-            .route("/v1/verifiers", post(internal_verifiers).layer(internal))
-            .route("/v1/count-share", post(internal_count_share).layer(internal))
-            .route("/v1/count-finish", post(internal_count_finish).layer(internal))
+            .route("/v1/commits", post(internal_commits).layer(internal.clone()))
+            .route("/v1/verifiers", post(internal_verifiers).layer(internal.clone()))
+            .route("/v1/count-share", post(internal_count_share).layer(internal.clone()))
+            .route("/v1/count-commit", post(internal_count_commit).layer(verify.clone()))
+            .route("/v1/count-open", post(internal_count_open).layer(verify.clone()))
+            .route("/v1/count-reveal", post(internal_count_reveal).layer(verify.clone()))
+            .route("/v1/count-finish", post(internal_count_finish).layer(verify.clone()))
+            .route("/v1/release-commit", post(internal_release_commit).layer(verify.clone()))
+            .route("/v1/release-reveal", post(internal_release_reveal).layer(verify))
             .route("/v1/aggregate-share", post(internal_aggregate_share).layer(internal))
             .with_state(self.clone())
     }
@@ -219,7 +229,7 @@ impl AggregatorNode {
             return Ok(SubmitOutcome::Accepted);
         }
 
-        // Verdict mode, round 1: everyone's mask.
+        // Verdict mode, round 1: everyone commits to its mask.
         let r = report.clone();
         let mine = self
             .with_agg("verdict_init", detail.clone(), vec![], move |agg| match agg.prepare_init(&r) {
@@ -228,26 +238,50 @@ impl AggregatorNode {
                 Err(e) => Err(e),
             })
             .await?;
-        let my_mask = match mine {
+        let my_commit = match mine {
             Ok(m) => m,
             Err(reason) => return Ok(SubmitOutcome::Rejected(reason.to_string())),
         };
-        let mut masks = vec![my_mask];
-        for (_, url) in self.helpers() {
-            let m: std::result::Result<MaskMessage, String> = http_post(&self.inner.http,&format!("{url}/v1/report"), Some(&self.inner.token), &report).await?;
+        let mut mask_commits = vec![my_commit];
+        for (i, url) in self.helpers() {
+            let m: std::result::Result<MaskCommit, String> = http_post(&self.inner.http,&format!("{url}/v1/report"), Some(&self.inner.token), &report).await?;
             match m {
-                Ok(m) => masks.push(m),
+                Ok(m) if m.aggregator == i => mask_commits.push(m),
+                Ok(m) => return Err(HttpError(StatusCode::CONFLICT, format!("helper {i} answered as aggregator {}", m.aggregator))),
                 Err(reason) => return Err(HttpError(StatusCode::CONFLICT, format!("helper refused a report the leader admitted: {reason}"))),
             }
         }
-        // Round 2: everyone's partial decryption of the masked check.
+        // Round 1b: every mask commitment is in; everyone reveals its mask.
+        let others_for_me: Vec<MaskCommit> = mask_commits.iter().filter(|c| c.aggregator != self.inner.index).cloned().collect();
+        let mut masks = vec![
+            self.with_agg("verdict_mask_reveal", detail.clone(), vec![], move |agg| Ok((agg.prepare_mask_reveal(&id, &others_for_me)?, false))).await?,
+        ];
+        for (i, url) in self.helpers() {
+            let req = MaskCommitsRequest { report_id: id, commits: mask_commits.iter().filter(|c| c.aggregator != i).cloned().collect() };
+            let m: MaskMessage = http_post(&self.inner.http, &format!("{url}/v1/mask-commits"), Some(&self.inner.token), &req).await?;
+            masks.push(m);
+        }
+        // Round 2: everyone commits to its partial decryption of the masked check.
         let others_for_me: Vec<MaskMessage> = masks.iter().filter(|m| m.aggregator != self.inner.index).cloned().collect();
-        let mut verifiers = vec![
+        let mut commits = vec![
             self.with_agg("verdict_masks", detail.clone(), vec![], move |agg| Ok((agg.prepare_masks(&id, &others_for_me)?, false))).await?,
         ];
         for (i, url) in self.helpers() {
             let req = MasksRequest { report_id: id, masks: masks.iter().filter(|m| m.aggregator != i).cloned().collect() };
-            let v: VerifierMessage = http_post(&self.inner.http,&format!("{url}/v1/masks"), Some(&self.inner.token), &req).await?;
+            let c: VerifierCommit = http_post(&self.inner.http, &format!("{url}/v1/masks"), Some(&self.inner.token), &req).await?;
+            if c.aggregator != i {
+                return Err(HttpError(StatusCode::CONFLICT, format!("helper {i} answered as aggregator {}", c.aggregator)));
+            }
+            commits.push(c);
+        }
+        // Round 2b: every commitment is in; everyone reveals its partial.
+        let others_for_me: Vec<VerifierCommit> = commits.iter().filter(|c| c.aggregator != self.inner.index).cloned().collect();
+        let mut verifiers = vec![
+            self.with_agg("verdict_reveal", detail.clone(), vec![], move |agg| Ok((agg.prepare_reveal(&id, &others_for_me)?, false))).await?,
+        ];
+        for (i, url) in self.helpers() {
+            let req = CommitsRequest { report_id: id, commits: commits.iter().filter(|c| c.aggregator != i).cloned().collect() };
+            let v: VerifierMessage = http_post(&self.inner.http, &format!("{url}/v1/commits"), Some(&self.inner.token), &req).await?;
             verifiers.push(v);
         }
         // Round 3: verdicts.
@@ -276,24 +310,77 @@ impl AggregatorNode {
         })
     }
 
-    /// Closes the batch on every aggregator and delivers the shares to the
-    /// collector, which returns the batch result.
+    /// Silent mode: the verified count round. Every aggregator checks the
+    /// decrypted count with its own blinded checks before trusting it.
+    async fn drive_count(&self) -> std::result::Result<(), HttpError> {
+        let post = |url: String, body: Vec<u8>| {
+            let http = self.inner.http.clone();
+            let token = self.inner.token.clone();
+            async move { http_post_raw(&http, &url, Some(&token), body).await }
+        };
+        let mut shares = vec![self.with_agg("count_share", String::new(), vec![], |agg| Ok((agg.count_share()?, true))).await?];
+        for (_, url) in self.helpers() {
+            shares.push(decode(&post(format!("{url}/v1/count-share"), encode(&())?).await?)?);
+        }
+        let req = encode(&CountSharesRequest { shares: shares.clone() })?;
+        let mut commits = vec![self.with_agg("count_commit", String::new(), vec![], move |agg| Ok((agg.count_commit(&shares)?, true))).await?];
+        for (_, url) in self.helpers() {
+            commits.push(decode(&post(format!("{url}/v1/count-commit"), req.clone()).await?)?);
+        }
+        let req = encode(&CountCommitsRequest { commits: commits.clone() })?;
+        let mut openings = vec![self.with_agg("count_open", String::new(), vec![], move |agg| Ok((agg.count_open(&commits)?, true))).await?];
+        for (_, url) in self.helpers() {
+            openings.push(decode(&post(format!("{url}/v1/count-open"), req.clone()).await?)?);
+        }
+        let req = encode(&CountOpeningsRequest { openings: openings.clone() })?;
+        let mut reveals = vec![self.with_agg("count_reveal", String::new(), vec![], move |agg| Ok((agg.count_reveal(&openings)?, true))).await?];
+        for (_, url) in self.helpers() {
+            reveals.push(decode(&post(format!("{url}/v1/count-reveal"), req.clone()).await?)?);
+        }
+        let req = encode(&CountRevealsRequest { reveals: reveals.clone() })?;
+        let mine: u64 = self.with_agg("count_finish", String::new(), vec![], move |agg| Ok((agg.count_finish(&reveals)?, true))).await?;
+        for (i, url) in self.helpers() {
+            let n: u64 = decode(&post(format!("{url}/v1/count-finish"), req.clone()).await?)?;
+            if n != mine {
+                return Err(HttpError(StatusCode::CONFLICT, format!("helper {i} verified another valid count")));
+            }
+        }
+        Ok(())
+    }
+
+    /// Verified release to collector `c` of shares already delivered: relays
+    /// the collector's checks, every aggregator's commitments, the opening
+    /// and every aggregator's reveal (sealed with policies).
+    async fn drive_release(&self, c: usize, challenge: ReleaseChallenge) -> std::result::Result<Option<BatchResult>, HttpError> {
+        let url = self.inner.collectors[c].clone();
+        let ch = challenge.clone();
+        let mut commits = vec![self.with_agg("release_commit", format!("{c}"), vec![], move |agg| Ok((agg.release_commit(&ch)?, true))).await?];
+        for (_, h) in self.helpers() {
+            let r: ReleaseCommit = http_post(&self.inner.http, &format!("{h}/v1/release-commit"), Some(&self.inner.token), &challenge).await?;
+            commits.push(r);
+        }
+        let opening: ReleaseOpening = http_post(&self.inner.http, &format!("{url}/v1/release-commits"), Some(&self.inner.token), &ReleaseCommitsRequest { commits }).await?;
+        let sealed = !self.inner.task.collectors.is_empty();
+        let op = opening.clone();
+        let mine = self
+            .with_agg("release_reveal", format!("{c}"), vec![], move |agg| {
+                Ok((if sealed { RevealEnvelope::Sealed(agg.sealed_release_reveal(&op)?) } else { RevealEnvelope::Plain(agg.release_reveal(&op)?) }, true))
+            })
+            .await?;
+        let mut reveals = vec![mine];
+        for (_, h) in self.helpers() {
+            let r: RevealEnvelope = http_post(&self.inner.http, &format!("{h}/v1/release-reveal"), Some(&self.inner.token), &opening).await?;
+            reveals.push(r);
+        }
+        let done: FinishReceipt = http_post(&self.inner.http, &format!("{url}/v1/release-reveals"), Some(&self.inner.token), &ReleaseRevealsRequest { reveals }).await?;
+        Ok(done.result)
+    }
+
+    /// Closes the batch on every aggregator, delivers the shares to the
+    /// collector(s) and runs the verified release.
     async fn drive_close(&self) -> std::result::Result<CloseReply, HttpError> {
         if self.inner.task.mode == VerificationMode::Silent {
-            let mut counts = vec![self.with_agg("count_share", String::new(), vec![], |agg| Ok((agg.count_share()?, true))).await?];
-            for (_, url) in self.helpers() {
-                let c: CountShare = http_post(&self.inner.http,&format!("{url}/v1/count-share"), Some(&self.inner.token), &()).await?;
-                counts.push(c);
-            }
-            let req = CountFinishRequest { shares: counts };
-            let shares = req.shares.clone();
-            let mine: u64 = self.with_agg("count_finish", String::new(), vec![], move |agg| Ok((agg.count_finish(&shares)?, true))).await?;
-            for (_, url) in self.helpers() {
-                let n: u64 = http_post(&self.inner.http,&format!("{url}/v1/count-finish"), Some(&self.inner.token), &req).await?;
-                if n != mine {
-                    return Err(HttpError(StatusCode::CONFLICT, "aggregators disagree on the valid count".into()));
-                }
-            }
+            self.drive_count().await?;
         }
         if self.inner.task.collectors.is_empty() {
             // single collector, plain shares relayed by the leader
@@ -305,19 +392,20 @@ impl AggregatorNode {
                     ShareReply::Sealed(_) => return Err(HttpError(StatusCode::INTERNAL_SERVER_ERROR, "helper sealed a share on a task without policies".into())),
                 }
             }
-            let mut result: Option<BatchResult> = None;
+            let mut challenge = None;
             for s in shares {
-                let r: ShareReceipt =
-                    http_post(&self.inner.http, &format!("{}/v1/aggregate-share", self.inner.collectors[0]), Some(&self.inner.token), &ShareEnvelope { share: s }).await?;
+                let r: ShareReceipt = http_post(&self.inner.http, &format!("{}/v1/aggregate-share", self.inner.collectors[0]), Some(&self.inner.token), &ShareEnvelope { share: s }).await?;
                 if r.complete {
-                    result = r.result;
+                    challenge = r.challenge;
                 }
             }
-            let result = result.ok_or_else(|| HttpError(StatusCode::INTERNAL_SERVER_ERROR, "collector did not produce a result after all shares".into()))?;
+            let challenge = challenge.ok_or_else(|| HttpError(StatusCode::INTERNAL_SERVER_ERROR, "collector sent no checks after all shares".into()))?;
+            let result = self.drive_release(0, challenge).await?.ok_or_else(|| HttpError(StatusCode::INTERNAL_SERVER_ERROR, "collector returned no result".into()))?;
             return Ok(CloseReply { result: Some(result), released_to: vec![0] });
         }
-        // release policies: every aggregator seals its share for collector c
-        // to c's key; the leader relays opaque envelopes and learns nothing
+        // release policies: every aggregator seals its share (and its check
+        // partials) for collector c to c's key; the leader relays opaque
+        // envelopes and learns nothing
         let mut released_to = Vec::new();
         for c in 0..self.inner.task.collectors.len() {
             let mut sealed = vec![self.with_agg("sealed_share_for", format!("{c}"), vec![], move |agg| Ok((agg.sealed_share_for(c)?, true))).await?];
@@ -328,14 +416,15 @@ impl AggregatorNode {
                     ShareReply::Plain(_) => return Err(HttpError(StatusCode::INTERNAL_SERVER_ERROR, "helper returned a plain share on a task with policies".into())),
                 }
             }
-            let mut complete = false;
+            let mut challenge = None;
             for s in sealed {
                 let r: ShareReceipt = http_post(&self.inner.http, &format!("{}/v1/aggregate-share", self.inner.collectors[c]), Some(&self.inner.token), &SealedEnvelope { sealed: s }).await?;
-                complete = r.complete;
+                if r.complete {
+                    challenge = r.challenge;
+                }
             }
-            if !complete {
-                return Err(HttpError(StatusCode::INTERNAL_SERVER_ERROR, format!("collector {c} did not complete after all shares")));
-            }
+            let challenge = challenge.ok_or_else(|| HttpError(StatusCode::INTERNAL_SERVER_ERROR, format!("collector {c} sent no checks after all shares")))?;
+            self.drive_release(c, challenge).await?;
             released_to.push(c as u32);
         }
         Ok(CloseReply { result: None, released_to })
@@ -397,7 +486,7 @@ async fn internal_report(State(node): State<AggregatorNode>, headers: HeaderMap,
             .await?;
         return reply(&out);
     }
-    let out: std::result::Result<MaskMessage, String> = node
+    let out: std::result::Result<MaskCommit, String> = node
         .with_agg("verdict_init", detail, vec![], move |agg| match agg.prepare_init(&report) {
             Ok(m) => Ok((Ok(m), false)),
             Err(Error::Reject(r)) => Ok((Err(r.to_string()), false)),
@@ -407,10 +496,24 @@ async fn internal_report(State(node): State<AggregatorNode>, headers: HeaderMap,
     reply(&out)
 }
 
+async fn internal_mask_commits(State(node): State<AggregatorNode>, headers: HeaderMap, body: Bytes) -> std::result::Result<axum::response::Response, HttpError> {
+    check_token(&headers, &node.inner.token)?;
+    let req: MaskCommitsRequest = parse_body(&body)?;
+    let m = node.with_agg("verdict_mask_reveal", hex::encode(req.report_id), vec![], move |agg| Ok((agg.prepare_mask_reveal(&req.report_id, &req.commits)?, false))).await?;
+    reply(&m)
+}
+
 async fn internal_masks(State(node): State<AggregatorNode>, headers: HeaderMap, body: Bytes) -> std::result::Result<axum::response::Response, HttpError> {
     check_token(&headers, &node.inner.token)?;
     let req: MasksRequest = parse_body(&body)?;
     let v = node.with_agg("verdict_masks", hex::encode(req.report_id), vec![], move |agg| Ok((agg.prepare_masks(&req.report_id, &req.masks)?, false))).await?;
+    reply(&v)
+}
+
+async fn internal_commits(State(node): State<AggregatorNode>, headers: HeaderMap, body: Bytes) -> std::result::Result<axum::response::Response, HttpError> {
+    check_token(&headers, &node.inner.token)?;
+    let req: CommitsRequest = parse_body(&body)?;
+    let v = node.with_agg("verdict_reveal", hex::encode(req.report_id), vec![], move |agg| Ok((agg.prepare_reveal(&req.report_id, &req.commits)?, false))).await?;
     reply(&v)
 }
 
@@ -440,11 +543,47 @@ async fn internal_count_share(State(node): State<AggregatorNode>, headers: Heade
     reply(&c)
 }
 
+async fn internal_count_commit(State(node): State<AggregatorNode>, headers: HeaderMap, body: Bytes) -> std::result::Result<axum::response::Response, HttpError> {
+    check_token(&headers, &node.inner.token)?;
+    let req: CountSharesRequest = parse_body(&body)?;
+    reply(&node.with_agg("count_commit", String::new(), vec![], move |agg| Ok((agg.count_commit(&req.shares)?, true))).await?)
+}
+
+async fn internal_count_open(State(node): State<AggregatorNode>, headers: HeaderMap, body: Bytes) -> std::result::Result<axum::response::Response, HttpError> {
+    check_token(&headers, &node.inner.token)?;
+    let req: CountCommitsRequest = parse_body(&body)?;
+    reply(&node.with_agg("count_open", String::new(), vec![], move |agg| Ok((agg.count_open(&req.commits)?, true))).await?)
+}
+
+async fn internal_count_reveal(State(node): State<AggregatorNode>, headers: HeaderMap, body: Bytes) -> std::result::Result<axum::response::Response, HttpError> {
+    check_token(&headers, &node.inner.token)?;
+    let req: CountOpeningsRequest = parse_body(&body)?;
+    reply(&node.with_agg("count_reveal", String::new(), vec![], move |agg| Ok((agg.count_reveal(&req.openings)?, true))).await?)
+}
+
 async fn internal_count_finish(State(node): State<AggregatorNode>, headers: HeaderMap, body: Bytes) -> std::result::Result<axum::response::Response, HttpError> {
     check_token(&headers, &node.inner.token)?;
-    let req: CountFinishRequest = parse_body(&body)?;
-    let n = node.with_agg("count_finish", String::new(), vec![], move |agg| Ok((agg.count_finish(&req.shares)?, true))).await?;
+    let req: CountRevealsRequest = parse_body(&body)?;
+    let n = node.with_agg("count_finish", String::new(), vec![], move |agg| Ok((agg.count_finish(&req.reveals)?, true))).await?;
     reply(&n)
+}
+
+async fn internal_release_commit(State(node): State<AggregatorNode>, headers: HeaderMap, body: Bytes) -> std::result::Result<axum::response::Response, HttpError> {
+    check_token(&headers, &node.inner.token)?;
+    let ch: ReleaseChallenge = parse_body(&body)?;
+    reply(&node.with_agg("release_commit", format!("{}", ch.collector), vec![], move |agg| Ok((agg.release_commit(&ch)?, true))).await?)
+}
+
+async fn internal_release_reveal(State(node): State<AggregatorNode>, headers: HeaderMap, body: Bytes) -> std::result::Result<axum::response::Response, HttpError> {
+    check_token(&headers, &node.inner.token)?;
+    let op: ReleaseOpening = parse_body(&body)?;
+    let sealed = !node.inner.task.collectors.is_empty();
+    let r = node
+        .with_agg("release_reveal", format!("{}", op.collector), vec![], move |agg| {
+            Ok((if sealed { RevealEnvelope::Sealed(agg.sealed_release_reveal(&op)?) } else { RevealEnvelope::Plain(agg.release_reveal(&op)?) }, true))
+        })
+        .await?;
+    reply(&r)
 }
 
 /// A helper releases only what the task's policy for the named collector

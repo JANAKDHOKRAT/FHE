@@ -78,11 +78,11 @@ impl Net {
                 .collect();
             return verdicts;
         }
-        let mut masks: Vec<MaskMessage> = Vec::new();
+        let mut mask_commits: Vec<MaskCommit> = Vec::new();
         let mut early = Vec::new();
         for a in self.aggs.iter_mut() {
             match a.prepare_init(&report) {
-                Ok(m) => masks.push(decode(&encode(&m).unwrap()).unwrap()),
+                Ok(m) => mask_commits.push(decode(&encode(&m).unwrap()).unwrap()),
                 Err(Error::Reject(r)) => early.push(Verdict::Rejected(r)),
                 Err(e) => panic!("prepare_init failed: {e}"),
             }
@@ -91,10 +91,22 @@ impl Net {
             assert_eq!(early.len(), self.aggs.len(), "aggregators must agree on structural rejections");
             return early;
         }
-        let mut verifiers: Vec<VerifierMessage> = Vec::new();
+        let mut masks: Vec<MaskMessage> = Vec::new();
+        for a in self.aggs.iter_mut() {
+            let others: Vec<MaskCommit> = mask_commits.iter().filter(|c| c.aggregator != a.index()).cloned().collect();
+            let m = a.prepare_mask_reveal(&report.report_id, &others).expect("prepare_mask_reveal");
+            masks.push(decode(&encode(&m).unwrap()).unwrap());
+        }
+        let mut commits: Vec<VerifierCommit> = Vec::new();
         for a in self.aggs.iter_mut() {
             let others: Vec<MaskMessage> = masks.iter().filter(|m| m.aggregator != a.index()).cloned().collect();
-            let v = a.prepare_masks(&report.report_id, &others).expect("prepare_masks");
+            let c = a.prepare_masks(&report.report_id, &others).expect("prepare_masks");
+            commits.push(decode(&encode(&c).unwrap()).unwrap());
+        }
+        let mut verifiers: Vec<VerifierMessage> = Vec::new();
+        for a in self.aggs.iter_mut() {
+            let others: Vec<VerifierCommit> = commits.iter().filter(|c| c.aggregator != a.index()).cloned().collect();
+            let v = a.prepare_reveal(&report.report_id, &others).expect("prepare_reveal");
             verifiers.push(decode(&encode(&v).unwrap()).unwrap());
         }
         let mut verdicts = Vec::new();
@@ -122,44 +134,42 @@ impl Net {
         Ok((r.aggregate, r.valid_count))
     }
 
-    /// Runs the count round in silent mode (idempotent per batch).
+    /// Runs the verified count round in silent mode (idempotent per batch).
     pub fn count_round(&mut self) -> Result<()> {
-        if self.cfg.mode == VerificationMode::Silent {
-            let counts: Vec<CountShare> = self
-                .aggs
-                .iter_mut()
-                .map(|a| a.count_share())
-                .collect::<Result<Vec<_>>>()?
-                .into_iter()
-                .map(|c| decode(&encode(&c).unwrap()).unwrap())
-                .collect();
-            let mut seen = None;
-            for a in self.aggs.iter_mut() {
-                let v = a.count_finish(&counts)?;
-                assert!(seen.is_none() || seen == Some(v), "aggregators must agree on the valid count");
-                seen = Some(v);
-            }
+        if self.cfg.mode != VerificationMode::Silent {
+            return Ok(());
+        }
+        fn wire<T: serde::Serialize + serde::de::DeserializeOwned>(v: Vec<T>) -> Vec<T> {
+            v.into_iter().map(|x| decode(&encode(&x).unwrap()).unwrap()).collect()
+        }
+        let shares = wire(self.aggs.iter_mut().map(|a| a.count_share()).collect::<Result<Vec<_>>>()?);
+        let commits = wire(self.aggs.iter_mut().map(|a| a.count_commit(&shares)).collect::<Result<Vec<_>>>()?);
+        let openings = wire(self.aggs.iter_mut().map(|a| a.count_open(&commits)).collect::<Result<Vec<_>>>()?);
+        let reveals = wire(self.aggs.iter_mut().map(|a| a.count_reveal(&openings)).collect::<Result<Vec<_>>>()?);
+        let mut seen = None;
+        for a in self.aggs.iter_mut() {
+            let v = a.count_finish(&reveals)?;
+            assert!(seen.is_none() || seen == Some(v), "aggregators must agree on the valid count");
+            seen = Some(v);
         }
         Ok(())
     }
 
-    /// Release to collector `c` through the sealed path: every aggregator
-    /// seals its share to the collector's key, the collector opens and
-    /// unshards. `key` must be the collector's declared sealing key.
+    /// Verified release to collector `c` through the sealed path: every
+    /// aggregator seals its share and its check partials to the collector's
+    /// key. `key` must be the collector's declared sealing key.
     pub fn collect_sealed_for(&mut self, c: usize, key: &CollectorSealKey) -> Result<BatchResult> {
         self.count_round()?;
-        let sealed: Vec<SealedShare> = self
-            .aggs
-            .iter_mut()
-            .map(|a| a.sealed_share_for(c))
-            .collect::<Result<Vec<_>>>()?
-            .into_iter()
-            .map(|s| decode(&encode(&s).unwrap()).unwrap())
-            .collect();
-        self.collector.unshard_sealed(c, key, &sealed)
+        let sealed: Vec<SealedShare> = self.aggs.iter_mut().map(|a| a.sealed_share_for(c)).collect::<Result<Vec<_>>>()?;
+        let sealed: Vec<SealedShare> = sealed.into_iter().map(|s| decode(&encode(&s).unwrap()).unwrap()).collect();
+        let mut pending = self.collector.release_challenge_sealed(c, key, &sealed)?;
+        let commits = self.aggs.iter_mut().map(|a| a.release_commit(&pending.challenge)).collect::<Result<Vec<_>>>()?;
+        let opening = self.collector.release_open(&mut pending, commits)?;
+        let reveals: Vec<SealedShare> = self.aggs.iter_mut().map(|a| a.sealed_release_reveal(&opening)).collect::<Result<Vec<_>>>()?;
+        self.collector.release_finish_sealed(&pending, key, &reveals)
     }
 
-    /// Release to collector `c` unsealed (library-level tests of policies).
+    /// Verified release to collector `c` unsealed (library-level tests of policies).
     pub fn collect_for(&mut self, c: usize) -> Result<BatchResult> {
         self.count_round()?;
         let shares: Vec<AggregateShare> = self
@@ -170,34 +180,23 @@ impl Net {
             .into_iter()
             .map(|s| decode(&encode(&s).unwrap()).unwrap())
             .collect();
-        self.collector.unshard_for(c, &shares)
+        let mut pending = self.collector.release_challenge(c, shares)?;
+        let commits = self.aggs.iter_mut().map(|a| a.release_commit(&pending.challenge)).collect::<Result<Vec<_>>>()?;
+        let opening = self.collector.release_open(&mut pending, commits)?;
+        let reveals = self.aggs.iter_mut().map(|a| a.release_reveal(&opening)).collect::<Result<Vec<_>>>()?;
+        self.collector.release_finish(&pending, &reveals)
+    }
+
+    /// The verified release steps for shares already released to collector `c`.
+    pub fn finish_release(&mut self, c: usize, shares: Vec<AggregateShare>) -> Result<BatchResult> {
+        let mut pending = self.collector.release_challenge(c, shares)?;
+        let commits = self.aggs.iter_mut().map(|a| a.release_commit(&pending.challenge)).collect::<Result<Vec<_>>>()?;
+        let opening = self.collector.release_open(&mut pending, commits)?;
+        let reveals = self.aggs.iter_mut().map(|a| a.release_reveal(&opening)).collect::<Result<Vec<_>>>()?;
+        self.collector.release_finish(&pending, &reveals)
     }
 
     pub fn collect_full(&mut self) -> Result<BatchResult> {
-        if self.cfg.mode == VerificationMode::Silent {
-            let counts: Vec<CountShare> = self
-                .aggs
-                .iter_mut()
-                .map(|a| a.count_share())
-                .collect::<Result<Vec<_>>>()?
-                .into_iter()
-                .map(|c| decode(&encode(&c).unwrap()).unwrap())
-                .collect();
-            let mut seen = None;
-            for a in self.aggs.iter_mut() {
-                let v = a.count_finish(&counts)?;
-                assert!(seen.is_none() || seen == Some(v), "aggregators must agree on the valid count");
-                seen = Some(v);
-            }
-        }
-        let shares: Vec<AggregateShare> = self
-            .aggs
-            .iter_mut()
-            .map(|a| a.aggregate_share())
-            .collect::<Result<Vec<_>>>()?
-            .into_iter()
-            .map(|s| decode(&encode(&s).unwrap()).unwrap())
-            .collect();
-        self.collector.unshard(&shares)
+        self.collect_for(0)
     }
 }

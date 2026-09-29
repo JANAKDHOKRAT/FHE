@@ -34,16 +34,7 @@ fn released_batch(seed: u8) -> Batch {
     let mut aggs: Vec<Aggregator> = shares.iter().enumerate().map(|(i, s)| Aggregator::new(task.clone(), &material, i, s, None).unwrap()).collect();
     let client = Client::new(task.clone(), &material.context, &material.public_key).unwrap();
     let report = client.shard(&Measurement::Count(true)).unwrap();
-    let masks: Vec<MaskMessage> = aggs.iter_mut().map(|a| a.prepare_init(&report).unwrap()).collect();
-    let mut verifiers = Vec::new();
-    for a in aggs.iter_mut() {
-        let others: Vec<MaskMessage> = masks.iter().filter(|m| m.aggregator != a.index()).cloned().collect();
-        verifiers.push(a.prepare_masks(&report.report_id, &others).unwrap());
-    }
-    for a in aggs.iter_mut() {
-        let others: Vec<VerifierMessage> = verifiers.iter().filter(|v| v.aggregator != a.index()).cloned().collect();
-        assert_eq!(a.prepare_finish(&report.report_id, &others).unwrap(), Verdict::Accepted);
-    }
+    assert!(fhe_prio3::local::verdict(&mut aggs, &report).unwrap().iter().all(|v| *v == Verdict::Accepted));
     let released = aggs.iter_mut().map(|a| a.aggregate_share().unwrap()).collect();
     Batch { task, material, shares, aggs, released }
 }
@@ -115,7 +106,8 @@ fn collector_node_refuses_waiting_shares_from_before_but_keeps_a_stored_result()
 
     // the same batch already collected: the stored result stays readable
     let collector = Collector::new(b.task.clone(), &b.material).unwrap();
-    let result = collector.unshard(&b.released).unwrap();
+    let mut b = b;
+    let result = fhe_prio3::local::finish_release(&mut b.aggs, &collector, 0, b.released.clone()).unwrap();
     assert_eq!(result.aggregate, AggregateResult::Count(1));
     let mut store = Store::open(&db).unwrap();
     store.put("share:1", &encode(&b.released[1]).unwrap()).unwrap();

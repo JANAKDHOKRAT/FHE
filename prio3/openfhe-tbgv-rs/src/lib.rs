@@ -435,6 +435,46 @@ impl Context {
         }
         Ok(out[..n].iter().map(|&v| self.uncenter(v)).collect())
     }
+
+    /// The value fusion reads before reducing it mod `t`: the largest
+    /// centered coefficient of the fused partials after mod-reducing to the
+    /// first tower, and that tower's modulus `q0`. An honest fusion lies far
+    /// below `q0 / 2`; a larger value means the result wrapped modulo `q0`
+    /// (see `fhe_prio3::vdec`).
+    pub fn fuse_magnitude(&self, partials: &[&PartialDecryption]) -> Result<(u64, u64)> {
+        let ptrs: Vec<ffi::TbgvCiphertext> = partials.iter().map(|p| p.ct.ptr).collect();
+        let (mut mx, mut q0) = (0u64, 0u64);
+        if unsafe { ffi::tbgv_fuse_magnitude(self.raw(), ptrs.as_ptr(), ptrs.len(), &mut mx, &mut q0) } == 0 {
+            return Err(last_error());
+        }
+        Ok((mx, q0))
+    }
+
+    /// `X^k * ct` for `k < 2N`: slot `s` is multiplied by `w_s^k`, where
+    /// `w` is [`Context::monomial_slots`]. Exact, no noise growth, no level.
+    pub fn mult_monomial(&self, ct: &Ciphertext, k: u32) -> Result<Ciphertext> {
+        self.wrap_ct(unsafe { ffi::tbgv_ciphertext_mult_monomial(self.raw(), ct.ptr, k) })
+    }
+
+    /// `(b u + t e0, a u + t e1)` under `pk`, on `reference`'s towers and with
+    /// its metadata: an encryption of zero whose randomness the caller
+    /// chose and can reveal. Coefficient vectors have the ring dimension.
+    pub fn zero_encryption(&self, pk: &PublicKey, reference: &Ciphertext, u: &[i8], e0: &[i8], e1: &[i8]) -> Result<Ciphertext> {
+        let n = self.ring_dim() as usize;
+        if u.len() != n || e0.len() != n || e1.len() != n {
+            return Err(Error("coefficient vectors must have the ring dimension".into()));
+        }
+        self.wrap_ct(unsafe { ffi::tbgv_zero_encryption(self.raw(), pk.ptr, reference.ptr, u.as_ptr(), e0.as_ptr(), e1.as_ptr(), n) })
+    }
+
+    /// Slot values of the plaintext polynomial `X`, all `N` slots, in `[0, t)`.
+    pub fn monomial_slots(&self) -> Result<Vec<u64>> {
+        let mut out = vec![0u64; self.ring_dim() as usize];
+        if unsafe { ffi::tbgv_monomial_slots(self.raw(), out.as_mut_ptr(), out.len()) } == 0 {
+            return Err(last_error());
+        }
+        Ok(out)
+    }
 }
 
 /// First party of the n-of-n key generation. Returns (public key so far, share).

@@ -77,6 +77,11 @@ unsafe extern "C" {
     pub fn tbgv_rotkeys_single(ctx: TbgvContext, index: i32, key: TbgvEvalKey) -> TbgvRotKeys;
     pub fn tbgv_rotkeys_get(ctx: TbgvContext, keys: TbgvRotKeys, index: i32) -> TbgvEvalKey;
 
+    pub fn tbgv_ciphertext_mult_monomial(ctx: TbgvContext, ct: TbgvCiphertext, k: u32) -> TbgvCiphertext;
+    pub fn tbgv_zero_encryption(ctx: TbgvContext, pk: TbgvPublicKey, reference: TbgvCiphertext, u: *const i8, e0: *const i8, e1: *const i8, n: usize) -> TbgvCiphertext;
+    pub fn tbgv_monomial_slots(ctx: TbgvContext, out: *mut u64, out_len: usize) -> c_int;
+    pub fn tbgv_fuse_magnitude(ctx: TbgvContext, partials: *const TbgvCiphertext, n: usize, max_abs: *mut u64, q0: *mut u64) -> c_int;
+
     pub fn tbgv_plaintext_new(ctx: TbgvContext, values: *const i64, n: usize) -> TbgvPlaintext;
     pub fn tbgv_plaintext_free(pt: TbgvPlaintext);
     pub fn tbgv_encrypt(ctx: TbgvContext, pk: TbgvPublicKey, pt: TbgvPlaintext) -> TbgvCiphertext;

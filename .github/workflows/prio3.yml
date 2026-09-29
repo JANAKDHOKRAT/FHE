@@ -75,6 +75,8 @@ jobs:
           - { name: protocol-policy, dir: prio3/fhe-prio3, args: "--test policy" }
           - { name: protocol-regression, dir: prio3/fhe-prio3, args: "--test regression" }
           - { name: protocol-upgrade, dir: prio3/fhe-prio3, args: "--test upgrade" }
+          - { name: protocol-vdec, dir: prio3/fhe-prio3, args: "--test vdec" }
+          - { name: protocol-malicious-aggregator, dir: prio3/fhe-prio3, args: "--test malicious_aggregator" }
           - { name: node, dir: prio3/fhe-prio3-node, args: "" }
     env:
       LD_LIBRARY_PATH: /home/runner/openfhe-install/lib

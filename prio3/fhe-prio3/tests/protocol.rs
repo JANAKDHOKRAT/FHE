@@ -253,14 +253,18 @@ fn collector_needs_every_aggregator_and_agreement() {
     let mut net = Net::new(cfg(14, MeasurementType::Count, 2));
     net.expect_accept(&net.client.shard(&Measurement::Count(true)).unwrap());
     let shares: Vec<AggregateShare> = net.aggs.iter_mut().map(|a| a.aggregate_share().unwrap()).collect();
-    assert!(net.collector.unshard(&shares[..1]).is_err());
+    assert!(net.collector.release_challenge(0, shares[..1].to_vec()).is_err());
     let mut tampered = shares.clone();
     tampered[1].report_count += 1;
-    assert!(net.collector.unshard(&tampered).is_err());
+    assert!(net.collector.release_challenge(0, tampered).is_err());
     let mut dup = shares.clone();
     dup[1] = dup[0].clone();
-    assert!(net.collector.unshard(&dup).is_err());
-    let r = net.collector.unshard(&shares).unwrap();
+    assert!(net.collector.release_challenge(0, dup).is_err());
+    // an aggregator claiming other accumulators than the others
+    let mut other = shares.clone();
+    other[1].accumulators[0] = other[1].accumulators[0].iter().rev().copied().collect();
+    assert!(net.collector.release_challenge(0, other).err().expect("refused").to_string().contains("other accumulators"));
+    let r = net.finish_release(0, shares).unwrap();
     assert_eq!((r.aggregate, r.report_count, r.valid_count), (AggregateResult::Count(1), 1, 1));
 }
 

@@ -1,5 +1,10 @@
-//! Collector node: receives one aggregate share per aggregator, unshards
-//! when all have arrived, and serves the result. Holds no key material.
+//! Collector node: receives one aggregate share per aggregator and, once
+//! all have arrived, runs the verified release (`fhe_prio3::vdec`): it
+//! answers the last share with blinded checks, answers the aggregators'
+//! commitments with the opening, and accepts the batch only if every
+//! aggregator's partial decryptions pass. Serves the result. Holds no key
+//! material. The release in progress is persisted, so a restarted
+//! collector continues it.
 
 use crate::store::Store;
 use crate::wire::*;
@@ -34,6 +39,7 @@ struct Inner {
     collector: Mutex<Collector>,
     store: Mutex<Store>,
     shares: Mutex<BTreeMap<usize, AggregateShare>>,
+    pending: Mutex<Option<PendingRelease>>,
     result: Mutex<Option<BatchResult>>,
     token: String,
 }
@@ -69,6 +75,10 @@ impl CollectorNode {
             Some(b) => Some(decode::<BatchResult>(&b)?),
             None => None,
         };
+        let pending = match store.get("pending")? {
+            Some(b) => Some(decode::<PendingRelease>(&b)?),
+            None => None,
+        };
         // Shares still waiting for the others will be unsharded: refuse to
         // start on shares stored before the packed format. A batch whose
         // result is already stored stays readable.
@@ -85,6 +95,7 @@ impl CollectorNode {
                 collector: Mutex::new(collector),
                 store: Mutex::new(store),
                 shares: Mutex::new(shares),
+                pending: Mutex::new(pending),
                 result: Mutex::new(result),
                 token: cfg.token,
             }),
@@ -94,8 +105,10 @@ impl CollectorNode {
     pub fn router(&self) -> Router {
         Router::new()
             .route("/v1/aggregate-share", post(receive_share))
+            .route("/v1/release-commits", post(release_commits))
+            .route("/v1/release-reveals", post(release_reveals))
             .route("/v1/result", get(result))
-            .layer(DefaultBodyLimit::max(256 << 20))
+            .layer(DefaultBodyLimit::max(512 << 20))
             .with_state(self.clone())
     }
 
@@ -115,12 +128,11 @@ impl CollectorNode {
     }
 }
 
-/// Stores a share and, once every aggregator's share is present, unshards.
-/// Without policies the body is a plain `ShareEnvelope` and the result is
-/// returned to the leader; with policies the body is a `SealedEnvelope`
-/// that only this collector can open, the share must be released to this
-/// collector's id, and the result is served to this collector's operator
-/// only.
+/// Stores a share and, once every aggregator's share is present, answers
+/// with the checks of the verified release. Without policies the body is a
+/// plain `ShareEnvelope`; with policies it is a `SealedEnvelope` that only
+/// this collector can open, and the share must be released to this
+/// collector's id.
 async fn receive_share(State(node): State<CollectorNode>, headers: HeaderMap, body: Bytes) -> std::result::Result<axum::response::Response, HttpError> {
     check_token(&headers, &node.inner.token)?;
     let inner = node.inner.clone();
@@ -145,17 +157,78 @@ async fn receive_share(State(node): State<CollectorNode>, headers: HeaderMap, bo
         }
         let mut shares = inner.shares.lock().unwrap();
         let mut store = inner.store.lock().unwrap();
+        let mut pending = inner.pending.lock().unwrap();
+        if let Some(p) = pending.as_ref() {
+            // a retried delivery of the same batch: the same checks again
+            if p.shares.iter().any(|s| s.aggregator == share.aggregator && encode(s).ok() == encode(&share).ok()) {
+                return Ok(ShareReceipt { complete: true, challenge: Some(p.challenge.clone()) });
+            }
+            return Err(HttpError(StatusCode::CONFLICT, "a release is already in progress with other shares".into()));
+        }
         store.put(&format!("share:{}", share.aggregator), &encode(&share)?)?;
         shares.insert(share.aggregator, share);
         if shares.len() < n {
-            return Ok(ShareReceipt { complete: false, result: None });
+            return Ok(ShareReceipt { complete: false, challenge: None });
         }
         let all: Vec<AggregateShare> = shares.values().cloned().collect();
         let collector = inner.collector.lock().unwrap();
-        let r = collector.unshard_for(inner.collector_id as usize, &all)?;
+        let p = collector.release_challenge(inner.collector_id as usize, all)?;
+        store.put("pending", &encode(&p)?)?;
+        let challenge = p.challenge.clone();
+        *pending = Some(p);
+        Ok(ShareReceipt { complete: true, challenge: Some(challenge) })
+    })
+    .await
+    .map_err(|e| HttpError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+    reply(&out)
+}
+
+/// Every aggregator's commitments in: returns the opening.
+async fn release_commits(State(node): State<CollectorNode>, headers: HeaderMap, body: Bytes) -> std::result::Result<axum::response::Response, HttpError> {
+    check_token(&headers, &node.inner.token)?;
+    let req: ReleaseCommitsRequest = parse_body(&body)?;
+    let inner = node.inner.clone();
+    let out = tokio::task::spawn_blocking(move || -> std::result::Result<ReleaseOpening, HttpError> {
+        let mut pending = inner.pending.lock().unwrap();
+        let p = pending.as_mut().ok_or_else(|| HttpError(StatusCode::CONFLICT, "no release in progress".into()))?;
+        let collector = inner.collector.lock().unwrap();
+        let opening = collector.release_open(p, req.commits)?;
+        inner.store.lock().unwrap().put("pending", &encode(&*p)?)?;
+        Ok(opening)
+    })
+    .await
+    .map_err(|e| HttpError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+    reply(&out)
+}
+
+/// Every aggregator's reveal in: verifies, stores and returns the result
+/// (the result is returned only on tasks without policies; with policies it
+/// is read from the collector by its own operator).
+async fn release_reveals(State(node): State<CollectorNode>, headers: HeaderMap, body: Bytes) -> std::result::Result<axum::response::Response, HttpError> {
+    check_token(&headers, &node.inner.token)?;
+    let req: ReleaseRevealsRequest = parse_body(&body)?;
+    let inner = node.inner.clone();
+    let out = tokio::task::spawn_blocking(move || -> std::result::Result<FinishReceipt, HttpError> {
+        let pending = inner.pending.lock().unwrap();
+        let p = pending.as_ref().ok_or_else(|| HttpError(StatusCode::CONFLICT, "no release in progress".into()))?;
+        let mut reveals = Vec::with_capacity(req.reveals.len());
+        for r in req.reveals {
+            reveals.push(match (r, inner.seal_key.as_ref()) {
+                (RevealEnvelope::Plain(r), None) => r,
+                (RevealEnvelope::Sealed(s), Some(key)) => {
+                    if s.collector != inner.collector_id {
+                        return Err(HttpError(StatusCode::BAD_REQUEST, "reveal sealed for another collector".into()));
+                    }
+                    fhe_prio3::seal::open_reveal(&s, key)?
+                }
+                _ => return Err(HttpError(StatusCode::BAD_REQUEST, "reveal sealed where it should be plain, or the reverse".into())),
+            });
+        }
+        let r = inner.collector.lock().unwrap().release_finish(p, &reveals)?;
+        let mut store = inner.store.lock().unwrap();
         store.put("result", &encode(&r)?)?;
         *inner.result.lock().unwrap() = Some(r.clone());
-        Ok(ShareReceipt { complete: true, result: if inner.task.collectors.is_empty() { Some(r) } else { None } })
+        Ok(FinishReceipt { result: if inner.task.collectors.is_empty() { Some(r) } else { None } })
     })
     .await
     .map_err(|e| HttpError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;

@@ -44,7 +44,8 @@ change, one hour per target nightly.
 ## Modes and authentication
 
 ```rust
-// Verdict mode (default): two rounds per report, aggregators learn accept/reject.
+// Verdict mode (default): four message rounds per report (mask and partial,
+// each committed before it is revealed); aggregators learn accept/reject.
 let cfg = TaskConfig::new(task_id, MeasurementType::Sum { max_measurement: 100 }, 2);
 // Silent mode: no per-report messages or decryption; invalid reports add zero.
 let cfg = TaskConfig::new_silent(task_id, MeasurementType::Sum { max_measurement: 100 }, 2);
@@ -90,12 +91,27 @@ let report = client.shard(&Measurement::Sum(51))?;          // same bytes to eve
 
 let mut a0 = Aggregator::new(cfg.clone(), &material, 0, &shares[0], None)?;
 let mut a1 = Aggregator::new(cfg.clone(), &material, 1, &shares[1], None)?;
-let m0 = a0.prepare_init(&report)?;  let m1 = a1.prepare_init(&report)?;   // broadcast masks
-let v0 = a0.prepare_masks(&report.report_id, &[m1])?;
-let v1 = a1.prepare_masks(&report.report_id, &[m0])?;                       // broadcast partials
-assert_eq!(a0.prepare_finish(&report.report_id, &[v1])?, Verdict::Accepted);
-assert_eq!(a1.prepare_finish(&report.report_id, &[v0])?, Verdict::Accepted);
+let id = report.report_id;
+let (k0, k1) = (a0.prepare_init(&report)?, a1.prepare_init(&report)?);      // mask commitments
+let (m0, m1) = (a0.prepare_mask_reveal(&id, &[k1])?, a1.prepare_mask_reveal(&id, &[k0])?); // masks
+let (c0, c1) = (a0.prepare_masks(&id, &[m1])?, a1.prepare_masks(&id, &[m0])?); // partial commitments
+let (v0, v1) = (a0.prepare_reveal(&id, &[c1])?, a1.prepare_reveal(&id, &[c0])?); // partials
+assert_eq!(a0.prepare_finish(&id, &[v1])?, Verdict::Accepted);
+assert_eq!(a1.prepare_finish(&id, &[v0])?, Verdict::Accepted);
+// (`fhe_prio3::local::verdict(&mut aggs, &report)` runs the same rounds.)
 
+// Verified release: the collector checks every partial decryption with
+// blinded known-answer checks before it decodes anything (spec §4.4).
 let collector = Collector::new(cfg, &material)?;
-let (aggregate, count) = collector.unshard(&[a0.aggregate_share()?, a1.aggregate_share()?])?;
+let shares = vec![a0.aggregate_share()?, a1.aggregate_share()?];
+let mut pending = collector.release_challenge(0, shares)?;
+let commits = vec![a0.release_commit(&pending.challenge)?, a1.release_commit(&pending.challenge)?];
+let opening = collector.release_open(&mut pending, commits)?;
+let reveals = vec![a0.release_reveal(&opening)?, a1.release_reveal(&opening)?];
+let result = collector.release_finish(&pending, &reveals)?;
 ```
+
+Security: the claims, assumptions and proof sketches are in
+[SECURITY.md](SECURITY.md). The internal adversarial review, its findings,
+and the package for an external audit are in [AUDIT.md](AUDIT.md). Neither
+is an external audit.

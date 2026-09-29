@@ -41,12 +41,36 @@ impl Report {
     }
 }
 
+/// Verdict mode: aggregator `aggregator`'s commitment to its mask for one
+/// report, sent before any mask is revealed. Without it, an aggregator that
+/// saw the others' masks first could send `Enc(r) − Σ others` and fix the
+/// combined mask to `r`. That would force invalid reports through (`r = 0`)
+/// and reveal each check value `E_j` itself instead of one bit.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct MaskCommit {
+    pub report_id: ReportId,
+    pub aggregator: usize,
+    pub digest: [u8; 32],
+}
+
 /// Aggregator `aggregator`'s fresh encrypted mask for one report.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct MaskMessage {
     pub report_id: ReportId,
     pub aggregator: usize,
     pub mask: Vec<u8>,
+}
+
+/// Verdict mode: aggregator `aggregator`'s commitment to its partial
+/// decryption of the masked check value, sent before any partial is
+/// revealed, so that no aggregator can choose its partial after seeing the
+/// others' (which would let it force the fused verdict to zero, i.e.
+/// accept an invalid report).
+#[derive(Clone, Serialize, Deserialize)]
+pub struct VerifierCommit {
+    pub report_id: ReportId,
+    pub aggregator: usize,
+    pub digest: [u8; 32],
 }
 
 /// Aggregator `aggregator`'s partial decryption of the masked check value.
@@ -67,6 +91,38 @@ pub struct CountShare {
     pub batch_digest: [u8; 32],
     pub report_count: u64,
     pub partial: Vec<u8>,
+    /// This aggregator's blinded checks of the count (`vdec`), which every
+    /// other aggregator partially decrypts in the rounds below.
+    pub checks: Vec<Vec<u8>>,
+}
+
+/// Silent mode, count round 2: an aggregator's commitments to its partial
+/// decryptions of every other aggregator's count checks, by verifier.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct CountCommit {
+    pub task_id: [u8; 32],
+    pub aggregator: usize,
+    pub batch_digest: [u8; 32],
+    pub digests: Vec<(usize, Vec<[u8; 32]>)>,
+}
+
+/// Silent mode, count round 3: an aggregator reveals what its checks were.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct CountOpening {
+    pub task_id: [u8; 32],
+    pub aggregator: usize,
+    pub batch_digest: [u8; 32],
+    pub opening: crate::vdec::Opening,
+}
+
+/// Silent mode, count round 4: an aggregator's partial decryptions of every
+/// other aggregator's count checks, after it has verified those checks.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct CountReveal {
+    pub task_id: [u8; 32],
+    pub aggregator: usize,
+    pub batch_digest: [u8; 32],
+    pub partials: Vec<(usize, Vec<Vec<u8>>)>,
 }
 
 /// Aggregator's contribution to the collector: partial decryptions of the
@@ -91,6 +147,64 @@ pub struct AggregateShare {
     /// Post-validation moments: one partial decryption per accumulator of
     /// the collector's pairs, in `Layout::moment_terms` order.
     pub moment_partials: Vec<Vec<u8>>,
+    /// The ciphertexts decrypted above, in the order chunks, valid count,
+    /// moments: every aggregator computed the same ones, and the collector
+    /// checks the partials against them (`vdec`).
+    pub accumulators: Vec<Vec<u8>>,
+}
+
+/// Collector -> aggregators: blinded checks of the released accumulators.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ReleaseChallenge {
+    pub task_id: [u8; 32],
+    pub collector: u32,
+    pub batch_digest: [u8; 32],
+    pub checks: Vec<Vec<u8>>,
+}
+
+impl ReleaseChallenge {
+    pub fn digest(&self) -> [u8; 32] {
+        let mut h = Sha256::new();
+        h.update(b"fhe-prio3/1 release challenge");
+        h.update(self.task_id);
+        h.update(self.collector.to_le_bytes());
+        h.update(self.batch_digest);
+        h.update((self.checks.len() as u64).to_le_bytes());
+        for c in &self.checks {
+            h.update(Sha256::digest(c));
+        }
+        h.finalize().into()
+    }
+}
+
+/// Aggregator -> collector: commitments to its partial decryptions of the checks.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ReleaseCommit {
+    pub task_id: [u8; 32],
+    pub collector: u32,
+    pub aggregator: usize,
+    pub challenge: [u8; 32],
+    pub digests: Vec<[u8; 32]>,
+}
+
+/// Collector -> aggregators, once every commitment is in: what the checks were.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ReleaseOpening {
+    pub task_id: [u8; 32],
+    pub collector: u32,
+    pub challenge: [u8; 32],
+    pub opening: crate::vdec::Opening,
+}
+
+/// Aggregator -> collector: its partial decryptions of the checks, released
+/// after it rebuilt the checks from its own accumulators and the opening.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ReleaseReveal {
+    pub task_id: [u8; 32],
+    pub collector: u32,
+    pub aggregator: usize,
+    pub challenge: [u8; 32],
+    pub partials: Vec<Vec<u8>>,
 }
 
 /// Output of the key ceremony that every party may hold.

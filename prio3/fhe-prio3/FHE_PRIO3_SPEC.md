@@ -148,9 +148,17 @@ After this, slot `j*block` of `S` holds
 
     E_j = sum_i r_{j,i} x_i(x_i - 1) + sum_l r_{j,m+l} L_l(x).
 
-**Mask (round 1 message).** Each aggregator `a` samples `rho_{a,j}` uniform
-in `[0,p)` for each `j`, encrypts the vector that has `rho_{a,j}` at slot
-`j*block` and zero elsewhere under the joint public key, and broadcasts it.
+**Mask (round 1 messages).** Each aggregator `a` samples `rho_{a,j}` uniform
+in `[0,p)` for each `j` and encrypts the vector that has `rho_{a,j}` at slot
+`j*block` and zero elsewhere under the joint public key. It first broadcasts
+only a commitment to that ciphertext (`MaskCommit`, `prepare_init`). With
+every other commitment in hand, it broadcasts the ciphertext
+(`prepare_mask_reveal`), and every receiver checks it against its
+commitment. Without the commitment, an aggregator that saw the honest masks
+first could send `Enc(r) − Σ honest masks` and fix the combined mask to
+`r`. With `r = 0` that forces acceptance. With a known `r` it reveals the
+check value `E_j` itself (§4.3 item 1). This was found in the internal
+review (`AUDIT.md` F-2b).
 
 **Masked check (round 2 message).** With all `n` masks `M_a`:
 
@@ -158,7 +166,14 @@ in `[0,p)` for each `j`, encrypts the vector that has `rho_{a,j}` at slot
     u = S ⊙ P                    // depth 3
 
 Each aggregator computes `u` itself, produces its partial decryption of `u`
-(party 0 as "lead"), and broadcasts it.
+(party 0 as "lead"), and broadcasts a commitment to it (`VerifierCommit`,
+`vdec::commit`: SHA-256 over the length-prefixed domain `"fhe-prio3/1 vdec"`,
+the length-prefixed context `"verdict" ‖ task_id ‖ report_id ‖ index`, and
+SHA-256 of the encoded partial). Only with every other commitment in hand does it reveal
+the partial (`prepare_reveal`), and a revealed partial that does not match
+its commitment is refused (`prepare_finish`). Without this, an aggregator
+that received the others' partials first could choose its own so that an
+invalid report's result slots fuse to zero (§4.3 item 3).
 
 **Decide.** Fuse the `n` partial decryptions of `u`; accept iff slot
 `j*block` is zero for every `j`. Accepted chunks are added into the running
@@ -168,10 +183,28 @@ per-chunk sums.
 
 When the batch closes, an aggregator that has accepted at least
 `min_batch_size` reports partially decrypts each per-chunk sum and sends
-`AggregateShare{batch_digest, report_count, partials}` to the collector,
-where `batch_digest` is a hash of the sorted accepted report ids. The
-collector requires one share from every aggregator, identical digests and
-counts, fuses per chunk, and decodes with the type's `decode_aggregate`.
+`AggregateShare{batch_digest, report_count, partials, accumulators}` to the
+collector, where `batch_digest` is a hash of the sorted accepted report ids
+and `accumulators` are the ciphertexts the partials decrypt. The collector
+requires one share from every aggregator, with identical digests, counts
+and accumulators (bytes). It then verifies the decryption before using it
+(verifiable decryption, §4.4):
+
+1. `release_challenge`: blinded checks `C_ℓ = Σ_a X^{k_{ℓ,a}} c_a + Z_ℓ` of
+   the accumulators, where `Z_ℓ` is an encryption of zero with randomness
+   the collector keeps.
+2. `release_commit`: each aggregator partially decrypts the checks and
+   returns only commitments. It answers one challenge per (batch,
+   collector), ever.
+3. `release_open`: the collector reveals `k`, `u`, `e_0`, `e_1`.
+4. `release_reveal`: each aggregator rebuilds the checks from its own
+   accumulators and reveals its partials only if they are exactly what it
+   decrypted.
+5. `release_finish`: the collector checks the reveals against the
+   commitments, fuses (refusing any fusion that reaches `q_0/4`), requires
+   `fused(C_ℓ) = Σ_a w^{k_{ℓ,a}} ⊙ fused(c_a)` in every slot, and only then
+   decodes with the type's `decode_aggregate`.
+
 The collector holds no key material.
 
 ### 3.6 Silent mode
@@ -208,12 +241,17 @@ and therefore no selector and no mask.
 `valid = prod_j (1 - E_j^(p-1))` is 1 iff every `E_j` is 0, so an invalid
 report adds exactly zero to every slot, and `count` is an encryption of the
 number of valid reports. At batch close the aggregators first exchange
-partial decryptions of `count` (`count_share` / `count_finish`), which
-reveals only that number, and release the sums only if it reaches
-`min_batch_size`. So the minimum batch applies to *valid* reports, as in
-Prio3, even though nobody knows which reports were valid. The collector
-receives the counter's partial decryptions too and verifies the count
-itself.
+partial decryptions of `count`, which reveals only that number, and
+release the sums only if it reaches `min_batch_size`. So the minimum batch
+applies to *valid* reports, as in Prio3, even though nobody knows which
+reports were valid. Because that number gates release, every aggregator
+verifies it with its own blinded checks before trusting it (§4.4), in five
+steps: `count_share` (partial plus the aggregator's checks), `count_commit`
+(commitments to its partials of everyone else's checks), `count_open`,
+`count_reveal` (only for checks it rebuilt itself) and `count_finish`
+(verify, then record the count). The collector receives the counter's
+partial decryption as one of the verified accumulators and checks the
+count again.
 
 *What changes.* Nothing about an individual report is ever revealed, not
 even to the aggregators, so the malleability oracle of Section 4.3 item 1
@@ -333,11 +371,15 @@ key secrecy).* No subset of fewer than `n` shares decrypts anything; the
 test `two_party_arithmetic_and_threshold_decryption` demonstrates a single
 share yields garbage. An honest aggregator only ever partially decrypts (a)
 `u`, which it computed itself from the report bytes, the deterministic
-challenge and the received masks, and (b) the batch sums it computed
-itself. A malicious aggregator can substitute any ciphertext for its mask
-`M_b`, but the revealed value is `E_j (rho_{honest,j} + y)` for whatever `y`
-that ciphertext holds: zero when `E_j = 0`, uniform on `F_p` otherwise,
-because the honest mask is uniform and independent. So the verdict round
+challenge and the received masks; (b) the batch sums it computed itself;
+and (c) verification checks, whose partials it reveals only after
+rebuilding each check from its own sums and the verifier's opening (§4.4).
+A malicious aggregator can substitute any ciphertext for its mask `M_b`,
+but it must commit to it before any honest mask is revealed. So the
+revealed value is `E_j (rho_{honest,j} + y)` for a `y` fixed independently
+of `rho_{honest,j}`: zero when `E_j = 0`, uniform on `F_p` otherwise.
+(Without the mask commitment, `y = −rho_{honest,j} + r` was possible; see
+§3.4.) So the verdict round
 leaks at most the one bit "valid or not" per report even against a
 malicious aggregator, and the honest aggregator never decrypts a ciphertext
 it did not compute. The selector `Sel` makes every slot of `u` other than
@@ -383,9 +425,16 @@ depend on honest inputs) are never decrypted.
    the number of queries per key. In silent mode nothing per report is
    decrypted; the malformed contribution corrupts the batch sum, which the
    consistency check detects and refuses.
-3. **Robustness against a malicious aggregator** (dropping reports, sending
-   a wrong partial decryption to force rejection or a garbage aggregate) is
-   not provided. Prio3 does not provide it either.
+3. **Robustness against a malicious aggregator.** A wrong partial
+   decryption is now *detected* wherever a decryption is consumed (§4.4).
+   The internal review found that one of these cases was a privacy break,
+   not only a correctness problem. In silent mode, a shifted count partial
+   made a batch with one valid report read as `min_batch_size`, so the
+   honest aggregators would have released that report
+   (`tests/malicious_aggregator.rs`). What remains, and is inherent to an
+   n-of-n design (Prio3 has it too): an aggregator can drop reports, make
+   valid reports fail, or refuse to answer. That is denial of service, and a
+   failed check does not say which aggregator cheated.
 4. **Batch privacy** relies on `min_batch_size` and on the deployment's
    Sybil resistance, exactly as in DAP. Authentication with quotas is the
    Sybil-resistance hook; it is only as good as the enrolment process.
@@ -395,6 +444,34 @@ depend on honest inputs) are never decrypted.
    CPU in verdict mode and about 16 s in silent mode; the quota is the
    rate limit per identity, and transport-level limits remain the
    deployment's job.
+6. **Well-formedness of key contributions** is not proven (no
+   zero-knowledge proof of short noise). The joint key check catches keys
+   that decrypt wrongly. It does not catch noise that is too large for the
+   flooding yet still decrypts correctly. Privacy against an aggregator
+   that is malicious *during key generation* therefore rests on an
+   assumption (`SECURITY.md` A3, §6.2).
+
+### 4.4 Verifiable decryption (`vdec.rs`)
+
+A verifier holds ciphertexts `c_a` and needs everyone's partial
+decryptions of them. It sends `κ = ⌈80 / log2(2N)⌉` blinded checks
+`C_ℓ = Σ_a X^{k_{ℓ,a}} c_a + Z_ℓ` (5 for `N = 65536`), with `k` uniform in
+`[0, 2N)` and `Z_ℓ` a public-key encryption of zero whose randomness it
+keeps. Multiplying by `X^k` multiplies slot `s` by `w_s^k`, where `w_s` is a
+primitive `2N`-th root of unity mod `p`. The aggregators commit to their
+partials of the checks, the verifier opens `k` and the randomness, the
+aggregators rebuild the checks and reveal only if they match, and the
+verifier requires `fused(C_ℓ)[s] = Σ_a w_s^{k_{ℓ,a}} fused(c_a)[s]` in every slot
+`s`, with no fusion reaching `q_0/4`.
+
+A shift that changes some slot of some `c_a` passes one check with
+probability at most `1/(2N)`, because it must be fixed before the hidden
+`k` is revealed. All `κ` checks pass together with probability at most
+`2^-80`. A shift large enough to make the fusion wrap is refused by the
+magnitude bound. Checks decrypt only linear combinations of values the
+verifier is entitled to anyway. The argument, its assumptions and its
+proof status are in `SECURITY.md` §4. The internal review and the external
+audit package are in `AUDIT.md`.
 
 ## 5. Measured performance
 

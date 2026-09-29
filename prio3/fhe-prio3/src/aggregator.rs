@@ -11,9 +11,14 @@
 //! decisions is deterministic, so honest aggregators agree.
 //!
 //! Verdict mode, per report:
-//!   1. `prepare_init`   — compute the check ciphertext `S`, broadcast a mask;
-//!   2. `prepare_masks`  — `u = S * mask`, broadcast a partial decryption;
-//!   3. `prepare_finish` — fuse and accept or reject.
+//!   1. `prepare_init`        — compute the check ciphertext `S`, commit to a mask;
+//!   2. `prepare_mask_reveal` — with every mask commitment in, reveal the mask;
+//!   3. `prepare_masks`       — `u = S * masks`, commit to a partial decryption;
+//!   4. `prepare_reveal`      — with every commitment in, reveal the partial;
+//!   5. `prepare_finish`      — fuse and accept or reject.
+//! Each "commit, then reveal" stops a rushing aggregator from choosing its
+//! value after seeing the others' (cancelling the honest mask, or forcing
+//! the fused check to zero).
 //! Silent mode, per report: `process_silent` computes the validity bit
 //! homomorphically and adds `x * valid` to the sums. No messages, no
 //! decryption.
@@ -24,7 +29,7 @@
 //! it computed itself from (a) the report bytes, (b) the deterministic
 //! challenge, and (c) in verdict mode the received masks, whose content
 //! cannot affect what the decryption reveals as long as this aggregator's own
-//! mask is uniform.
+//! mask is uniform and the others were committed before it was revealed.
 
 use crate::auth::{self, ClientRegistry};
 use crate::config::{AuthPolicy, TaskConfig, VerificationMode};
@@ -32,7 +37,11 @@ use crate::error::{Error, RejectReason, Result};
 use crate::field::Field;
 use crate::keys;
 use crate::layout::Layout;
-use crate::messages::{AggregateShare, CountShare, MaskMessage, PublicMaterial, Report, ReportId, VerifierMessage, batch_digest};
+use crate::messages::{
+    AggregateShare, CountCommit, CountOpening, CountReveal, CountShare, MaskCommit, MaskMessage, PublicMaterial, ReleaseChallenge, ReleaseCommit, ReleaseOpening,
+    ReleaseReveal, Report, ReportId, VerifierCommit, VerifierMessage, batch_digest,
+};
+use crate::vdec;
 use crate::packed::{check_stored, Codec, Expect, WireError};
 use crate::verify::{Challenge, Circuit};
 use openfhe_tbgv_rs::{Ciphertext, CiphertextMeta, Context, PartialDecryption, PublicKey, SecretShare};
@@ -72,14 +81,43 @@ pub struct AggregatorState {
     pub released_count_share: Option<CountShare>,
     /// The aggregate shares released for this batch, by collector (same rule).
     pub released_aggregate_shares: BTreeMap<u32, AggregateShare>,
+    /// Verifiable-decryption state of the count round and the releases.
+    #[serde(default)]
+    pub verification: VerificationState,
+}
+
+/// What an aggregator keeps between the rounds of verifiable decryption
+/// (`vdec`), persisted so that a restarted aggregator answers a repeated
+/// round with the same bytes and never decrypts a second set of checks.
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct VerificationState {
+    /// Silent mode: this aggregator's count checks, secret until round 3.
+    pub count_opening: Option<vdec::Opening>,
+    /// Every aggregator's count share, as received in round 2.
+    pub count_shares: Vec<CountShare>,
+    /// This aggregator's partial decryptions of the others' count checks, by verifier.
+    pub count_partials: Vec<(usize, Vec<Vec<u8>>)>,
+    /// The others' commitments to their partials of this aggregator's checks.
+    pub count_commits: Vec<CountCommit>,
+    /// Per collector: the challenge answered and this aggregator's partial
+    /// decryptions of its checks (one challenge per release, ever).
+    pub releases: BTreeMap<u32, (ReleaseChallenge, Vec<Vec<u8>>)>,
 }
 
 struct Pending {
     chunks: Vec<Ciphertext>,
     s: Ciphertext,
     masks: BTreeMap<usize, Ciphertext>,
+    /// This aggregator's encoded mask, revealed after every mask commitment is in.
+    my_mask: Vec<u8>,
+    /// The other aggregators' commitments to their masks.
+    mask_commits: BTreeMap<usize, [u8; 32]>,
     partials: BTreeMap<usize, PartialDecryption>,
     u: Option<Ciphertext>,
+    /// This aggregator's encoded partial, revealed after every commitment is in.
+    mine: Option<Vec<u8>>,
+    /// The other aggregators' commitments to their partials.
+    commits: BTreeMap<usize, [u8; 32]>,
 }
 
 /// Silent mode: the reports whose check terms share the current
@@ -131,6 +169,7 @@ pub struct Aggregator {
     closed: bool,
     released_count_share: Option<CountShare>,
     released_aggregate_shares: BTreeMap<u32, AggregateShare>,
+    verification: VerificationState,
     rng: OsRng,
 }
 
@@ -197,6 +236,7 @@ impl Aggregator {
             closed: false,
             released_count_share: None,
             released_aggregate_shares: BTreeMap::new(),
+            verification: VerificationState::default(),
             rng: OsRng,
         })
     }
@@ -215,6 +255,9 @@ impl Aggregator {
 
     pub fn index(&self) -> usize {
         self.index
+    }
+    pub fn is_silent(&self) -> bool {
+        self.cfg.mode == VerificationMode::Silent
     }
     pub fn layout(&self) -> &Layout {
         &self.layout
@@ -337,9 +380,9 @@ impl Aggregator {
         Ok(())
     }
 
-    /// Verdict mode, step 1. Returns this aggregator's mask message for the
-    /// report, or the deterministic reason the report is refused.
-    pub fn prepare_init(&mut self, report: &Report) -> Result<MaskMessage> {
+    /// Verdict mode, step 1. Returns this aggregator's commitment to its mask
+    /// for the report, or the deterministic reason the report is refused.
+    pub fn prepare_init(&mut self, report: &Report) -> Result<MaskCommit> {
         if self.cfg.mode != VerificationMode::Verdict {
             return Err(Error::Protocol("prepare_init is only valid in verdict mode".into()));
         }
@@ -348,17 +391,71 @@ impl Aggregator {
         let s = self.circuit.check_sum(&chunks, &challenge)?;
         let mask = self.circuit.make_mask(&self.pk, &self.field, &mut self.rng)?;
         let mask_bytes = self.codec.encode(&mask)?;
+        let digest = vdec::commit(&Self::mask_context(&self.cfg.task_id, &report.report_id, self.index), &mask_bytes);
         let mut masks = BTreeMap::new();
         masks.insert(self.index, mask);
-        self.pending.insert(report.report_id, Pending { chunks, s, masks, partials: BTreeMap::new(), u: None });
-        Ok(MaskMessage { report_id: report.report_id, aggregator: self.index, mask: mask_bytes })
+        self.pending.insert(
+            report.report_id,
+            Pending { chunks, s, masks, my_mask: mask_bytes, mask_commits: BTreeMap::new(), partials: BTreeMap::new(), u: None, mine: None, commits: BTreeMap::new() },
+        );
+        Ok(MaskCommit { report_id: report.report_id, aggregator: self.index, digest })
     }
 
-    /// Verdict mode, step 2. Takes the other aggregators' masks and returns
-    /// this aggregator's partial decryption of the masked check value.
-    pub fn prepare_masks(&mut self, report_id: &ReportId, masks: &[MaskMessage]) -> Result<VerifierMessage> {
+    fn mask_context(task_id: &[u8; 32], report_id: &ReportId, aggregator: usize) -> Vec<u8> {
+        let mut c = b"mask".to_vec();
+        c.extend_from_slice(task_id);
+        c.extend_from_slice(report_id);
+        c.extend_from_slice(&(aggregator as u64).to_le_bytes());
+        c
+    }
+
+    /// Verdict mode, step 2. Records every other aggregator's mask
+    /// commitment and only then reveals this aggregator's mask, so no mask
+    /// can depend on another.
+    pub fn prepare_mask_reveal(&mut self, report_id: &ReportId, commits: &[MaskCommit]) -> Result<MaskMessage> {
+        let n = self.cfg.num_aggregators;
+        let pending = self.pending.get_mut(report_id).ok_or_else(|| Error::Protocol("unknown or finished report".into()))?;
+        for c in commits {
+            if c.report_id != *report_id {
+                return Err(Error::Protocol("mask commitment for a different report".into()));
+            }
+            if c.aggregator >= n || c.aggregator == self.index {
+                return Err(Error::Protocol("mask commitment from an unexpected aggregator".into()));
+            }
+            match pending.mask_commits.get(&c.aggregator) {
+                Some(d) if *d != c.digest => return Err(Error::Protocol(format!("aggregator {} changed its mask commitment", c.aggregator))),
+                _ => {
+                    pending.mask_commits.insert(c.aggregator, c.digest);
+                }
+            }
+        }
+        if pending.mask_commits.len() != n - 1 {
+            return Err(Error::Protocol(format!("expected {} mask commitments, have {}", n - 1, pending.mask_commits.len())));
+        }
+        Ok(MaskMessage { report_id: *report_id, aggregator: self.index, mask: pending.my_mask.clone() })
+    }
+
+    /// Verdict mode, step 3. Takes the other aggregators' masks (each must
+    /// match its commitment) and returns this aggregator's commitment to its
+    /// partial decryption of the masked check value; the partial itself is
+    /// revealed by [`Self::prepare_reveal`] once every other aggregator has
+    /// committed.
+    pub fn prepare_masks(&mut self, report_id: &ReportId, masks: &[MaskMessage]) -> Result<VerifierCommit> {
         let n = self.cfg.num_aggregators;
         let my_index = self.index;
+        {
+            let pending = self.pending.get(report_id).ok_or_else(|| Error::Protocol("unknown or finished report".into()))?;
+            if pending.mask_commits.len() != n - 1 {
+                return Err(Error::Protocol("masks before every mask commitment: run prepare_mask_reveal first".into()));
+            }
+            for m in masks {
+                if let Some(d) = pending.mask_commits.get(&m.aggregator) {
+                    if vdec::commit(&Self::mask_context(&self.cfg.task_id, report_id, m.aggregator), &m.mask) != *d {
+                        return Err(Error::Protocol(format!("aggregator {}'s mask is not the one it committed to", m.aggregator)));
+                    }
+                }
+            }
+        }
         let mut loaded = Vec::new();
         for m in masks {
             if m.report_id != *report_id {
@@ -383,13 +480,47 @@ impl Aggregator {
         let u = self.circuit.apply_masks(&pending.s, &mask_refs)?;
         let partial = self.share.partial_decrypt(&u, my_index == 0)?;
         let bytes = self.codec.encode(partial.ciphertext())?;
+        let digest = vdec::commit(&Self::verdict_context(&self.cfg.task_id, report_id, my_index), &bytes);
         pending.partials.insert(my_index, partial);
+        pending.mine = Some(bytes);
         pending.u = Some(u);
-        Ok(VerifierMessage { report_id: *report_id, aggregator: my_index, partial: bytes })
+        Ok(VerifierCommit { report_id: *report_id, aggregator: my_index, digest })
     }
 
-    /// Verdict mode, step 3. Fuses all partial decryptions and decides.
-    /// Accepted reports are added to the running sums.
+    fn verdict_context(task_id: &[u8; 32], report_id: &ReportId, aggregator: usize) -> Vec<u8> {
+        let mut c = b"verdict".to_vec();
+        c.extend_from_slice(task_id);
+        c.extend_from_slice(report_id);
+        c.extend_from_slice(&(aggregator as u64).to_le_bytes());
+        c
+    }
+
+    /// Verdict mode, step 3: records every other aggregator's commitment and
+    /// only then reveals this aggregator's partial decryption.
+    pub fn prepare_reveal(&mut self, report_id: &ReportId, commits: &[VerifierCommit]) -> Result<VerifierMessage> {
+        let n = self.cfg.num_aggregators;
+        let pending = self.pending.get_mut(report_id).ok_or_else(|| Error::Protocol("unknown or finished report".into()))?;
+        let mine = pending.mine.clone().ok_or_else(|| Error::Protocol("prepare_masks has not run for this report".into()))?;
+        for c in commits {
+            if c.report_id != *report_id {
+                return Err(Error::Protocol("commitment for a different report".into()));
+            }
+            if c.aggregator >= n || c.aggregator == self.index {
+                return Err(Error::Protocol("commitment from an unexpected aggregator".into()));
+            }
+            match pending.commits.get(&c.aggregator) {
+                Some(d) if *d != c.digest => return Err(Error::Protocol(format!("aggregator {} changed its commitment", c.aggregator))),
+                _ => {
+                    pending.commits.insert(c.aggregator, c.digest);
+                }
+            }
+        }
+        if pending.commits.len() != n - 1 {
+            return Err(Error::Protocol(format!("expected {} commitments, have {}", n - 1, pending.commits.len())));
+        }
+        Ok(VerifierMessage { report_id: *report_id, aggregator: self.index, partial: mine })
+    }
+
     pub fn prepare_finish(&mut self, report_id: &ReportId, verifiers: &[VerifierMessage]) -> Result<Verdict> {
         let n = self.cfg.num_aggregators;
         let expected = {
@@ -404,6 +535,11 @@ impl Aggregator {
             }
             if v.aggregator >= n || v.aggregator == self.index {
                 return Err(Error::Protocol("verifier message from an unexpected aggregator".into()));
+            }
+            let pending = self.pending.get(report_id).ok_or_else(|| Error::Protocol("unknown or finished report".into()))?;
+            let committed = pending.commits.get(&v.aggregator).ok_or_else(|| Error::Protocol(format!("no commitment from aggregator {}: run prepare_reveal first", v.aggregator)))?;
+            if vdec::commit(&Self::verdict_context(&self.cfg.task_id, report_id, v.aggregator), &v.partial) != *committed {
+                return Err(Error::Protocol(format!("aggregator {}'s partial decryption is not the one it committed to", v.aggregator)));
             }
             loaded.push((v.aggregator, self.load_partial(&v.partial, expected, v.aggregator == 0)?));
         }
@@ -535,6 +671,7 @@ impl Aggregator {
             closed: self.closed,
             released_count_share: self.released_count_share.clone(),
             released_aggregate_shares: self.released_aggregate_shares.clone(),
+            verification: self.verification.clone(),
         })
     }
 
@@ -618,13 +755,22 @@ impl Aggregator {
         self.closed = st.closed;
         self.released_count_share = st.released_count_share;
         self.released_aggregate_shares = st.released_aggregate_shares;
+        self.verification = st.verification;
         self.pending.clear();
         Ok(())
     }
 
-    /// Silent mode, batch close step 1: partial decryption of the encrypted
-    /// valid-report counter. Requires at least `min_batch_size` admitted
-    /// reports; reveals only the count.
+    /// Silent mode, count round 1: partial decryption of the encrypted
+    /// valid-report counter, and this aggregator's blinded checks of it
+    /// (`vdec`). Requires at least `min_batch_size` admitted reports.
+    ///
+    /// The decrypted count decides whether any aggregate is released
+    /// (`min_batch_size` applies to *valid* reports), so every aggregator
+    /// verifies it itself before trusting it: rounds 2 to 4
+    /// ([`Self::count_commit`], [`Self::count_open`], [`Self::count_reveal`],
+    /// [`Self::count_finish`]). Unverified, a malicious aggregator could
+    /// shift its partial so that a batch with one valid report reads as
+    /// full, and the honest aggregators would release that report.
     ///
     /// Released once per batch: a second call returns the share released
     /// the first time. Each partial decryption carries fresh flooding noise,
@@ -646,40 +792,222 @@ impl Aggregator {
         self.flush_silent_batch()?;
         self.closed = true;
         let ct = self.valid_count_sum.as_ref().expect("count >= 1");
+        let opening = vdec::draw(&self.ctx, &[ct], &mut self.rng)?;
+        let checks = vdec::build(&self.ctx, &self.pk, &[ct], &opening)?.iter().map(|c| self.codec.encode(c)).collect::<Result<Vec<_>>>()?;
         let share = CountShare {
             task_id: self.cfg.task_id,
             aggregator: self.index,
             batch_digest: batch_digest(self.accepted_ids.clone()),
             report_count: count as u64,
             partial: self.codec.encode(self.share.partial_decrypt(ct, self.index == 0)?.ciphertext())?,
+            checks,
         };
+        self.verification.count_opening = Some(opening);
         self.released_count_share = Some(share.clone());
         Ok(share)
     }
 
-    /// Silent mode, batch close step 2: fuses every aggregator's count share
-    /// (including this one's) and records the valid count.
-    pub fn count_finish(&mut self, shares: &[CountShare]) -> Result<u64> {
+    fn count_context(&self, verifier: usize, check: usize, committer: usize) -> Vec<u8> {
+        let mut c = b"count".to_vec();
+        c.extend_from_slice(&self.cfg.task_id);
+        c.extend_from_slice(&batch_digest(self.accepted_ids.clone()));
+        for x in [verifier, check, committer] {
+            c.extend_from_slice(&(x as u64).to_le_bytes());
+        }
+        c
+    }
+
+    fn count_ct(&self) -> Result<&Ciphertext> {
+        self.valid_count_sum.as_ref().ok_or_else(|| Error::Protocol("count round before count_share".into()))
+    }
+
+    /// The count checks aggregator `j` published, rebuilt through the codec.
+    fn count_checks_of(&self, j: usize) -> Result<Vec<Ciphertext>> {
+        let meta = self.count_ct()?.meta()?;
+        let share = self.verification.count_shares.iter().find(|s| s.aggregator == j).ok_or_else(|| Error::Protocol(format!("no count share from aggregator {j}")))?;
+        share.checks.iter().map(|b| self.codec.decode(b, Expect::Exactly(meta)).map_err(|e| Error::Protocol(format!("aggregator {j}'s count check: {e}")))).collect()
+    }
+
+    /// Silent mode, count round 2: takes every aggregator's count share,
+    /// partially decrypts every other aggregator's checks and returns
+    /// commitments to those partials (revealed in round 4, after the checks
+    /// are opened and verified).
+    pub fn count_commit(&mut self, shares: &[CountShare]) -> Result<CountCommit> {
         let n = self.cfg.num_aggregators;
-        if shares.len() != n {
-            return Err(Error::Protocol(format!("expected {n} count shares, got {}", shares.len())));
-        }
         let digest = batch_digest(self.accepted_ids.clone());
-        let expected = Self::partial_meta(self.valid_count_sum.as_ref().ok_or_else(|| Error::Protocol("count_finish before count_share".into()))?)?;
-        let mut seen = vec![false; n];
-        let mut partials = Vec::with_capacity(n);
-        for s in shares {
-            if s.task_id != self.cfg.task_id || s.batch_digest != digest || s.report_count != self.accepted_ids.len() as u64 {
-                return Err(Error::Protocol("count share for a different batch".into()));
+        let my_checks = self.released_count_share.as_ref().ok_or_else(|| Error::Protocol("count_commit before count_share".into()))?.checks.len();
+        if !self.verification.count_partials.is_empty() {
+            let same = shares.len() == self.verification.count_shares.len()
+                && shares.iter().all(|s| self.verification.count_shares.iter().any(|t| t.aggregator == s.aggregator && t.partial == s.partial && t.checks == s.checks));
+            if !same {
+                return Err(Error::Protocol("different count shares than those this aggregator already committed on".into()));
             }
-            if s.aggregator >= n || std::mem::replace(&mut seen[s.aggregator], true) {
-                return Err(Error::Protocol("duplicate or out-of-range aggregator in count shares".into()));
+        } else {
+            if shares.len() != n {
+                return Err(Error::Protocol(format!("expected {n} count shares, got {}", shares.len())));
             }
-            partials.push(self.load_partial(&s.partial, expected, s.aggregator == 0)?);
+            let mut seen = vec![false; n];
+            for s in shares {
+                if s.task_id != self.cfg.task_id || s.batch_digest != digest || s.report_count != self.accepted_ids.len() as u64 {
+                    return Err(Error::Protocol("count share for a different batch".into()));
+                }
+                if s.aggregator >= n || std::mem::replace(&mut seen[s.aggregator], true) {
+                    return Err(Error::Protocol("duplicate or out-of-range aggregator in count shares".into()));
+                }
+                if s.checks.len() != my_checks {
+                    return Err(Error::Protocol(format!("aggregator {} published {} count checks, expected {my_checks}", s.aggregator, s.checks.len())));
+                }
+            }
+            if shares.iter().find(|s| s.aggregator == self.index).map(|s| s.partial.as_slice()) != self.released_count_share.as_ref().map(|s| s.partial.as_slice()) {
+                return Err(Error::Protocol("the count shares do not carry this aggregator's own share".into()));
+            }
+            // every share must parse to the shapes this aggregator computed,
+            // before anything is stored or committed to
+            let ct_meta = self.count_ct()?.meta()?;
+            let partial_meta = Self::partial_meta(self.count_ct()?)?;
+            for s in shares {
+                self.load_partial(&s.partial, partial_meta, s.aggregator == 0).map_err(|e| Error::Protocol(format!("aggregator {}'s count share: {e}", s.aggregator)))?;
+                for b in &s.checks {
+                    self.codec.decode(b, Expect::Exactly(ct_meta)).map_err(|e| Error::Protocol(format!("aggregator {}'s count check: {e}", s.aggregator)))?;
+                }
+            }
+            self.verification.count_shares = shares.to_vec();
+            let mut partials = Vec::new();
+            for j in (0..n).filter(|&j| j != self.index) {
+                let mut mine = Vec::with_capacity(my_checks);
+                for c in self.count_checks_of(j)? {
+                    mine.push(self.codec.encode(self.share.partial_decrypt(&c, self.index == 0)?.ciphertext())?);
+                }
+                partials.push((j, mine));
+            }
+            self.verification.count_partials = partials;
         }
-        let refs: Vec<&PartialDecryption> = partials.iter().collect();
-        let fused = self.ctx.fuse(&refs, 1)?;
-        let valid = fused[0];
+        let digests = self
+            .verification
+            .count_partials
+            .iter()
+            .map(|(j, ps)| (*j, ps.iter().enumerate().map(|(l, p)| vdec::commit(&self.count_context(*j, l, self.index), p)).collect()))
+            .collect();
+        Ok(CountCommit { task_id: self.cfg.task_id, aggregator: self.index, batch_digest: digest, digests })
+    }
+
+    /// Silent mode, count round 3: once every other aggregator has committed
+    /// to its partials of this aggregator's checks, reveals the checks.
+    pub fn count_open(&mut self, commits: &[CountCommit]) -> Result<CountOpening> {
+        let n = self.cfg.num_aggregators;
+        let digest = batch_digest(self.accepted_ids.clone());
+        let opening = self.verification.count_opening.clone().ok_or_else(|| Error::Protocol("count_open before count_share".into()))?;
+        if self.verification.count_partials.is_empty() {
+            return Err(Error::Protocol("count_open before count_commit".into()));
+        }
+        let others: Vec<&CountCommit> = commits.iter().filter(|c| c.aggregator != self.index).collect();
+        let mut seen = vec![false; n];
+        for c in &others {
+            if c.task_id != self.cfg.task_id || c.batch_digest != digest {
+                return Err(Error::Protocol("count commitment for a different batch".into()));
+            }
+            if c.aggregator >= n || std::mem::replace(&mut seen[c.aggregator], true) {
+                return Err(Error::Protocol("duplicate or out-of-range aggregator in count commitments".into()));
+            }
+            let mine = c.digests.iter().find(|(v, _)| *v == self.index).ok_or_else(|| Error::Protocol(format!("aggregator {} did not commit to this aggregator's checks", c.aggregator)))?;
+            if mine.1.len() != opening.checks.len() {
+                return Err(Error::Protocol(format!("aggregator {} committed to {} checks, expected {}", c.aggregator, mine.1.len(), opening.checks.len())));
+            }
+        }
+        if others.len() != n - 1 {
+            return Err(Error::Protocol(format!("expected {} count commitments, got {}", n - 1, others.len())));
+        }
+        if self.verification.count_commits.is_empty() {
+            self.verification.count_commits = others.into_iter().cloned().collect();
+        } else {
+            for c in &self.verification.count_commits {
+                let again = commits.iter().find(|x| x.aggregator == c.aggregator).expect("checked above");
+                if again.digests != c.digests {
+                    return Err(Error::Protocol(format!("aggregator {} changed its count commitments", c.aggregator)));
+                }
+            }
+        }
+        Ok(CountOpening { task_id: self.cfg.task_id, aggregator: self.index, batch_digest: digest, opening })
+    }
+
+    /// Silent mode, count round 4: rebuilds every other aggregator's checks
+    /// from this aggregator's own count ciphertext and their openings, and
+    /// reveals its partials only if each is exactly what was published (so
+    /// no aggregator can have anything else decrypted through a "check").
+    pub fn count_reveal(&mut self, openings: &[CountOpening]) -> Result<CountReveal> {
+        let n = self.cfg.num_aggregators;
+        let digest = batch_digest(self.accepted_ids.clone());
+        if self.verification.count_commits.len() != n - 1 {
+            return Err(Error::Protocol("count_reveal before count_open".into()));
+        }
+        let ct = self.count_ct()?.try_clone()?;
+        for j in (0..n).filter(|&j| j != self.index) {
+            let o = openings.iter().find(|o| o.aggregator == j).ok_or_else(|| Error::Protocol(format!("no count opening from aggregator {j}")))?;
+            if o.task_id != self.cfg.task_id || o.batch_digest != digest {
+                return Err(Error::Protocol("count opening for a different batch".into()));
+            }
+            let rebuilt = vdec::build(&self.ctx, &self.pk, &[&ct], &o.opening)?;
+            let published = self.count_checks_of(j)?;
+            if rebuilt.len() != published.len() || rebuilt.iter().zip(&published).any(|(a, b)| !vdec::same(a, b).unwrap_or(false)) {
+                return Err(Error::Protocol(format!("aggregator {j}'s count checks are not what it opened: refusing to decrypt them")));
+            }
+        }
+        Ok(CountReveal { task_id: self.cfg.task_id, aggregator: self.index, batch_digest: digest, partials: self.verification.count_partials.clone() })
+    }
+
+    /// Silent mode, count round 5 (local): verifies this aggregator's checks
+    /// with every other aggregator's revealed partials (each against its
+    /// commitment), fuses the count and records it. Only a verified count
+    /// lets [`Self::aggregate_share_for`] release anything.
+    pub fn count_finish(&mut self, reveals: &[CountReveal]) -> Result<u64> {
+        let n = self.cfg.num_aggregators;
+        let digest = batch_digest(self.accepted_ids.clone());
+        let opening = self.verification.count_opening.clone().ok_or_else(|| Error::Protocol("count_finish before count_share".into()))?;
+        if self.verification.count_commits.len() != n - 1 {
+            return Err(Error::Protocol("count_finish before count_open".into()));
+        }
+        let ct = self.count_ct()?.try_clone()?;
+        let my_checks = vdec::build(&self.ctx, &self.pk, &[&ct], &opening)?;
+        let check_meta = CiphertextMeta { num_elements: 1, ..my_checks[0].meta()? };
+        let count_meta = Self::partial_meta(&ct)?;
+        // per check, every aggregator's partial, in aggregator order
+        let mut check_partials: Vec<Vec<PartialDecryption>> = (0..my_checks.len()).map(|_| Vec::with_capacity(n)).collect();
+        let mut count_partials = Vec::with_capacity(n);
+        for j in 0..n {
+            let share = self.verification.count_shares.iter().find(|s| s.aggregator == j).ok_or_else(|| Error::Protocol(format!("no count share from aggregator {j}")))?;
+            count_partials.push(self.load_partial(&share.partial, count_meta, j == 0)?);
+            if j == self.index {
+                for (l, c) in my_checks.iter().enumerate() {
+                    check_partials[l].push(self.share.partial_decrypt(c, self.index == 0)?);
+                }
+                continue;
+            }
+            let r = reveals.iter().find(|r| r.aggregator == j).ok_or_else(|| Error::Protocol(format!("no count reveal from aggregator {j}")))?;
+            if r.task_id != self.cfg.task_id || r.batch_digest != digest {
+                return Err(Error::Protocol("count reveal for a different batch".into()));
+            }
+            let ps = &r.partials.iter().find(|(v, _)| *v == self.index).ok_or_else(|| Error::Protocol(format!("aggregator {j} revealed nothing for this aggregator's checks")))?.1;
+            let committed = &self.verification.count_commits.iter().find(|c| c.aggregator == j).expect("n - 1 commitments").digests;
+            let committed = &committed.iter().find(|(v, _)| *v == self.index).expect("checked in count_open").1;
+            if ps.len() != my_checks.len() {
+                return Err(Error::Protocol(format!("aggregator {j} revealed {} partials, expected {}", ps.len(), my_checks.len())));
+            }
+            for (l, p) in ps.iter().enumerate() {
+                if vdec::commit(&self.count_context(self.index, l, j), p) != committed[l] {
+                    return Err(Error::Protocol(format!("aggregator {j}'s partial of count check {l} is not the one it committed to")));
+                }
+                check_partials[l].push(self.load_partial(p, check_meta, j == 0)?);
+            }
+        }
+        let fused_count = vdec::fuse_checked(&self.ctx, &count_partials.iter().collect::<Vec<_>>(), "valid count")?;
+        let fused_checks = check_partials
+            .iter()
+            .enumerate()
+            .map(|(l, ps)| vdec::fuse_checked(&self.ctx, &ps.iter().collect::<Vec<_>>(), &format!("count check {l}")))
+            .collect::<Result<Vec<_>>>()?;
+        let powers = vdec::SlotPowers::new(&self.ctx)?;
+        vdec::verify(&powers, &[vec![0]], &[fused_count.clone()], &fused_checks, &opening)?;
+        let valid = fused_count[0];
         if valid > self.accepted_ids.len() as u64 {
             return Err(Error::Protocol("valid count exceeds admitted count: batch corrupted".into()));
         }
@@ -723,27 +1051,16 @@ impl Aggregator {
         }
         self.closed = true;
         self.pending.clear();
-        let sums = self.sums.as_ref().expect("count >= 1");
-        let chunks = self.cfg.collector_chunks(&self.layout, collector);
-        let mut partials = Vec::with_capacity(chunks.len());
-        for &k in &chunks {
-            partials.push(self.codec.encode(self.share.partial_decrypt(&sums[k], self.index == 0)?.ciphertext())?);
+        let accs = self.release_accumulators(collector)?;
+        let chunks = self.cfg.collector_chunks(&self.layout, collector).len();
+        let has_count = self.valid_count_sum.is_some();
+        let mut partials = Vec::with_capacity(accs.len());
+        for c in &accs {
+            partials.push(self.codec.encode(self.share.partial_decrypt(c, self.index == 0)?.ciphertext())?);
         }
-        let valid_count_partial = match &self.valid_count_sum {
-            Some(ct) => Some(self.codec.encode(self.share.partial_decrypt(ct, self.index == 0)?.ciphertext())?),
-            None => None,
-        };
-        let mut moment_partials = Vec::new();
-        let pairs = self.cfg.collector_moment_pairs(collector)?;
-        if !pairs.is_empty() {
-            let sums = self.moment_sums.as_ref().ok_or_else(|| Error::Protocol("moments enabled but no products accumulated".into()))?;
-            // accumulators of the collector's pairs, in accumulator order
-            for (idx, t) in self.layout.moment_terms().into_iter().enumerate() {
-                if pairs.contains(&(t.a, t.b)) {
-                    moment_partials.push(self.codec.encode(self.share.partial_decrypt(&sums[idx], self.index == 0)?.ciphertext())?);
-                }
-            }
-        }
+        let accumulators = accs.iter().map(|c| self.codec.encode(c)).collect::<Result<Vec<_>>>()?;
+        let moment_partials = partials.split_off(chunks + has_count as usize);
+        let valid_count_partial = if has_count { partials.pop() } else { None };
         let _ = elements;
         let share = AggregateShare {
             task_id: self.cfg.task_id,
@@ -754,9 +1071,114 @@ impl Aggregator {
             partials,
             valid_count_partial,
             moment_partials,
+            accumulators,
         };
         self.released_aggregate_shares.insert(collector as u32, share.clone());
         Ok(share)
+    }
+
+    /// The ciphertexts released to `collector`, in the order chunks, valid
+    /// count (silent mode), second-moment accumulators of its pairs.
+    fn release_accumulators(&self, collector: usize) -> Result<Vec<Ciphertext>> {
+        let sums = self.sums.as_ref().ok_or_else(|| Error::Protocol("no report in the batch".into()))?;
+        let mut out = Vec::new();
+        for k in self.cfg.collector_chunks(&self.layout, collector) {
+            out.push(sums[k].try_clone()?);
+        }
+        if let Some(ct) = &self.valid_count_sum {
+            out.push(ct.try_clone()?);
+        }
+        let pairs = self.cfg.collector_moment_pairs(collector)?;
+        if !pairs.is_empty() {
+            let m = self.moment_sums.as_ref().ok_or_else(|| Error::Protocol("moments enabled but no products accumulated".into()))?;
+            for (idx, t) in self.layout.moment_terms().into_iter().enumerate() {
+                if pairs.contains(&(t.a, t.b)) {
+                    out.push(m[idx].try_clone()?);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    fn release_context(&self, collector: u32, check: usize, aggregator: usize) -> Vec<u8> {
+        let mut c = b"release".to_vec();
+        c.extend_from_slice(&self.cfg.task_id);
+        c.extend_from_slice(&batch_digest(self.accepted_ids.clone()));
+        c.extend_from_slice(&collector.to_le_bytes());
+        for x in [check, aggregator] {
+            c.extend_from_slice(&(x as u64).to_le_bytes());
+        }
+        c
+    }
+
+    /// Release verification, step 1 (after [`Self::aggregate_share_for`]):
+    /// partially decrypts the collector's checks and returns commitments to
+    /// those partials. One challenge per (batch, collector), ever: the same
+    /// challenge again returns the same commitments, another is refused.
+    pub fn release_commit(&mut self, ch: &ReleaseChallenge) -> Result<ReleaseCommit> {
+        let collector = ch.collector;
+        if ch.task_id != self.cfg.task_id || !self.released_aggregate_shares.contains_key(&collector) || ch.batch_digest != batch_digest(self.accepted_ids.clone()) {
+            return Err(Error::Protocol("release challenge for a share this aggregator has not released".into()));
+        }
+        let digest = ch.digest();
+        if let Some((done, _)) = self.verification.releases.get(&collector) {
+            if done.digest() != digest {
+                return Err(Error::Protocol(format!("collector {collector} already has its checks answered for this batch: refusing a second set")));
+            }
+        } else {
+            let accs = self.release_accumulators(collector as usize)?;
+            let refs: Vec<&Ciphertext> = accs.iter().collect();
+            let groups = vdec::groups(&refs)?;
+            let per = vdec::check_count(self.ctx.ring_dim() as usize);
+            if ch.checks.len() != groups.len() * per {
+                return Err(Error::Protocol(format!("{} release checks, expected {}", ch.checks.len(), groups.len() * per)));
+            }
+            let mut partials = Vec::with_capacity(ch.checks.len());
+            for (l, b) in ch.checks.iter().enumerate() {
+                let meta = accs[groups[l / per][0]].meta()?;
+                let c = self.codec.decode(b, Expect::Exactly(meta)).map_err(|e| Error::Protocol(format!("release check {l}: {e}")))?;
+                partials.push(self.codec.encode(self.share.partial_decrypt(&c, self.index == 0)?.ciphertext())?);
+            }
+            self.verification.releases.insert(collector, (ch.clone(), partials));
+        }
+        let partials = &self.verification.releases[&collector].1;
+        let digests = partials.iter().enumerate().map(|(l, p)| vdec::commit(&self.release_context(collector, l, self.index), p)).collect();
+        Ok(ReleaseCommit { task_id: self.cfg.task_id, collector, aggregator: self.index, challenge: digest, digests })
+    }
+
+    /// Release verification, step 2: rebuilds the collector's checks from
+    /// this aggregator's own accumulators and the opening, and reveals its
+    /// partials only if each check is exactly what it decrypted (so a
+    /// collector cannot have anything else decrypted through a "check").
+    pub fn release_reveal(&mut self, op: &ReleaseOpening) -> Result<ReleaseReveal> {
+        let (ch, partials) = self
+            .verification
+            .releases
+            .get(&op.collector)
+            .ok_or_else(|| Error::Protocol("release opening before this aggregator committed".into()))?;
+        if op.task_id != self.cfg.task_id || op.challenge != ch.digest() {
+            return Err(Error::Protocol("release opening for another challenge".into()));
+        }
+        let accs = self.release_accumulators(op.collector as usize)?;
+        let refs: Vec<&Ciphertext> = accs.iter().collect();
+        let rebuilt = vdec::build(&self.ctx, &self.pk, &refs, &op.opening)?;
+        let groups = vdec::groups(&refs)?;
+        let per = vdec::check_count(self.ctx.ring_dim() as usize);
+        for (l, (b, r)) in ch.checks.iter().zip(&rebuilt).enumerate() {
+            let c = self.codec.decode(b, Expect::Exactly(accs[groups[l / per][0]].meta()?))?;
+            if !vdec::same(&c, r)? {
+                return Err(Error::Protocol(format!("release check {l} is not what the collector opened: refusing to reveal")));
+            }
+        }
+        Ok(ReleaseReveal { task_id: self.cfg.task_id, collector: op.collector, aggregator: self.index, challenge: op.challenge, partials: partials.clone() })
+    }
+
+    /// [`Self::release_reveal`] sealed to the collector's key (tasks with
+    /// release policies: the leader relays it and must not read it).
+    pub fn sealed_release_reveal(&mut self, op: &ReleaseOpening) -> Result<crate::seal::SealedShare> {
+        let key = self.cfg.collectors.get(op.collector as usize).map(|p| p.seal_key).ok_or_else(|| Error::Config(format!("no sealing key for collector {}", op.collector)))?;
+        let r = self.release_reveal(op)?;
+        crate::seal::seal_reveal(&r, &key)
     }
 
     /// [`Self::aggregate_share_for`], sealed to the collector's key from the

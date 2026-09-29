@@ -12,7 +12,8 @@ shares sealed at rest.
   mode) to the helpers, then drives the batch close. Helpers only answer
   authenticated calls from the leader.
 * **Collector** (`fhe-prio3-node collector --id c`): receives one aggregate
-  share per aggregator, unshards when all are present, serves the result.
+  share per aggregator; when all are present, it verifies every partial
+  decryption with blinded checks, then decodes and serves the result.
   Holds no key share. With release policies (below) it holds its own X25519
   sealing key and receives only what the task's policy `c` names.
 * **Client** (`fhe-prio3-node submit`): fetches a group ticket when the task
@@ -30,7 +31,10 @@ reaches OpenFHE's deserializer. Body limits are set per route:
 * The internal routes are capped at the largest internal message plus
   64 KiB. That message is either a report or the `n − 1` masks the leader
   sends each helper in one `/v1/masks` request, whichever is larger.
-* The collector caps at 256 MiB.
+* The verification routes (`/v1/count-*` after the share,
+  `/v1/release-*`) carry checks and partials of every aggregator and are
+  capped at 256 MiB.
+* The collector caps at 512 MiB.
 
 A single cap of one report used to refuse the `/v1/masks` request of a
 three-aggregator verdict deployment, which carries two masks.
@@ -74,14 +78,38 @@ is refused with `BadMagic`.
 | `GET /v1/group` | client → leader | none | → `GroupTicket` (silent batched tasks) |
 | `POST /v1/submit` | client → leader | none | `Report` → `SubmitOutcome` |
 | `POST /v1/close` | operator → leader | token | `()` → `CloseReply{result (no policies), released_to}` |
-| `POST /v1/report` | leader → helper | token | `Report` → `Result<MaskMessage,String>` (verdict) / `SubmitOutcome` (silent) |
-| `POST /v1/masks` | leader → helper | token | `MasksRequest` → `VerifierMessage` |
+| `POST /v1/report` | leader → helper | token | `Report` → `Result<MaskCommit,String>` (verdict) / `SubmitOutcome` (silent) |
+| `POST /v1/mask-commits` | leader → helper | token | `MaskCommitsRequest` → `MaskMessage` (revealed once every mask commitment is in) |
+| `POST /v1/masks` | leader → helper | token | `MasksRequest` → `VerifierCommit` (commitment to its partial) |
+| `POST /v1/commits` | leader → helper | token | `CommitsRequest` → `VerifierMessage` (revealed once every commitment is in) |
 | `POST /v1/verifiers` | leader → helper | token | `VerifiersRequest` → `SubmitOutcome` |
-| `POST /v1/count-share` | leader → helper | token | `()` → `CountShare` |
-| `POST /v1/count-finish` | leader → helper | token | `CountFinishRequest` → `u64` |
+| `POST /v1/count-share` | leader → helper | token | `()` → `CountShare` (partial and checks) |
+| `POST /v1/count-commit` | leader → helper | token | `CountSharesRequest` → `CountCommit` |
+| `POST /v1/count-open` | leader → helper | token | `CountCommitsRequest` → `CountOpening` |
+| `POST /v1/count-reveal` | leader → helper | token | `CountOpeningsRequest` → `CountReveal` |
+| `POST /v1/count-finish` | leader → helper | token | `CountRevealsRequest` → `u64` (verified count) |
 | `POST /v1/aggregate-share` | leader → helper | token | `ShareRequest{collector}` → `ShareReply::Plain` (no policies) / `::Sealed` |
-| `POST /v1/aggregate-share` | leader → collector | token | `ShareEnvelope` (no policies) / `SealedEnvelope` → `ShareReceipt{complete, result}` |
+| `POST /v1/release-commit` | leader → helper | token | `ReleaseChallenge` → `ReleaseCommit` |
+| `POST /v1/release-reveal` | leader → helper | token | `ReleaseOpening` → `RevealEnvelope::Plain` (no policies) / `::Sealed` |
+| `POST /v1/aggregate-share` | leader → collector | token | `ShareEnvelope` (no policies) / `SealedEnvelope` → `ShareReceipt{complete, challenge}` |
+| `POST /v1/release-commits` | leader → collector | token | `ReleaseCommitsRequest` → `ReleaseOpening` |
+| `POST /v1/release-reveals` | leader → collector | token | `ReleaseRevealsRequest` → `FinishReceipt{result (no policies)}` |
 | `GET /v1/result` | operator → collector | token | → `Option<BatchResult>` |
+
+Verification flows (spec §3.4–§3.6, §4.4). *Verdict:* `/v1/report` (mask
+commitments), `/v1/mask-commits` (masks), `/v1/masks` (partial
+commitments), `/v1/commits` (partials), `/v1/verifiers`.
+*Silent close:* `/v1/count-share`, `-commit`, `-open`, `-reveal`,
+`-finish`; each helper verifies the count with its own checks before
+anything is released. *Release to a collector:* the helpers'
+`/v1/aggregate-share`; the collector answers the last share with a
+challenge; the helpers' `/v1/release-commit`; the collector's
+`/v1/release-commits` returns the opening; the helpers'
+`/v1/release-reveal`; the collector's `/v1/release-reveals` verifies and
+stores the result. The leader relays every message. With policies, shares
+and reveals are sealed to the collector, so the leader reads none of them.
+A malicious leader can still stop a release by answering the challenge
+itself first (`AUDIT.md` F-8).
 | `GET /v1/assign` | client → router | none | → `Assignment { shard, leader }` |
 | `GET /v1/shard/{i}/task` | client → router | none | → `TaskConfig` of shard `i` |
 | `GET /v1/shard/{i}/material` | client → router | none | → `PublicMaterial` of shard `i`, evaluation keys stripped |

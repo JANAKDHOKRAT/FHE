@@ -79,13 +79,13 @@ fn verdict_two_collectors_disjoint_elements_and_moments() {
     // unknown collector and the legacy entry point are refused
     assert!(net.aggs[0].aggregate_share_for(2).is_err());
     assert!(net.aggs[0].aggregate_share().is_err());
-    assert!(net.collector.unshard(&[s0.clone(), s0.clone()]).is_err());
+    assert!(net.collector.release_challenge(0, vec![s0.clone(), s0.clone()]).is_err());
 
-    // a share released to collector 1 is refused by collector 0's unshard, and vice versa
+    // a share released to collector 1 is refused by collector 0's release, and vice versa
     let mut mixed = vec![net.aggs[0].aggregate_share_for(0).unwrap(), s1.clone()];
-    assert!(net.collector.unshard_for(0, &mixed).is_err());
+    assert!(net.collector.release_challenge(0, mixed.clone()).is_err());
     mixed[1] = s0.clone();
-    net.collector.unshard_for(0, &mixed).unwrap();
+    net.collector.release_challenge(0, mixed).unwrap();
 
     // sealed envelopes: opaque to the relaying leader, bound to their collector
     let sealed1 = net.aggs[1].sealed_share_for(1).unwrap();
@@ -95,7 +95,7 @@ fn verdict_two_collectors_disjoint_elements_and_moments() {
     let rt: SealedShare = decode(&encode(&sealed1).unwrap()).unwrap();
     assert_eq!(rt.ciphertext, sealed1.ciphertext);
     // the collector refuses a key that is not the declared one
-    assert!(net.collector.unshard_sealed(1, &k0, &[sealed1.clone(), sealed1]).is_err());
+    assert!(net.collector.release_challenge_sealed(1, &k0, &[sealed1.clone(), sealed1]).is_err());
 }
 
 #[test]

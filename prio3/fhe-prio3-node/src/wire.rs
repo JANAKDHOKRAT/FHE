@@ -3,7 +3,10 @@
 use axum::body::Bytes;
 use axum::http::{HeaderMap, StatusCode, header};
 use fhe_prio3::messages::{decode, encode};
-use fhe_prio3::{AggregateShare, BatchResult, CountShare, MaskMessage, Report, SealedShare, VerifierMessage};
+use fhe_prio3::{
+    AggregateShare, BatchResult, CountCommit, CountOpening, CountReveal, CountShare, MaskCommit, MaskMessage, ReleaseCommit, ReleaseReveal, Report, SealedShare, VerifierCommit,
+    VerifierMessage,
+};
 use fhe_prio3::messages::ReportId;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -17,10 +20,26 @@ pub struct GroupTicket {
     pub groups: u32,
 }
 
+/// Leader -> helper, verdict mode: every other aggregator's commitment to
+/// its mask; the helper then reveals its own mask.
+#[derive(Serialize, Deserialize)]
+pub struct MaskCommitsRequest {
+    pub report_id: ReportId,
+    pub commits: Vec<MaskCommit>,
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct MasksRequest {
     pub report_id: ReportId,
     pub masks: Vec<MaskMessage>,
+}
+
+/// Leader -> helper, verdict mode: every other aggregator's commitment to
+/// its partial decryption; the helper then reveals its own.
+#[derive(Serialize, Deserialize)]
+pub struct CommitsRequest {
+    pub report_id: ReportId,
+    pub commits: Vec<VerifierCommit>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -35,9 +54,25 @@ pub enum SubmitOutcome {
     Rejected(String),
 }
 
+/// Silent-mode count rounds (leader -> helper), in order: every count
+/// share (reply: `CountCommit`), every commitment (reply: `CountOpening`),
+/// every opening (reply: `CountReveal`), every reveal (reply: the verified
+/// valid count).
 #[derive(Serialize, Deserialize)]
-pub struct CountFinishRequest {
+pub struct CountSharesRequest {
     pub shares: Vec<CountShare>,
+}
+#[derive(Serialize, Deserialize)]
+pub struct CountCommitsRequest {
+    pub commits: Vec<CountCommit>,
+}
+#[derive(Serialize, Deserialize)]
+pub struct CountOpeningsRequest {
+    pub openings: Vec<CountOpening>,
+}
+#[derive(Serialize, Deserialize)]
+pub struct CountRevealsRequest {
+    pub reveals: Vec<CountReveal>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -64,12 +99,38 @@ pub struct SealedEnvelope {
 }
 
 /// Collector's answer to a share: whether every aggregator's share is now
-/// present. The result itself is returned only on tasks without policies
-/// (where the leader relays it to the operator); with policies it is read
-/// from the collector by its own operator.
+/// present, and then the checks every aggregator must answer.
 #[derive(Serialize, Deserialize)]
 pub struct ShareReceipt {
     pub complete: bool,
+    pub challenge: Option<fhe_prio3::ReleaseChallenge>,
+}
+
+/// Leader -> collector: every aggregator's commitment (reply: the opening).
+#[derive(Serialize, Deserialize)]
+pub struct ReleaseCommitsRequest {
+    pub commits: Vec<ReleaseCommit>,
+}
+
+/// An aggregator's partials of the checks: plain without policies, sealed
+/// to the collector with them.
+#[derive(Serialize, Deserialize, Clone)]
+pub enum RevealEnvelope {
+    Plain(ReleaseReveal),
+    Sealed(SealedShare),
+}
+
+/// Leader -> collector: every aggregator's reveal.
+#[derive(Serialize, Deserialize)]
+pub struct ReleaseRevealsRequest {
+    pub reveals: Vec<RevealEnvelope>,
+}
+
+/// Collector's verified result: returned only on tasks without policies
+/// (where the leader relays it to the operator); with policies it is read
+/// from the collector by its own operator.
+#[derive(Serialize, Deserialize)]
+pub struct FinishReceipt {
     pub result: Option<BatchResult>,
 }
 
@@ -182,6 +243,22 @@ pub async fn http_post<T: Serialize, R: DeserializeOwned>(client: &reqwest::Clie
         anyhow::bail!("{url}: HTTP {status}: {}", String::from_utf8_lossy(&data));
     }
     Ok(decode(&data)?)
+}
+
+/// POST of an already encoded body (sent to several peers without
+/// re-encoding); returns the raw reply body.
+pub async fn http_post_raw(client: &reqwest::Client, url: &str, token: Option<&str>, body: Vec<u8>) -> anyhow::Result<Vec<u8>> {
+    let mut req = client.post(url).header(header::CONTENT_TYPE, CONTENT_TYPE).body(body);
+    if let Some(t) = token {
+        req = req.header(TOKEN_HEADER, t);
+    }
+    let resp = req.send().await?;
+    let status = resp.status();
+    let data = resp.bytes().await?;
+    if !status.is_success() {
+        anyhow::bail!("{url}: HTTP {status}: {}", String::from_utf8_lossy(&data));
+    }
+    Ok(data.to_vec())
 }
 
 pub async fn http_get<R: DeserializeOwned>(client: &reqwest::Client, url: &str, token: Option<&str>) -> anyhow::Result<R> {

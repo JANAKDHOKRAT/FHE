@@ -208,21 +208,33 @@ fn main() {
             continue;
         }
 
-        let mut masks = Vec::new();
+        let mut mask_commits = Vec::new();
         for ag in aggs.iter_mut() {
             let t0 = Instant::now();
-            let mm = ag.prepare_init(&report).expect("prepare_init");
+            let mc = ag.prepare_init(&report).expect("prepare_init");
             t_init += t0.elapsed();
+            mask_commits.push(decode::<MaskCommit>(&encode(&mc).unwrap()).unwrap());
+        }
+        let mut masks = Vec::new();
+        for ag in aggs.iter_mut() {
+            let others: Vec<MaskCommit> = mask_commits.iter().filter(|x| x.aggregator != ag.index()).cloned().collect();
+            let mm = ag.prepare_mask_reveal(&report.report_id, &others).expect("prepare_mask_reveal");
             let b = encode(&mm).unwrap();
             mask_bytes = b.len();
             masks.push(decode::<MaskMessage>(&b).unwrap());
         }
-        let mut verifiers = Vec::new();
+        let mut commits = Vec::new();
         for ag in aggs.iter_mut() {
             let others: Vec<MaskMessage> = masks.iter().filter(|x| x.aggregator != ag.index()).cloned().collect();
             let t0 = Instant::now();
-            let v = ag.prepare_masks(&report.report_id, &others).expect("prepare_masks");
+            let c = ag.prepare_masks(&report.report_id, &others).expect("prepare_masks");
             t_masks += t0.elapsed();
+            commits.push(decode::<VerifierCommit>(&encode(&c).unwrap()).unwrap());
+        }
+        let mut verifiers = Vec::new();
+        for ag in aggs.iter_mut() {
+            let others: Vec<VerifierCommit> = commits.iter().filter(|x| x.aggregator != ag.index()).cloned().collect();
+            let v = ag.prepare_reveal(&report.report_id, &others).expect("prepare_reveal");
             let b = encode(&v).unwrap();
             verifier_bytes = b.len();
             verifiers.push(decode::<VerifierMessage>(&b).unwrap());
@@ -266,25 +278,65 @@ fn main() {
     );
     }
 
+    fn wire<T: serde::Serialize + serde::de::DeserializeOwned>(v: Vec<T>) -> (Vec<T>, usize) {
+        let bytes = v.iter().map(|x| encode(x).unwrap().len()).max().unwrap_or(0);
+        (v.into_iter().map(|x| decode(&encode(&x).unwrap()).unwrap()).collect(), bytes)
+    }
     let t0 = Instant::now();
     if let Some(counts) = counts_opt {
+        // verified count round: every aggregator checks the count before any release
+        let (commits, _) = wire(aggs.iter_mut().map(|ag| ag.count_commit(&counts).expect("count commit")).collect());
+        let (openings, _) = wire(aggs.iter_mut().map(|ag| ag.count_open(&commits).expect("count open")).collect());
+        let (reveals, rb) = wire(aggs.iter_mut().map(|ag| ag.count_reveal(&openings).expect("count reveal")).collect());
         for ag in aggs.iter_mut() {
-            ag.count_finish(&counts).expect("count finish");
+            ag.count_finish(&reveals).expect("count finish");
         }
+        println!(
+            "count round (verified): {:.1} ms per aggregator, count share {:.2} MiB with checks, reveal {:.2} MiB",
+            ms(t0.elapsed()) / n_ag,
+            mib(encode(&counts[0]).unwrap().len()),
+            mib(rb)
+        );
     }
-    let shares: Vec<AggregateShare> = aggs.iter_mut().map(|ag| decode(&encode(&ag.aggregate_share().expect("share")).unwrap()).unwrap()).collect();
+    let t0 = Instant::now();
+    let (shares, share_bytes) = wire(aggs.iter_mut().map(|ag| ag.aggregate_share().expect("share")).collect::<Vec<AggregateShare>>());
     let t_share = t0.elapsed();
     let t0 = Instant::now();
-    let BatchResult { aggregate: agg, report_count: count, valid_count, regression, .. } = collector.unshard(&shares).expect("unshard");
+    let share_len = encode(&shares[0]).unwrap().len();
+    let mut pending = collector.release_challenge(0, shares).expect("release challenge");
+    let t_challenge = t0.elapsed();
+    let t0 = Instant::now();
+    let (commits, _) = wire(aggs.iter_mut().map(|ag| ag.release_commit(&pending.challenge).expect("release commit")).collect());
+    let t_commit = t0.elapsed();
+    let opening = collector.release_open(&mut pending, commits).expect("release open");
+    let t0 = Instant::now();
+    let (reveals, reveal_bytes) = wire(aggs.iter_mut().map(|ag| ag.release_reveal(&opening).expect("release reveal")).collect::<Vec<ReleaseReveal>>());
+    let t_reveal = t0.elapsed();
+    let t0 = Instant::now();
+    let BatchResult { aggregate: agg, report_count: count, valid_count, regression, .. } = collector.release_finish(&pending, &reveals).expect("release finish");
+    let t_unshard = t0.elapsed();
     if let Some(r) = &regression {
         println!("regression: n={} beta={:?}", r.n, r.beta);
     }
-    let t_unshard = t0.elapsed();
+    println!(
+        "batch: aggregate_share {:.1} ms per aggregator ({:.2} MiB each incl. accumulators), verified release: challenge {:.1} ms ({} checks, {:.2} MiB), \
+         commit {:.1} ms and reveal {:.1} ms per aggregator (reveal {:.2} MiB), finish {:.1} ms, {} reports",
+        ms(t_share) / n_ag,
+        mib(share_bytes),
+        ms(t_challenge),
+        pending.challenge.checks.len(),
+        mib(encode(&pending.challenge).unwrap().len()),
+        ms(t_commit) / n_ag,
+        ms(t_reveal) / n_ag,
+        mib(reveal_bytes),
+        ms(t_unshard),
+        count
+    );
     let expected = ty.aggregate_plain(&ms_list).unwrap();
     println!(
         "batch: aggregate_share {:.1} ms per aggregator ({:.2} MiB each), collector unshard {:.1} ms, {} reports",
         ms(t_share) / n_ag,
-        mib(encode(&shares[0]).unwrap().len()),
+        mib(share_len),
         ms(t_unshard),
         count
     );

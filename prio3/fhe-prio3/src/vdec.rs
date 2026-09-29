@@ -191,7 +191,7 @@ pub fn commit(context: &[u8], partial: &[u8]) -> [u8; 32] {
 pub fn fuse_checked(ctx: &Context, partials: &[&PartialDecryption], what: &str) -> Result<Vec<u64>> {
     let (mx, q0) = ctx.fuse_magnitude(partials)?;
     if mx >= q0 / 4 {
-        return Err(Error::Protocol(format!("vdec: {what}: fused value reaches q0/4 (a partial decryption is not what it should be)")));
+        return Err(Error::Protocol(format!("vdec: {what}: fused value reaches q0/4 (a partial decryption is not what it should be, or the ciphertext's noise overflowed)")));
     }
     Ok(ctx.fuse(partials, ctx.ring_dim() as usize)?)
 }

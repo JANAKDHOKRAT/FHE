@@ -184,7 +184,10 @@ than the `≈ 2^-62` of Prio3's own Field64 instantiations (Count, Sum). Five
 to seven repetitions give up to `2^-137` at depth 26, but for that chain
 OpenFHE selects ring dimension 131072 (measured: 60 MiB ciphertexts, 228 MiB
 per key), roughly four times the cost of every number below; it is allowed
-by the configuration and not the default.
+by the configuration and not the default. The smaller prime also limits ranges:
+`Sum` and each `BoundedSumVec` bound can be at most `524287` in silent
+mode, because a wider range constraint could wrap modulo `p` (§4.1); the
+configuration refuses anything wider.
 
 *Layout.* Repetition `j` uses the residue class `j (mod 4)`: the client
 places element `i` of a chunk at slot `4i`, and the aggregator rotates the
@@ -293,9 +296,28 @@ challenge, so a forgery costs about `(p/2)^k` encryptions in expectation. For
 `p ≈ 2^32`, `k = 4`: `2^-124` per attempt, `≈ 2^124` encryptions per
 forgery. `TaskConfig::soundness_bits` reports `k·log2 p`.
 
-The bit-length limit `MAX_BITS = 30` guarantees that the integer values the
-linear constraints compare are below `p/2`, so equality modulo `p` is
-equality over the integers.
+The check tests each linear constraint modulo `p`, which equals the test
+over the integers exactly when the constraint cannot reach a nonzero
+multiple of `p`. Constraints are therefore defined over the integers
+(`LinearConstraint`), reduced into `F_p` only when the challenge is built,
+and every party refuses a task in which some constraint's range over 0/1
+slots reaches `p` or `-p` (`check_constraints_fit`, run by
+`TaskConfig::validate`). The range is computed in closed form, and a unit
+test checks on every 0/1 assignment of about 280 small types under five
+small primes that the rule accepts a type exactly when no assignment
+makes a constraint a nonzero multiple of `p`.
+
+With `p ≈ 2^32` (verdict mode) every type within `MAX_BITS = 30` fits.
+With silent mode's `p = 786433`, `Sum` and each `BoundedSumVec` bound fit
+up to `2^19 − 1 = 524287`. Before this rule, the configuration accepted
+wider ranges in silent mode. That was demonstrated: for a `Sum` with
+maximum 600,000, a report of 637,858 whose offset half makes the
+constraint equal `p` passed the per-report check. The collector's
+integer consistency check then refused the whole batch, so one such
+report could block a batch's release. For ranges of 21 bits or more, a
+coefficient `2^20 > p` also underflowed when negated in `F_p`, which gave
+honest reports a wrong equation. Both are removed: such tasks are refused
+when configured (`tests/bounds.rs::silent_mode_sum_range_is_enforced_up_to_what_p_allows`).
 
 ### 4.2 Privacy
 

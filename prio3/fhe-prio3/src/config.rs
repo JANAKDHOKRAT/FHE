@@ -272,6 +272,9 @@ impl TaskConfig {
             return Err(Error::Config("repetitions must be in 1..=64".into()));
         }
         let field = Field::new(self.plain_mod).ok_or_else(|| Error::Config("plain_mod must be a prime below 2^32".into()))?;
+        // The check tests each linear constraint modulo p; refuse types
+        // whose constraints could be a nonzero multiple of p.
+        crate::types::check_constraints_fit(&self.measurement_type, self.plain_mod)?;
         if self.min_batch_size == 0 {
             return Err(Error::Config("min_batch_size must be >= 1".into()));
         }

@@ -156,11 +156,65 @@ pub fn regression_plain(values: &[Vec<u64>]) -> RegressionResult {
     RegressionResult::from_moments(n, first, second)
 }
 
-/// `sum_i coeffs[i].1 * x[coeffs[i].0] + constant == 0` in F_p.
+/// `sum_i coeffs[i].1 * x[coeffs[i].0] + constant == 0` over the integers,
+/// for slots `x_i` in `{0, 1}`.
+///
+/// The homomorphic check can only test the constraint modulo `p`. That is
+/// the same test exactly when the left side, over every 0/1 assignment,
+/// stays strictly between `-p` and `p`: then a multiple of `p` in that
+/// range is zero. [`check_constraints_fit`] enforces this for every task,
+/// and [`LinearConstraint::range`] gives the exact range it checks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinearConstraint {
-    pub coeffs: Vec<(usize, u64)>,
-    pub constant: u64,
+    pub coeffs: Vec<(usize, i64)>,
+    pub constant: i64,
+}
+
+impl LinearConstraint {
+    /// Smallest and largest value of the left side over all 0/1 slots.
+    pub fn range(&self) -> (i128, i128) {
+        let mut lo = self.constant as i128;
+        let mut hi = self.constant as i128;
+        for &(_, c) in &self.coeffs {
+            if c < 0 { lo += c as i128 } else { hi += c as i128 }
+        }
+        (lo, hi)
+    }
+
+    /// Value of the left side over the integers.
+    pub fn eval(&self, x: &[u64]) -> i128 {
+        self.constant as i128 + self.coeffs.iter().map(|&(i, c)| c as i128 * x[i] as i128).sum::<i128>()
+    }
+
+    /// Coefficients reduced into `F_p`.
+    pub fn field_coeffs<'a>(&'a self, f: &'a Field) -> impl Iterator<Item = (usize, u64)> + 'a {
+        self.coeffs.iter().map(move |&(i, c)| (i, f.reduce_i128(c as i128)))
+    }
+
+    /// Constant reduced into `F_p`.
+    pub fn field_constant(&self, f: &Field) -> u64 {
+        f.reduce_i128(self.constant as i128)
+    }
+}
+
+/// Refuses a measurement type whose linear constraints the check cannot
+/// enforce modulo `p`: some constraint's range over 0/1 slots reaches `p`
+/// or `-p`, so a report could make it a nonzero multiple of `p` (zero
+/// modulo `p`) with values outside the declared range. With `p` about
+/// `2^32` (verdict mode) every type within `MAX_BITS` fits; with the
+/// 19.6-bit prime of silent mode, `Sum` and `BoundedSumVec` fit up to
+/// `2^19 - 1`.
+pub fn check_constraints_fit(t: &MeasurementType, p: u64) -> Result<()> {
+    let p = p as i128;
+    for (l, (lo, hi)) in t.constraint_ranges().into_iter().enumerate() {
+        if hi >= p || lo <= -p {
+            return Err(Error::Config(format!(
+                "{t:?}: linear constraint {l} takes values in [{lo}, {hi}] on 0/1 slots, which reaches p = {p}; \
+                 checked modulo p it would not enforce the declared range. Use a narrower range or a larger plaintext modulus"
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn bit_length(v: u64) -> u32 {
@@ -364,53 +418,69 @@ impl MeasurementType {
         }
     }
 
-    /// Linear constraints in addition to the per-slot bit checks.
-    pub fn linear_constraints(&self, f: &Field) -> Vec<LinearConstraint> {
+    /// The range of each linear constraint over 0/1 slots, in the order of
+    /// [`Self::linear_constraints`], in closed form: validation must not
+    /// allocate in proportion to a declared length. The unit tests check it
+    /// against [`LinearConstraint::range`].
+    pub fn constraint_ranges(&self) -> Vec<(i128, i128)> {
+        let sum_range = |max: u64| -> (i128, i128) {
+            let span = (1i128 << Self::sum_bits(max)) - 1;
+            let o = Self::sum_offset(max) as i128;
+            (o - span, o + span)
+        };
         match self {
             MeasurementType::Count | MeasurementType::SumVec { .. } => vec![],
-            MeasurementType::Sum { max_measurement } => {
-                // value(x) + offset - value(y) == 0
-                let bits = Self::sum_bits(*max_measurement) as usize;
-                let mut coeffs = Vec::with_capacity(2 * bits);
-                for i in 0..bits {
-                    coeffs.push((i, 1u64 << i));
-                }
-                for i in 0..bits {
-                    coeffs.push((bits + i, f.neg(1u64 << i)));
-                }
-                vec![LinearConstraint { coeffs, constant: Self::sum_offset(*max_measurement) }]
+            MeasurementType::Sum { max_measurement } => vec![sum_range(*max_measurement)],
+            MeasurementType::BoundedSumVec { bounds } => bounds.iter().map(|&b| sum_range(b)).collect(),
+            MeasurementType::Histogram { length } => vec![(-1, *length as i128 - 1)],
+            MeasurementType::MultihotCountVec { length, max_weight } => {
+                let o = Self::weight_offset(*max_weight) as i128;
+                vec![(o - ((1i128 << Self::weight_bits(*max_weight)) - 1), o + *length as i128)]
             }
+        }
+    }
+
+    /// Linear constraints in addition to the per-slot bit checks, over the
+    /// integers.
+    pub fn linear_constraints(&self) -> Vec<LinearConstraint> {
+        // value(x) + offset - value(y) == 0 over `bits` bits starting at `start`
+        let sum_constraint = |start: usize, max: u64| -> LinearConstraint {
+            let bits = Self::sum_bits(max) as usize;
+            let mut coeffs = Vec::with_capacity(2 * bits);
+            for i in 0..bits {
+                coeffs.push((start + i, 1i64 << i));
+            }
+            for i in 0..bits {
+                coeffs.push((start + bits + i, -(1i64 << i)));
+            }
+            LinearConstraint { coeffs, constant: Self::sum_offset(max) as i64 }
+        };
+        match self {
+            MeasurementType::Count | MeasurementType::SumVec { .. } => vec![],
+            MeasurementType::Sum { max_measurement } => vec![sum_constraint(0, *max_measurement)],
             MeasurementType::BoundedSumVec { bounds } => {
-                // per element e: value(x_e) + offset_e - value(y_e) == 0, each
-                // with its own challenge coefficient (see verify.rs)
+                // one constraint per element, each with its own challenge
+                // coefficient (see verify.rs)
                 let mut out = Vec::with_capacity(bounds.len());
                 let mut start = 0usize;
                 for &b in bounds {
-                    let bits = Self::sum_bits(b) as usize;
-                    let mut coeffs = Vec::with_capacity(2 * bits);
-                    for i in 0..bits {
-                        coeffs.push((start + i, 1u64 << i));
-                    }
-                    for i in 0..bits {
-                        coeffs.push((start + bits + i, f.neg(1u64 << i)));
-                    }
-                    out.push(LinearConstraint { coeffs, constant: Self::sum_offset(b) });
-                    start += 2 * bits;
+                    out.push(sum_constraint(start, b));
+                    start += 2 * Self::sum_bits(b) as usize;
                 }
                 out
             }
             MeasurementType::Histogram { length } => {
                 // sum(x) - 1 == 0
-                vec![LinearConstraint { coeffs: (0..*length).map(|i| (i, 1u64)).collect(), constant: f.neg(1) }]
+                vec![LinearConstraint { coeffs: (0..*length).map(|i| (i, 1i64)).collect(), constant: -1 }]
             }
             MeasurementType::MultihotCountVec { length, max_weight } => {
                 // sum(x) + offset - value(w) == 0
                 let wb = Self::weight_bits(*max_weight) as usize;
-                let mut coeffs: Vec<(usize, u64)> = (0..*length).map(|i| (i, 1u64)).collect();
+                let mut coeffs: Vec<(usize, i64)> = (0..*length).map(|i| (i, 1i64)).collect();
                 for j in 0..wb {
-                    coeffs.push((length + j, f.neg(1u64 << j)));
+                    coeffs.push((length + j, -(1i64 << j)));
                 }
-                vec![LinearConstraint { coeffs, constant: Self::weight_offset(*max_weight) }]
+                vec![LinearConstraint { coeffs, constant: Self::weight_offset(*max_weight) as i64 }]
             }
         }
     }
@@ -509,25 +579,97 @@ impl MeasurementType {
 
 /// Evaluates the validity predicate on a plaintext vector. Used by tests and
 /// by the soundness discussion in the spec; never by the protocol itself.
-pub fn is_valid_plain(t: &MeasurementType, f: &Field, x: &[u64]) -> bool {
+pub fn is_valid_plain(t: &MeasurementType, _f: &Field, x: &[u64]) -> bool {
     if x.len() != t.input_len() {
         return false;
     }
     if x.iter().any(|&v| v != 0 && v != 1) {
         return false;
     }
-    t.linear_constraints(f).iter().all(|c| {
-        let mut acc = c.constant;
-        for &(i, coef) in &c.coeffs {
-            acc = f.add(acc, f.mul(coef, x[i]));
-        }
-        acc == 0
-    })
+    t.linear_constraints().iter().all(|c| c.eval(x) == 0)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The fit rule is exact. For small primes and every type small enough
+    /// to enumerate, a type passes `check_constraints_fit` exactly when no
+    /// 0/1 assignment makes a constraint a nonzero multiple of p, that is,
+    /// exactly when "zero modulo p" and "zero over the integers" agree.
+    #[test]
+    fn constraint_fit_is_exact_on_every_assignment() {
+        let mut types = Vec::new();
+        for max in 1..=255u64 {
+            types.push(MeasurementType::Sum { max_measurement: max });
+        }
+        for length in 2..=14 {
+            types.push(MeasurementType::Histogram { length });
+        }
+        for (length, w) in [(3, 1), (4, 2), (6, 3), (8, 5), (10, 7), (12, 12), (9, 8)] {
+            types.push(MeasurementType::MultihotCountVec { length, max_weight: w });
+        }
+        for bounds in [vec![3u64, 5], vec![100, 2], vec![127, 1], vec![15, 15], vec![60, 6]] {
+            types.push(MeasurementType::BoundedSumVec { bounds });
+        }
+        let (mut fit, mut unfit) = (0, 0);
+        for p in [11u64, 97, 101, 257, 263] {
+            for t in &types {
+                t.validate().unwrap();
+                let n = t.input_len();
+                assert!(n <= 18, "{t:?} too large to enumerate");
+                let cs = t.linear_constraints();
+                assert_eq!(t.constraint_ranges(), cs.iter().map(|c| c.range()).collect::<Vec<_>>(), "{t:?}");
+                let mut wraps = false;
+                for mask in 0u32..(1 << n) {
+                    let x: Vec<u64> = (0..n).map(|i| ((mask >> i) & 1) as u64).collect();
+                    for c in &cs {
+                        let v = c.eval(&x);
+                        // the field evaluation used by the check agrees with v mod p
+                        let f = Field::new(p).unwrap();
+                        let mut acc = c.field_constant(&f);
+                        for (i, coef) in c.field_coeffs(&f) {
+                            acc = f.add(acc, f.mul(coef, x[i]));
+                        }
+                        assert_eq!(acc as i128, v.rem_euclid(p as i128), "{t:?} p={p}");
+                        wraps |= v != 0 && v.rem_euclid(p as i128) == 0;
+                    }
+                }
+                let ok = check_constraints_fit(t, p).is_ok();
+                assert_eq!(ok, !wraps, "{t:?} p={p}: rule says fits={ok}, enumeration found a wrap={wraps}");
+                if ok { fit += 1 } else { unfit += 1 }
+            }
+        }
+        assert!(fit > 100 && unfit > 100, "both outcomes exercised: {fit} fit, {unfit} do not");
+    }
+
+    /// The widest ranges each real prime supports.
+    #[test]
+    fn widest_sound_ranges_under_the_real_primes() {
+        let silent = 786_433u64;
+        let verdict = 4_293_918_721u64;
+        let sum = |m| MeasurementType::Sum { max_measurement: m };
+        assert!(check_constraints_fit(&sum(524_287), silent).is_ok());
+        assert!(check_constraints_fit(&sum(400_000), silent).is_ok());
+        assert!(check_constraints_fit(&sum(524_288), silent).is_err());
+        assert!(check_constraints_fit(&sum(600_000), silent).is_err());
+        assert!(check_constraints_fit(&MeasurementType::BoundedSumVec { bounds: vec![100, 524_287] }, silent).is_ok());
+        assert!(check_constraints_fit(&MeasurementType::BoundedSumVec { bounds: vec![100, 524_288] }, silent).is_err());
+        assert!(check_constraints_fit(&MeasurementType::Histogram { length: 786_433 }, silent).is_ok());
+        assert!(check_constraints_fit(&MeasurementType::Histogram { length: 786_434 }, silent).is_err());
+        assert!(check_constraints_fit(&sum((1 << MAX_BITS) - 1), verdict).is_ok());
+        assert!(check_constraints_fit(&MeasurementType::BoundedSumVec { bounds: vec![(1 << MAX_BITS) - 1; 3] }, verdict).is_ok());
+        assert!(check_constraints_fit(&MeasurementType::MultihotCountVec { length: (1 << MAX_BITS) - 1, max_weight: 7 }, verdict).is_ok());
+        // The report demonstrated against the unchecked configuration: for
+        // max 600,000 under the silent prime it makes the constraint exactly p.
+        let c = &sum(600_000).linear_constraints()[0];
+        let b = 20;
+        let mut x: Vec<u64> = (0..b).map(|i| (637_858u64 >> i) & 1).collect();
+        x.extend((0..b).map(|i| (300_000u64 >> i) & 1));
+        assert_eq!(c.eval(&x), silent as i128);
+        let e = check_constraints_fit(&sum(600_000), silent).unwrap_err().to_string();
+        assert!(e.contains("reaches p = 786433"), "{e}");
+    }
     fn f() -> Field {
         Field::new(4_293_918_721).unwrap()
     }
@@ -559,7 +701,7 @@ mod tests {
         t.validate().unwrap();
         assert_eq!(t.input_len(), 2 * (7 + 8 + 3 + 1));
         assert_eq!(t.value_slots().unwrap(), vec![(0, 7), (14, 8), (30, 3), (36, 1)]);
-        assert_eq!(t.linear_constraints(&f()).len(), 4);
+        assert_eq!(t.linear_constraints().len(), 4);
         let e = t.encode(&Measurement::SumVec(vec![100, 255, 5, 1])).unwrap();
         assert_eq!(&e[..7], &[0, 0, 1, 0, 0, 1, 1]); // 100
         assert_eq!(&e[7..14], &[1, 1, 1, 1, 1, 1, 1]); // 127

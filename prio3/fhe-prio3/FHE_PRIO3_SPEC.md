@@ -458,9 +458,10 @@ depend on honest inputs) are never decrypted.
 
 A verifier holds ciphertexts `c_a` and needs everyone's partial
 decryptions of them. It sends `κ = ⌈80 / log2(2N)⌉` blinded checks
-`C_ℓ = Σ_a X^{k_{ℓ,a}} c_a + Z_ℓ` (5 for `N = 65536`), with `k` uniform in
+`C_ℓ = Σ_a X^{k_{ℓ,a}} c_a + Z_ℓ`, with `k` uniform in
 `[0, 2N)` and `Z_ℓ` a public-key encryption of zero whose randomness it
-keeps. Multiplying by `X^k` multiplies slot `s` by `w_s^k`, where `w_s` is a
+keeps. `κ` is 5 for both verdict mode (`N = 32768`) and silent mode
+(`N = 65536`). Multiplying by `X^k` multiplies slot `s` by `w_s^k`, where `w_s` is a
 primitive `2N`-th root of unity mod `p`. The aggregators commit to their
 partials of the checks, the verifier opens `k` and the randomness, the
 aggregators rebuild the checks and reveal only if they match, and the
@@ -514,6 +515,28 @@ With `k = 2` (soundness `2^-62`), the aggregator cost for Sum(100) was
 487 ms. With `AuthPolicy::Required` (Count, 3 reports), it was 563 ms per
 report: signature verification is not measurable next to the homomorphic
 work.
+
+**Cost of verified decryption and commitments** (§3.4, §3.5, §4.4;
+`simulate`, 2 aggregators, same machine). Per report in verdict mode, the
+mask and partial commitments add two small messages and a hash each. The
+aggregator total was 493 ms per report for Sum(100) in this run, within the
+run-to-run range of the table above. Per batch:
+
+| Step | Verdict, Sum(100), N = 32768 | Silent, Sum(100), N = 65536 |
+| --- | --- | --- |
+| Verified count round (5 steps), per aggregator | — | 1036 ms (count share with checks 17.2 MiB, reveal 7.8 MiB) |
+| Aggregate share, per aggregator (with accumulators) | 49 ms, 4.1 MiB | 105 ms, 9.4 MiB |
+| Collector challenge (5 checks) | 148 ms, 13.7 MiB | 337 ms, 15.6 MiB |
+| Commit, per aggregator | 158 ms | 226 ms |
+| Reveal, per aggregator | 161 ms, 6.8 MiB | 328 ms, 7.8 MiB |
+| Collector verify, fuse and decode | 247 ms | 488 ms |
+
+So verification adds about 0.3–0.6 s per aggregator and under 0.5 s at the
+collector per batch, plus 1 s per aggregator for the silent-mode count, and
+roughly 20–40 MiB of traffic per batch. That is small next to the per-report
+cost. A first measurement of the challenge took 5.1 s because every noise
+bit came from the operating system's generator. `vdec::draw` now seeds a
+ChaCha-based CSPRNG once per draw.
 
 **Silent mode** (`p = 786433`, `k = 4`, depth 25, ring dimension 65536,
 2 aggregators, `simulate --mode silent`):

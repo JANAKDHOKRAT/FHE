@@ -322,7 +322,7 @@ fn main() {
         "batch: aggregate_share {:.1} ms per aggregator ({:.2} MiB each incl. accumulators), verified release: challenge {:.1} ms ({} checks, {:.2} MiB), \
          commit {:.1} ms and reveal {:.1} ms per aggregator (reveal {:.2} MiB), finish {:.1} ms, {} reports",
         ms(t_share) / n_ag,
-        mib(share_bytes),
+        mib(share_bytes.max(share_len)),
         ms(t_challenge),
         pending.challenge.checks.len(),
         mib(encode(&pending.challenge).unwrap().len()),
@@ -333,13 +333,6 @@ fn main() {
         count
     );
     let expected = ty.aggregate_plain(&ms_list).unwrap();
-    println!(
-        "batch: aggregate_share {:.1} ms per aggregator ({:.2} MiB each), collector unshard {:.1} ms, {} reports",
-        ms(t_share) / n_ag,
-        mib(share_len),
-        ms(t_unshard),
-        count
-    );
     println!("aggregate = {agg:?} (valid reports: {valid_count})");
     assert_eq!(agg, expected, "aggregate mismatch");
     println!("aggregate matches plaintext reference: OK");

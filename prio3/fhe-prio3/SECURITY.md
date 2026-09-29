@@ -128,7 +128,7 @@ aggregator's partial decryptions of them.
    accepts only if, in every slot `s` and for every `ℓ`:
    `fused(C_ℓ)[s] = Σ_a w_s^{k_{ℓ,a}} fused(c_a)[s]  (mod p)`.
 
-`κ = ⌈80 / log2(2N)⌉`: 5 for `N = 65536`.
+`κ = ⌈80 / log2(2N)⌉`: 5 for both `N = 32768` (verdict mode) and `N = 65536` (silent mode).
 
 **Lemma 1 (an accepted shift is fixed by the coalition).** Fusion, as
 implemented in OpenFHE 1.3.1 (`MultipartyBGVRNS::MultipartyDecryptFusion`,

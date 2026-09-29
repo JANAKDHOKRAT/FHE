@@ -33,7 +33,7 @@ use crate::field::Field;
 use crate::keys;
 use crate::layout::Layout;
 use crate::messages::{AggregateShare, CountShare, MaskMessage, PublicMaterial, Report, ReportId, VerifierMessage, batch_digest};
-use crate::packed::{Codec, Expect, WireError};
+use crate::packed::{check_stored, Codec, Expect, WireError};
 use crate::verify::{Challenge, Circuit};
 use openfhe_tbgv_rs::{Ciphertext, CiphertextMeta, Context, PartialDecryption, PublicKey, SecretShare};
 use rand::rngs::OsRng;
@@ -154,6 +154,10 @@ impl Aggregator {
         if ctx.plain_mod() != cfg.plain_mod || ctx.mult_depth() < cfg.mult_depth() {
             return Err(Error::Config("context parameters do not match the task".into()));
         }
+        // Every ciphertext this aggregator receives is rebuilt from residues
+        // and metadata; refuse to run if the loaded OpenFHE does not rebuild
+        // exactly at every level the task reaches (once per process).
+        openfhe_tbgv_rs::verify_rebuild_once(&ctx, cfg.mult_depth())?;
         let key_lease = keys::install(&ctx, material)?;
         let pk = ctx.deserialize_public_key(&material.public_key)?;
         let joint_tag = pk.tag()?;
@@ -539,6 +543,28 @@ impl Aggregator {
     /// `pending_reports` must contain every report listed in
     /// `st.silent_pending`; their validity-masked chunks are recomputed.
     pub fn restore(&mut self, st: AggregatorState, pending_reports: &[Report]) -> Result<()> {
+        // Stored partial decryptions this aggregator released are returned
+        // unchanged on a retried close, so they must be in the packed
+        // format; a state from before it cannot be resumed.
+        let f = self.codec.format();
+        if let Some(c) = &st.released_count_share {
+            check_stored(f, &c.partial, Expect::Partial, "released count share")?;
+        }
+        for (c, share) in &st.released_aggregate_shares {
+            let what = format!("aggregate share released to collector {c}");
+            for p in share.partials.iter().chain(&share.moment_partials).chain(share.valid_count_partial.as_ref()) {
+                check_stored(f, p, Expect::Partial, &what)?;
+            }
+        }
+        for (_, id) in &st.silent_pending {
+            let report = pending_reports
+                .iter()
+                .find(|r| r.report_id == *id)
+                .ok_or_else(|| Error::Protocol(format!("restore: pending report {} not supplied", hex::encode(id))))?;
+            for bytes in &report.chunks {
+                check_stored(f, bytes, Expect::Exactly(self.codec.fresh_meta()), &format!("pending report {}", hex::encode(id)))?;
+            }
+        }
         let de = |v: &Vec<Vec<u8>>| -> Result<Vec<Ciphertext>> { v.iter().map(|b| self.ctx.deserialize_ciphertext(b).map_err(Into::into)).collect() };
         self.sums = match &st.sums {
             Some(v) => Some(de(v)?),

@@ -2,6 +2,9 @@
 #include "tbgv.h"
 
 #include <cstring>
+#include <climits>
+#include <cstdlib>
+#include <link.h>
 #include <random>
 #include <map>
 #include <memory>
@@ -116,7 +119,9 @@ uint64_t tbgv_context_plain_mod(TbgvContext ctx) {
 }
 uint32_t tbgv_context_ring_dim(TbgvContext ctx) { return cc_of(ctx)->GetRingDimension(); }
 uint32_t tbgv_context_mult_depth(TbgvContext ctx) {
-    // FLEXIBLEAUTOEXT: number of RNS limbs = depth + 2.
+    // Towers minus two: an upper bound on the configured depth (OpenFHE 1.3.1
+    // gives a depth-d NOISE_FLOODING_MULTIPARTY / FLEXIBLEAUTOEXT context d + 4
+    // towers). See Context::mult_depth.
     return static_cast<uint32_t>(cc_of(ctx)->GetCryptoParameters()->GetElementParams()->GetParams().size()) - 2;
 }
 double tbgv_context_log2_q(TbgvContext ctx) {
@@ -573,3 +578,29 @@ size_t tbgv_decrypt_single(TbgvContext ctx, TbgvSecretKey sk, TbgvCiphertext ct,
 }
 
 }  // extern "C"
+
+/* ---- loaded library identification -------------------------------------- */
+
+static int collect_openfhe_objects(struct dl_phdr_info* info, size_t, void* data) {
+    auto* out = static_cast<std::vector<std::string>*>(data);
+    if (info->dlpi_name != nullptr && std::strstr(info->dlpi_name, "libOPENFHE") != nullptr) {
+        char resolved[PATH_MAX];
+        out->push_back(realpath(info->dlpi_name, resolved) != nullptr ? std::string(resolved) : std::string(info->dlpi_name));
+    }
+    return 0;
+}
+
+char* tbgv_loaded_openfhe_libraries(void) {
+    TBGV_TRY
+    std::vector<std::string> libs;
+    dl_iterate_phdr(collect_openfhe_objects, &libs);
+    std::string joined;
+    for (size_t i = 0; i < libs.size(); ++i) {
+        if (i) joined += '\n';
+        joined += libs[i];
+    }
+    char* out = dup_string(joined);
+    if (out == nullptr) set_error("malloc failed");
+    return out;
+    TBGV_CATCH(nullptr)
+}

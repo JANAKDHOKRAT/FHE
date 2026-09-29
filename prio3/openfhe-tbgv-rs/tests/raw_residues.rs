@@ -132,6 +132,7 @@ fn roundtrip_partial(ctx: &Context, reference: &Ciphertext, ct: &Ciphertext) -> 
 fn rebuild_is_exact_for_every_protocol_object_kind() {
     let _g = serial();
     let (ctx, pk, parties) = ceremony(2, &[1, 4, -8], 3);
+    verify_rebuild_once(&ctx, 3).unwrap();
     let l = ctx.num_towers();
     let moduli = ctx.moduli().unwrap();
     assert_eq!(moduli.len(), l as usize);
@@ -187,6 +188,7 @@ fn rebuild_is_exact_for_every_protocol_object_kind() {
 fn rebuild_refuses_every_malformed_argument() {
     let _g = serial();
     let (ctx, pk, _parties) = ceremony(2, &[1], 3);
+    verify_rebuild_once(&ctx, 3).unwrap();
     let l = ctx.num_towers();
     let n = ctx.ring_dim() as usize;
     let moduli = ctx.moduli().unwrap();
@@ -250,4 +252,29 @@ fn rebuild_refuses_every_malformed_argument() {
     // the maximum legal residue (modulus - 1) everywhere is accepted
     let maxed: Vec<u64> = (0..res.len()).map(|i| moduli[(i / n) % l as usize] - 1).collect();
     ctx.build_ciphertext(&reference, &good, &maxed).unwrap();
+}
+
+/// Rebuilding is refused until the self-test has passed for the context's
+/// parameters in this process (depth 4 is used by no other test here).
+#[test]
+fn rebuild_is_refused_before_the_self_test() {
+    let _g = serial();
+    let ctx = Context::new(Params { plain_mod: P, mult_depth: 4, security_bits: 128 }).unwrap();
+    let (pk, _sk) = keygen_first(&ctx).unwrap();
+    let reference = ctx.encrypt(&pk, &ctx.plaintext(&[0]).unwrap()).unwrap();
+    let ct = ctx.encrypt(&pk, &ctx.plaintext(&[3, 1, 4]).unwrap()).unwrap();
+    let (meta, res) = (ct.meta().unwrap(), ct.export_residues().unwrap());
+    assert_eq!(rebuild_verified(&ctx).unwrap(), None);
+    let e = match ctx.build_ciphertext(&reference, &meta, &res) {
+        Ok(_) => panic!("rebuild ran before the self-test"),
+        Err(e) => e,
+    };
+    assert!(e.0.contains("verify_rebuild_once"), "{e}");
+    let report = verify_rebuild_once(&ctx, 4).unwrap();
+    assert_eq!(report.deepest_level, 4);
+    assert_eq!(report.openfhe_version, OPENFHE_VERSION);
+    assert!(report.libraries.iter().all(|l| l.ends_with(&format!(".so.{OPENFHE_VERSION}"))), "{report:?}");
+    let back = ctx.build_ciphertext(&reference, &meta, &res).unwrap();
+    assert_eq!(back.export_residues().unwrap(), res);
+    println!("SELFTEST depth 4: {report:?}");
 }

@@ -26,6 +26,8 @@ cmake --build openfhe-build -j && sudo cmake --install openfhe-build && sudo ldc
 
 cd prio3/fhe-prio3
 cargo test --release            # ~2 minutes; tests serialise themselves
+cargo +nightly fuzz run parse    # fuzz the wire-format parser (needs cargo-fuzz)
+cargo +nightly fuzz run roundtrip
 cargo run --release --bin simulate -- --type sum --max 100 --reports 4
 cargo run --release --bin simulate -- --type histogram --length 64 --aggregators 3
 cargo run --release --bin simulate -- --type sumvec --length 1200 --bits 4
@@ -33,6 +35,11 @@ cargo run --release --bin simulate -- --type sumvec --length 1200 --bits 4
 
 Both crates are standalone Cargo workspaces (the parent `prio3` workspace
 references a vendored `libprio-rs` that is not in git).
+
+CI (`.github/workflows/prio3.yml`) builds OpenFHE 1.3.1 from the same
+commit and options, runs every test suite of the shim, this crate and the
+node, and fuzzes the wire-format parser: 5 minutes per target on each
+change, one hour per target nightly.
 
 ## Modes and authentication
 

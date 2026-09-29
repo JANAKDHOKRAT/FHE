@@ -1,0 +1,138 @@
+name: prio3
+
+# Builds OpenFHE 1.3.1 (the version the shim is tested against, see
+# prio3/openfhe-tbgv-rs/build.rs), runs every test suite of the threshold-BGV
+# shim, the protocol crate and the network node, and fuzzes the packed wire
+# format parser (5 minutes per target on each change, one hour per target
+# nightly).
+
+on:
+  push:
+    branches: [main]
+    paths: ["prio3/**", ".github/workflows/prio3.yml"]
+  pull_request:
+    paths: ["prio3/**", ".github/workflows/prio3.yml"]
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # Same source commit and options as the development container's build.
+  OPENFHE_TAG: v1.3.1
+  OPENFHE_COMMIT: 32362085fcfa8133f86a4e81d4440734c984b16d
+  OPENFHE_DIR: /home/runner/openfhe-install
+  RUST_STABLE: "1.94.1"
+  RUST_NIGHTLY: nightly-2026-09-28
+  CARGO_TERM_COLOR: always
+
+jobs:
+  openfhe:
+    name: build OpenFHE
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: cache
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.OPENFHE_DIR }}
+          key: openfhe-${{ env.OPENFHE_COMMIT }}-ubuntu-24.04-release-openmp-v1
+      - name: build and install
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ninja-build
+          git clone --branch "$OPENFHE_TAG" --depth 1 https://github.com/openfheorg/openfhe-development.git openfhe
+          test "$(git -C openfhe rev-parse HEAD)" = "$OPENFHE_COMMIT"
+          cmake -S openfhe -B openfhe/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$OPENFHE_DIR" \
+            -DBUILD_SHARED=ON -DBUILD_STATIC=OFF -DWITH_OPENMP=ON -DWITH_NATIVEOPT=OFF \
+            -DBUILD_UNITTESTS=OFF -DBUILD_EXAMPLES=OFF -DBUILD_BENCHMARKS=OFF -DBUILD_EXTRAS=OFF
+          cmake --build openfhe/build -j "$(nproc)"
+          cmake --install openfhe/build
+          test -f "$OPENFHE_DIR/lib/OpenFHE/OpenFHEConfigVersion.cmake"
+          test -f "$OPENFHE_DIR/lib/libOPENFHEpke.so.1.3.1"
+
+  test:
+    name: test ${{ matrix.suite.name }}
+    needs: openfhe
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        suite:
+          - { name: shim, dir: prio3/openfhe-tbgv-rs, args: "" }
+          - { name: protocol-lib, dir: prio3/fhe-prio3, args: "--lib --bins" }
+          - { name: protocol-wire, dir: prio3/fhe-prio3, args: "--test wire" }
+          - { name: protocol, dir: prio3/fhe-prio3, args: "--test protocol" }
+          - { name: protocol-bounds, dir: prio3/fhe-prio3, args: "--test bounds" }
+          - { name: protocol-mitigations, dir: prio3/fhe-prio3, args: "--test mitigations" }
+          - { name: protocol-policy, dir: prio3/fhe-prio3, args: "--test policy" }
+          - { name: protocol-regression, dir: prio3/fhe-prio3, args: "--test regression" }
+          - { name: protocol-upgrade, dir: prio3/fhe-prio3, args: "--test upgrade" }
+          - { name: node, dir: prio3/fhe-prio3-node, args: "" }
+    env:
+      LD_LIBRARY_PATH: /home/runner/openfhe-install/lib
+    steps:
+      - uses: actions/checkout@v4
+      - name: restore OpenFHE
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.OPENFHE_DIR }}
+          key: openfhe-${{ env.OPENFHE_COMMIT }}-ubuntu-24.04-release-openmp-v1
+          fail-on-cache-miss: true
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_STABLE }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ matrix.suite.dir }}
+          key: ${{ matrix.suite.name }}
+      - name: cargo test
+        working-directory: ${{ matrix.suite.dir }}
+        run: cargo test --release --locked --no-fail-fast ${{ matrix.suite.args }} -- --test-threads=1
+
+  fuzz:
+    name: fuzz ${{ matrix.target }}
+    needs: openfhe
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [parse, roundtrip]
+    env:
+      LD_LIBRARY_PATH: /home/runner/openfhe-install/lib
+      FUZZ_SECONDS: ${{ github.event_name == 'schedule' && 3600 || 300 }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: restore OpenFHE
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.OPENFHE_DIR }}
+          key: openfhe-${{ env.OPENFHE_COMMIT }}-ubuntu-24.04-release-openmp-v1
+          fail-on-cache-miss: true
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_NIGHTLY }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: prio3/fhe-prio3/fuzz
+          key: fuzz
+      - name: install cargo-fuzz
+        run: cargo install cargo-fuzz --version 0.13.2 --locked
+      - name: fuzz
+        working-directory: prio3/fhe-prio3
+        run: |
+          cargo +"$RUST_NIGHTLY" fuzz run ${{ matrix.target }} -- \
+            -max_total_time="$FUZZ_SECONDS" -print_final_stats=1
+      - name: keep crashing inputs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: prio3/fhe-prio3/fuzz/artifacts

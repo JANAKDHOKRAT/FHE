@@ -515,6 +515,13 @@ fn packed_against_openfhe_size_and_time() {
     for cfg in [TaskConfig::new(task_id(97), MeasurementType::Count, 2), TaskConfig::new_silent(task_id(98), MeasurementType::Count, 2)] {
         let mode = format!("{:?}", cfg.mode);
         let ctx = keys::make_context(&cfg).unwrap();
+        let report = openfhe_tbgv_rs::verify_rebuild_once(&ctx, cfg.mult_depth()).unwrap();
+        println!(
+            "SELFTEST {mode}: {} objects rebuilt and checked down to level {} in {:.1} s",
+            report.objects_checked,
+            report.deepest_level,
+            report.elapsed.as_secs_f64()
+        );
         let (pk, _share) = keys::keygen_step(&ctx, None).unwrap();
         let pk_bytes = pk.serialize().unwrap();
         let codec = fhe_prio3::packed::Codec::new(&ctx, &pk, &pk_bytes).unwrap();

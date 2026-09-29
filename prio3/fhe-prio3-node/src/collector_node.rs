@@ -69,6 +69,14 @@ impl CollectorNode {
             Some(b) => Some(decode::<BatchResult>(&b)?),
             None => None,
         };
+        // Shares still waiting for the others will be unsharded: refuse to
+        // start on shares stored before the packed format. A batch whose
+        // result is already stored stays readable.
+        if result.is_none() {
+            for share in shares.values() {
+                collector.check_stored_share(share)?;
+            }
+        }
         Ok(Self {
             inner: Arc::new(Inner {
                 task: cfg.task,

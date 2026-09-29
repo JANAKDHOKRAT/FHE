@@ -40,11 +40,31 @@ in OpenFHE's own format, one with a wrong fingerprint, one with a residue
 above its modulus and one a byte short. The test checks that each is
 refused and that the leader keeps serving.
 
-Upgrading across the change to the packed format: a database written by an
-earlier build stores client reports in OpenFHE's format. A node restarted
-on it with pending silent-mode reports fails to start, because restore
-refuses those reports. Close or discard in-flight batches before
-upgrading. Clients and aggregators of one task must run the same format.
+Startup checks. Every node refuses to start unless the OpenFHE libraries
+it loaded are the tested version. Aggregators and the collector then run a
+self-test that rebuilds every kind of exchanged object at every level the
+task reaches with throwaway keys, and refuse to start if any rebuild is not
+exact (spec §6b). The self-test takes about 2 s in verdict mode and about
+30 s in silent mode, once per process.
+
+Upgrading across the change to the packed format: finish collecting every
+batch before upgrading. The database layout is unchanged, but an earlier
+build stored other parties' ciphertexts in OpenFHE's format. On such a
+database:
+
+* an aggregator node starts only if its batch is an open verdict-mode
+  batch, which it resumes;
+* an aggregator with pending silent-mode reports, or with a count share or
+  aggregate shares already released, refuses to start and names the reason;
+* a collector with shares waiting for the rest refuses to start and names
+  the reason;
+* a collector whose result is already stored starts and serves it.
+
+Released shares cannot be issued again, because each ciphertext's partial
+decryption is released once, so a batch released but not collected before
+the upgrade can only be collected by the build that released it. Clients
+and aggregators of one task must run the same format; an old-format report
+is refused with `BadMagic`.
 
 ## Endpoints
 

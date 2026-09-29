@@ -48,7 +48,8 @@
 
 use crate::error::{Error, Result};
 use openfhe_tbgv_rs::{Ciphertext, CiphertextMeta, Context, PartialDecryption, PublicKey};
-use rand::Rng;
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -104,16 +105,21 @@ pub fn groups(accs: &[&Ciphertext]) -> Result<Vec<Vec<usize>>> {
     Ok(out)
 }
 
+/// Centered binomial sample in `[-ETA, ETA]`: the difference of the
+/// popcounts of two independent `ETA`-bit uniform words.
 fn cbd(rng: &mut impl Rng) -> i8 {
-    let mut v = 0i8;
-    for _ in 0..ETA {
-        v += (rng.r#gen::<bool>() as i8) - (rng.r#gen::<bool>() as i8);
-    }
-    v
+    const MASK: u64 = (1 << ETA) - 1;
+    let w: u64 = rng.r#gen();
+    (w & MASK).count_ones() as i8 - ((w >> ETA) & MASK).count_ones() as i8
 }
 
 /// Draws a fresh opening for `accs` (secret until the commitments are in).
+/// `rng` (the operating system's generator in the protocol) seeds a
+/// ChaCha-based CSPRNG (`StdRng`) for the bulk sampling: millions of
+/// samples per draw, one system call.
 pub fn draw(ctx: &Context, accs: &[&Ciphertext], rng: &mut impl Rng) -> Result<Opening> {
+    let mut rng = StdRng::from_rng(rng).map_err(|e| Error::Protocol(format!("seeding the check sampler: {e}")))?;
+    let rng = &mut rng;
     let n = ctx.ring_dim() as usize;
     let mut checks = Vec::new();
     for (g, members) in groups(accs)?.iter().enumerate() {

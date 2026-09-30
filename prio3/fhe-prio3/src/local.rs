@@ -19,7 +19,13 @@ pub fn verdict(aggs: &mut [Aggregator], report: &Report) -> Result<Vec<Verdict>>
         })
         .collect::<Result<_>>()?;
     let others = |i: usize| -> Vec<MaskMessage> { masks.iter().filter(|m| m.aggregator != i).cloned().collect() };
-    let commits: Vec<VerifierCommit> = aggs.iter_mut().map(|a| { let o = others(a.index()); a.prepare_masks(&report.report_id, &o) }).collect::<Result<_>>()?;
+    let commits: Vec<VerifierCommit> = aggs
+        .iter_mut()
+        .map(|a| {
+            let o = others(a.index());
+            a.prepare_masks(&report.report_id, &o)
+        })
+        .collect::<Result<_>>()?;
     let verifiers: Vec<VerifierMessage> = aggs
         .iter_mut()
         .map(|a| {

@@ -46,7 +46,10 @@ impl Store {
                 params![name, bytes],
             )?;
         }
-        let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
         tx.execute("INSERT INTO journal(ts, event, detail) VALUES (?1, ?2, ?3)", params![ts, event, detail])?;
         tx.commit()?;
         Ok(())

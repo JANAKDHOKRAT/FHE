@@ -32,10 +32,14 @@ pub struct CollectorSealKey {
 
 impl CollectorSealKey {
     pub fn generate() -> Self {
-        Self { secret: StaticSecret::random_from_rng(rand_core::OsRng) }
+        Self {
+            secret: StaticSecret::random_from_rng(rand_core::OsRng),
+        }
     }
     pub fn from_secret_bytes(bytes: &[u8; 32]) -> Self {
-        Self { secret: StaticSecret::from(*bytes) }
+        Self {
+            secret: StaticSecret::from(*bytes),
+        }
     }
     pub fn secret_bytes(&self) -> [u8; 32] {
         self.secret.to_bytes()
@@ -88,9 +92,22 @@ fn seal_bytes(domain: &[u8], task_id: [u8; 32], collector: u32, aggregator: usiz
     let mut nonce = [0u8; 12];
     rand_core::OsRng.fill_bytes(&mut nonce);
     let ciphertext = cipher
-        .encrypt(Nonce::from_slice(&nonce), Payload { msg: plain, aad: &aad(domain, &task_id, collector, aggregator) })
+        .encrypt(
+            Nonce::from_slice(&nonce),
+            Payload {
+                msg: plain,
+                aad: &aad(domain, &task_id, collector, aggregator),
+            },
+        )
         .map_err(|_| Error::Protocol("seal".into()))?;
-    Ok(SealedShare { task_id, collector, aggregator, ephemeral: eph_pk, nonce, ciphertext })
+    Ok(SealedShare {
+        task_id,
+        collector,
+        aggregator,
+        ephemeral: eph_pk,
+        nonce,
+        ciphertext,
+    })
 }
 
 fn open_bytes(domain: &[u8], sealed: &SealedShare, key: &CollectorSealKey) -> Result<Vec<u8>> {
@@ -101,7 +118,13 @@ fn open_bytes(domain: &[u8], sealed: &SealedShare, key: &CollectorSealKey) -> Re
     let k = derive_key(domain, shared.as_bytes(), &sealed.ephemeral, &key.public_key())?;
     let cipher = Aes256Gcm::new_from_slice(&k).expect("32-byte key");
     cipher
-        .decrypt(Nonce::from_slice(&sealed.nonce), Payload { msg: &sealed.ciphertext, aad: &aad(domain, &sealed.task_id, sealed.collector, sealed.aggregator) })
+        .decrypt(
+            Nonce::from_slice(&sealed.nonce),
+            Payload {
+                msg: &sealed.ciphertext,
+                aad: &aad(domain, &sealed.task_id, sealed.collector, sealed.aggregator),
+            },
+        )
         .map_err(|_| Error::Protocol("sealed message does not open: wrong collector key, wrong kind or tampered".into()))
 }
 

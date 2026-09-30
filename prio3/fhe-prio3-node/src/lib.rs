@@ -1,5 +1,5 @@
 //! Network nodes for fhe-prio3: an aggregator server, a collector server and
-//! a client, over HTTPS with bincode bodies, with SQLite persistence and a
+//! a client, over HTTPS with postcard bodies, with SQLite persistence and a
 //! sealed-at-rest key share.
 //!
 //! Topology: aggregator 0 is the *leader*. Clients talk only to the leader;

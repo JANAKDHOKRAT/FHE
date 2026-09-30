@@ -1,8 +1,8 @@
 # fhe-prio3
 
 Prio3's five measurement types (Count, Sum, SumVec, Histogram,
-MultihotCountVec) with the validity check evaluated homomorphically under an
-n-of-n threshold BGV key.
+MultihotCountVec), encoded as in draft-irtf-cfrg-vdaf-22, with the validity
+check evaluated homomorphically under an n-of-n threshold BGV key.
 The check's randomness is keyed with a verify key only the aggregators hold,
 as in Prio3. The protocol, its security argument and measured
 costs are in [FHE_PRIO3_SPEC.md](FHE_PRIO3_SPEC.md).

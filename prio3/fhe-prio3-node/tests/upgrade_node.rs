@@ -31,12 +31,22 @@ fn released_batch(seed: u8) -> Batch {
     task_id[0] = seed;
     let task = TaskConfig::new(task_id, MeasurementType::Count, 2);
     let (material, shares) = keys::run_local_ceremony(&task).unwrap();
-    let mut aggs: Vec<Aggregator> = shares.iter().enumerate().map(|(i, s)| Aggregator::new(task.clone(), &material, i, s, None).unwrap()).collect();
+    let mut aggs: Vec<Aggregator> = shares
+        .iter()
+        .enumerate()
+        .map(|(i, s)| Aggregator::new(task.clone(), &material, i, s, None).unwrap())
+        .collect();
     let client = Client::new(task.clone(), &material.context, &material.public_key).unwrap();
     let report = client.shard(&Measurement::Count(true)).unwrap();
     assert!(fhe_prio3::local::verdict(&mut aggs, &report).unwrap().iter().all(|v| *v == Verdict::Accepted));
     let released = aggs.iter_mut().map(|a| a.aggregate_share().unwrap()).collect();
-    Batch { task, material, shares, aggs, released }
+    Batch {
+        task,
+        material,
+        shares,
+        aggs,
+        released,
+    }
 }
 
 fn to_openfhe(agg: &Aggregator, packed: &[u8]) -> Vec<u8> {
@@ -59,7 +69,14 @@ fn agg_config(b: &Batch, i: usize, db: std::path::PathBuf) -> AggregatorNodeConf
 }
 
 fn col_config(b: &Batch, db: std::path::PathBuf) -> CollectorNodeConfig {
-    CollectorNodeConfig { task: b.task.clone(), material: b.material.clone(), collector_id: 0, seal_key: None, token: "t".into(), db }
+    CollectorNodeConfig {
+        task: b.task.clone(),
+        material: b.material.clone(),
+        collector_id: 0,
+        seal_key: None,
+        token: "t".into(),
+        db,
+    }
 }
 
 #[test]

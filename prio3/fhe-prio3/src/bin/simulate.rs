@@ -9,9 +9,9 @@
 //!   simulate --type sum --max 100 --mode silent --reports 2
 //!   simulate --type count --auth --reports 4
 //!   simulate --type histogram --length 64 --reports 4
-//!   simulate --type sumvec --length 1200 --bits 4 --reports 2
+//!   simulate --type sumvec --length 1200 --max 15 --reports 2
 //!   simulate --type bounded --bounds 100,255,5 --moments --reports 6
-//!   simulate --type sumvec --length 3 --bits 8 --mode silent --groups 4 --moments --max-batch 65535 --reports 8
+//!   simulate --type sumvec --length 3 --max 255 --mode silent --groups 4 --moments --max-batch 65535 --reports 8
 
 use fhe_prio3::messages::{decode, encode};
 use fhe_prio3::*;
@@ -24,7 +24,6 @@ struct Args {
     reports: usize,
     repetitions: usize,
     length: usize,
-    bits: u32,
     max: u64,
     max_weight: usize,
     silent: bool,
@@ -36,7 +35,21 @@ struct Args {
 }
 
 fn parse() -> Args {
-    let mut a = Args { ty: "sum".into(), aggregators: 2, reports: 4, repetitions: 0, length: 8, bits: 4, max: 100, max_weight: 2, silent: false, auth: false, groups: 0, moments: false, bounds: vec![100, 255, 5], max_batch: 0 };
+    let mut a = Args {
+        ty: "sum".into(),
+        aggregators: 2,
+        reports: 4,
+        repetitions: 0,
+        length: 8,
+        max: 100,
+        max_weight: 2,
+        silent: false,
+        auth: false,
+        groups: 0,
+        moments: false,
+        bounds: vec![100, 255, 5],
+        max_batch: 0,
+    };
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
     while i < argv.len() {
@@ -47,14 +60,15 @@ fn parse() -> Args {
             "--reports" => a.reports = v.parse().expect("--reports"),
             "--repetitions" => a.repetitions = v.parse().expect("--repetitions"),
             "--length" => a.length = v.parse().expect("--length"),
-            "--bits" => a.bits = v.parse().expect("--bits"),
             "--max" => a.max = v.parse().expect("--max"),
             "--max-weight" => a.max_weight = v.parse().expect("--max-weight"),
-            "--mode" => a.silent = match v {
-                "silent" => true,
-                "verdict" => false,
-                other => panic!("unknown mode {other}"),
-            },
+            "--mode" => {
+                a.silent = match v {
+                    "silent" => true,
+                    "verdict" => false,
+                    other => panic!("unknown mode {other}"),
+                }
+            }
             "--max-batch" => a.max_batch = v.parse().expect("--max-batch"),
             "--groups" => a.groups = v.parse().expect("--groups"),
             "--bounds" => a.bounds = v.split(',').map(|x| x.parse().expect("--bounds")).collect(),
@@ -85,18 +99,24 @@ fn mib(b: usize) -> f64 {
 
 fn measurement(ty: &MeasurementType, i: usize) -> Measurement {
     match ty {
-        MeasurementType::Count => Measurement::Count(i % 3 != 0),
+        MeasurementType::Count => Measurement::Count(!i.is_multiple_of(3)),
         MeasurementType::Sum { max_measurement } => Measurement::Sum((i as u64 * 37) % (max_measurement + 1)),
         // Distinct, non-collinear columns so the regression pilot's normal equations are regular.
-        MeasurementType::SumVec { length, bits } => {
-            Measurement::SumVec((0..*length).map(|j| ((i * (2 * j + 3) + j * j + (i * j) % 5) as u64) % (1u64 << bits)).collect())
-        }
-        MeasurementType::BoundedSumVec { bounds } => {
-            Measurement::SumVec(bounds.iter().enumerate().map(|(j, &b)| ((i * (2 * j + 3) + j * j + (i * j) % 5) as u64) % (b + 1)).collect())
-        }
+        MeasurementType::SumVec { length, max_measurement } => Measurement::SumVec(
+            (0..*length)
+                .map(|j| ((i * (2 * j + 3) + j * j + (i * j) % 5) as u64) % (max_measurement + 1))
+                .collect(),
+        ),
+        MeasurementType::BoundedSumVec { bounds } => Measurement::SumVec(
+            bounds
+                .iter()
+                .enumerate()
+                .map(|(j, &b)| ((i * (2 * j + 3) + j * j + (i * j) % 5) as u64) % (b + 1))
+                .collect(),
+        ),
         MeasurementType::Histogram { length } => Measurement::Histogram((i * 5) % length),
         MeasurementType::MultihotCountVec { length, max_weight } => {
-            Measurement::MultihotCountVec((0..*length).map(|j| j % length < *max_weight && (i + j) % 2 == 0).collect())
+            Measurement::MultihotCountVec((0..*length).map(|j| j % length < *max_weight && (i + j).is_multiple_of(2)).collect())
         }
     }
 }
@@ -106,21 +126,33 @@ fn main() {
     let ty = match a.ty.as_str() {
         "count" => MeasurementType::Count,
         "sum" => MeasurementType::Sum { max_measurement: a.max },
-        "sumvec" => MeasurementType::SumVec { length: a.length, bits: a.bits },
+        "sumvec" => MeasurementType::SumVec {
+            length: a.length,
+            max_measurement: a.max,
+        },
         "bounded" => MeasurementType::BoundedSumVec { bounds: a.bounds.clone() },
         "histogram" => MeasurementType::Histogram { length: a.length },
-        "multihot" => MeasurementType::MultihotCountVec { length: a.length, max_weight: a.max_weight },
+        "multihot" => MeasurementType::MultihotCountVec {
+            length: a.length,
+            max_weight: a.max_weight,
+        },
         other => {
             eprintln!("unknown type {other}");
             std::process::exit(2);
         }
     };
-    let mut cfg = if a.silent { TaskConfig::new_silent([7u8; 32], ty.clone(), a.aggregators) } else { TaskConfig::new([7u8; 32], ty.clone(), a.aggregators) };
+    let mut cfg = if a.silent {
+        TaskConfig::new_silent([7u8; 32], ty.clone(), a.aggregators)
+    } else {
+        TaskConfig::new([7u8; 32], ty.clone(), a.aggregators)
+    };
     if a.repetitions > 0 {
         cfg.repetitions = a.repetitions;
     }
     if a.auth {
-        cfg.auth = AuthPolicy::Required { max_reports_per_client_per_batch: 1 };
+        cfg.auth = AuthPolicy::Required {
+            max_reports_per_client_per_batch: 1,
+        };
     }
     if a.groups > 0 {
         cfg.silent_batch_groups = a.groups;
@@ -133,11 +165,23 @@ fn main() {
     }
     cfg.validate().expect("config");
     let identities: Vec<ClientIdentity> = (0..a.reports).map(|_| ClientIdentity::generate()).collect();
-    let registry: Option<Arc<dyn ClientRegistry>> =
-        if a.auth { Some(StaticRegistry::new(identities.iter().map(|i| i.public_key()))) } else { None };
+    let registry: Option<Arc<dyn ClientRegistry>> = if a.auth {
+        Some(StaticRegistry::new(identities.iter().map(|i| i.public_key())))
+    } else {
+        None
+    };
 
-    println!("type={:?} mode={:?} auth={:?} aggregators={} repetitions={} reports={} groups={}", ty, cfg.mode, cfg.auth, a.aggregators, cfg.repetitions, a.reports, cfg.silent_batch_groups);
-    println!("plain_mod={} mult_depth={} soundness=2^-{:.1} per report max_batch_size={}", cfg.plain_mod, cfg.mult_depth(), cfg.soundness_bits(), cfg.max_batch_size);
+    println!(
+        "type={:?} mode={:?} auth={:?} aggregators={} repetitions={} reports={} groups={}",
+        ty, cfg.mode, cfg.auth, a.aggregators, cfg.repetitions, a.reports, cfg.silent_batch_groups
+    );
+    println!(
+        "plain_mod={} mult_depth={} soundness=2^-{:.1} per report max_batch_size={}",
+        cfg.plain_mod,
+        cfg.mult_depth(),
+        cfg.soundness_bits(),
+        cfg.max_batch_size
+    );
     if let Some(d) = cfg.moment_digit_bits() {
         println!("moments: digit width {d} bits");
     }
@@ -158,8 +202,11 @@ fn main() {
     );
 
     let t0 = Instant::now();
-    let mut aggs: Vec<Aggregator> =
-        shares.iter().enumerate().map(|(i, s)| Aggregator::new(cfg.clone(), &material, i, s, registry.clone()).expect("aggregator")).collect();
+    let mut aggs: Vec<Aggregator> = shares
+        .iter()
+        .enumerate()
+        .map(|(i, s)| Aggregator::new(cfg.clone(), &material, i, s, registry.clone()).expect("aggregator"))
+        .collect();
     println!("aggregator setup: {:.0} ms total for {} aggregators", ms(t0.elapsed()), aggs.len());
     let collector = Collector::new(cfg.clone(), &material).expect("collector");
     let layout = cfg.layout(aggs[0].layout().row).expect("layout");
@@ -184,11 +231,12 @@ fn main() {
     let mut ms_list = Vec::new();
 
     let mut t_silent = Duration::ZERO;
-    for i in 0..a.reports {
+    // one identity per report (`identities` has `a.reports` entries)
+    for (i, identity) in identities.iter().enumerate() {
         let m = measurement(&ty, i);
         let mut client = Client::new(cfg.clone(), &material.context, &material.public_key).expect("client");
         if a.auth {
-            client = client.with_identity(ClientIdentity::from_secret_bytes(&identities[i].secret_bytes()));
+            client = client.with_identity(ClientIdentity::from_secret_bytes(&identity.secret_bytes()));
         }
         let t0 = Instant::now();
         let group = if a.silent { (i % cfg.silent_batch_groups) as u32 } else { 0 };
@@ -256,12 +304,20 @@ fn main() {
     let mut t_close = Duration::ZERO;
     let mut counts_opt: Option<Vec<CountShare>> = None;
     if a.silent {
-        let counts: Vec<CountShare> = aggs.iter_mut().map(|ag| decode(&encode(&ag.count_share().expect("count share")).unwrap()).unwrap()).collect();
+        let counts: Vec<CountShare> = aggs
+            .iter_mut()
+            .map(|ag| decode(&encode(&ag.count_share().expect("count share")).unwrap()).unwrap())
+            .collect();
         t_close = t0.elapsed();
         counts_opt = Some(counts);
     }
     println!("per report:");
-    println!("  client shard            {:>8.1} ms   report {:.2} MiB ({} chunk(s))", ms(t_shard) / n_r, mib(report_bytes), layout.num_chunks);
+    println!(
+        "  client shard            {:>8.1} ms   report {:.2} MiB ({} chunk(s))",
+        ms(t_shard) / n_r,
+        mib(report_bytes),
+        layout.num_chunks
+    );
     if a.silent {
         println!(
             "  aggregator process_silent {:>6.1} ms per report per aggregator, amortised over {} reports incl. batch close (no messages, no per-report decryption)",
@@ -269,13 +325,21 @@ fn main() {
             a.reports
         );
     } else {
-    println!("  aggregator prepare_init {:>8.1} ms   mask message {:.2} MiB", ms(t_init) / n_r / n_ag, mib(mask_bytes));
-    println!("  aggregator prepare_masks{:>8.1} ms   verifier message {:.2} MiB", ms(t_masks) / n_r / n_ag, mib(verifier_bytes));
-    println!("  aggregator prepare_finish{:>7.1} ms", ms(t_finish) / n_r / n_ag);
-    println!(
-        "  aggregator total        {:>8.1} ms per report per aggregator",
-        (ms(t_init) + ms(t_masks) + ms(t_finish)) / n_r / n_ag
-    );
+        println!(
+            "  aggregator prepare_init {:>8.1} ms   mask message {:.2} MiB",
+            ms(t_init) / n_r / n_ag,
+            mib(mask_bytes)
+        );
+        println!(
+            "  aggregator prepare_masks{:>8.1} ms   verifier message {:.2} MiB",
+            ms(t_masks) / n_r / n_ag,
+            mib(verifier_bytes)
+        );
+        println!("  aggregator prepare_finish{:>7.1} ms", ms(t_finish) / n_r / n_ag);
+        println!(
+            "  aggregator total        {:>8.1} ms per report per aggregator",
+            (ms(t_init) + ms(t_masks) + ms(t_finish)) / n_r / n_ag
+        );
     }
 
     fn wire<T: serde::Serialize + serde::de::DeserializeOwned>(v: Vec<T>) -> (Vec<T>, usize) {
@@ -306,14 +370,28 @@ fn main() {
     let mut pending = collector.release_challenge(0, shares).expect("release challenge");
     let t_challenge = t0.elapsed();
     let t0 = Instant::now();
-    let (commits, _) = wire(aggs.iter_mut().map(|ag| ag.release_commit(&pending.challenge).expect("release commit")).collect());
+    let (commits, _) = wire(
+        aggs.iter_mut()
+            .map(|ag| ag.release_commit(&pending.challenge).expect("release commit"))
+            .collect(),
+    );
     let t_commit = t0.elapsed();
     let opening = collector.release_open(&mut pending, commits).expect("release open");
     let t0 = Instant::now();
-    let (reveals, reveal_bytes) = wire(aggs.iter_mut().map(|ag| ag.release_reveal(&opening).expect("release reveal")).collect::<Vec<ReleaseReveal>>());
+    let (reveals, reveal_bytes) = wire(
+        aggs.iter_mut()
+            .map(|ag| ag.release_reveal(&opening).expect("release reveal"))
+            .collect::<Vec<ReleaseReveal>>(),
+    );
     let t_reveal = t0.elapsed();
     let t0 = Instant::now();
-    let BatchResult { aggregate: agg, report_count: count, valid_count, regression, .. } = collector.release_finish(&pending, &reveals).expect("release finish");
+    let BatchResult {
+        aggregate: agg,
+        report_count: count,
+        valid_count,
+        regression,
+        ..
+    } = collector.release_finish(&pending, &reveals).expect("release finish");
     let t_unshard = t0.elapsed();
     if let Some(r) = &regression {
         println!("regression: n={} beta={:?}", r.n, r.beta);

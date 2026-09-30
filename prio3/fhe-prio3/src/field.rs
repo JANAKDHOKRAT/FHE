@@ -9,7 +9,7 @@ impl Field {
     /// `p` must be an odd prime below 2^32. Primality is checked
     /// deterministically (Miller–Rabin with the bases sufficient for 2^64).
     pub fn new(p: u64) -> Option<Self> {
-        if p < 3 || p >= (1u64 << 32) || !is_prime_u64(p) {
+        if !(3..(1u64 << 32)).contains(&p) || !is_prime_u64(p) {
             return None;
         }
         Some(Self { p })
@@ -68,13 +68,13 @@ pub fn is_prime_u64(n: u64) -> bool {
         return false;
     }
     for q in [2u64, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37] {
-        if n % q == 0 {
+        if n.is_multiple_of(q) {
             return n == q;
         }
     }
     let mut d = n - 1;
     let mut s = 0;
-    while d % 2 == 0 {
+    while d.is_multiple_of(2) {
         d /= 2;
         s += 1;
     }

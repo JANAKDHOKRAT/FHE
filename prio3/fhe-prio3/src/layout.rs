@@ -50,6 +50,10 @@ pub struct Layout {
     /// Digit width `D` of the second-moment decomposition
     /// (`TaskConfig::moment_digit_bits`); 0 when moments are off.
     pub moment_digit: u32,
+    /// For each entry of `moments`: the element the piece belongs to and
+    /// the multiplier its value carries there (`MeasurementType::moment_pieces`).
+    /// Empty when moments are off.
+    pub moment_pieces: Vec<(usize, u64)>,
 }
 
 /// One second-moment accumulator: value pair `a <= b` and digit shift `s`.
@@ -78,10 +82,14 @@ impl Layout {
     /// `block`-size boundaries.
     pub fn with_cuts(kind: LayoutKind, input_len: usize, repetitions: usize, row: usize, groups: usize, cuts: &[usize]) -> Result<Self> {
         if input_len == 0 || repetitions == 0 || !row.is_power_of_two() {
-            return Err(Error::Config("layout: input_len and repetitions must be >= 1; row must be a power of two".into()));
+            return Err(Error::Config(
+                "layout: input_len and repetitions must be >= 1; row must be a power of two".into(),
+            ));
         }
         if !groups.is_power_of_two() || (kind != LayoutKind::Batched && groups != 1) {
-            return Err(Error::Config("layout: groups must be a power of two and only Batched layouts have more than one".into()));
+            return Err(Error::Config(
+                "layout: groups must be a power of two and only Batched layouts have more than one".into(),
+            ));
         }
         let classes = repetitions.next_power_of_two();
         let block = match kind {
@@ -103,7 +111,9 @@ impl Layout {
             }
             LayoutKind::Batched => {
                 if classes * groups > row {
-                    return Err(Error::Config(format!("layout: {groups} groups of {classes} classes do not fit in a row of {row} slots")));
+                    return Err(Error::Config(format!(
+                        "layout: {groups} groups of {classes} classes do not fit in a row of {row} slots"
+                    )));
                 }
                 row / (classes * groups)
             }
@@ -123,7 +133,20 @@ impl Layout {
             start = end;
         }
         let num_chunks = chunks.len();
-        Ok(Self { kind, input_len, repetitions, classes, groups, row, block, num_chunks, chunks, moments: None, moment_digit: 0 })
+        Ok(Self {
+            kind,
+            input_len,
+            repetitions,
+            classes,
+            groups,
+            row,
+            block,
+            num_chunks,
+            chunks,
+            moments: None,
+            moment_digit: 0,
+            moment_pieces: Vec::new(),
+        })
     }
 
     /// Chunk holding global input index `i`.
@@ -158,7 +181,11 @@ impl Layout {
         match &self.moments {
             Some(map) => {
                 let widest = map.iter().map(|&(_, b)| b as usize).max().unwrap_or(1);
-                if self.moment_max_digits() == 1 { widest.next_power_of_two() } else { self.moment_digit as usize }
+                if self.moment_max_digits() == 1 {
+                    widest.next_power_of_two()
+                } else {
+                    self.moment_digit as usize
+                }
             }
             None => 1,
         }
@@ -253,7 +280,12 @@ impl Layout {
         let d = self.moment_digit;
         let span = self.moment_term_span(t);
         if slots.len() != span {
-            return Err(format!("second moment ({},{}) accumulator has {} slots, expected {span}", t.a, t.b, slots.len()));
+            return Err(format!(
+                "second moment ({},{}) accumulator has {} slots, expected {span}",
+                t.a,
+                t.b,
+                slots.len()
+            ));
         }
         let twice = if t.a == t.b && t.shift > 0 { 2u128 } else { 1 };
         let mut read = vec![false; span];
@@ -281,7 +313,13 @@ impl Layout {
         let Some(map) = &self.moments else { return true };
         let k = self.moment_max_digits();
         let d = self.moment_digit as usize;
-        let reach = ((2 * k - 1) * d).max(map.iter().map(|&(s, b)| s - self.chunk_range(self.chunk_of(s)).start + b as usize).max().unwrap_or(0) + self.moment_window());
+        let reach = ((2 * k - 1) * d).max(
+            map.iter()
+                .map(|&(s, b)| s - self.chunk_range(self.chunk_of(s)).start + b as usize)
+                .max()
+                .unwrap_or(0)
+                + self.moment_window(),
+        );
         self.group_slot(self.groups - 1, reach) < self.row
     }
 
@@ -489,7 +527,11 @@ mod tests {
             for j in 0..l.classes {
                 let expect: u64 = (0..l.block).map(|i| 1000 * r as u64 + 100 * j as u64 + i as u64).sum();
                 for i in 0..l.block {
-                    assert_eq!(s[j + l.classes * r + l.element_stride() * i], expect, "class sum must be replicated over the whole class");
+                    assert_eq!(
+                        s[j + l.classes * r + l.element_stride() * i],
+                        expect,
+                        "class sum must be replicated over the whole class"
+                    );
                 }
             }
         }
@@ -522,7 +564,12 @@ mod tests {
             rot(v, r as i64)
         };
         let add = |x: &[u64], y: &[u64]| x.iter().zip(y).map(|(a, b)| (a + b) % p).collect::<Vec<u64>>();
-        let mul = |x: &[u64], y: &[u64]| x.iter().zip(y).map(|(a, b)| ((*a as u128 * *b as u128) % p as u128) as u64).collect::<Vec<u64>>();
+        let mul = |x: &[u64], y: &[u64]| {
+            x.iter()
+                .zip(y)
+                .map(|(a, b)| ((*a as u128 * *b as u128) % p as u128) as u64)
+                .collect::<Vec<u64>>()
+        };
         let mut values = Vec::new();
         for &(start, bits) in map {
             let k = l.chunk_of(start);
@@ -575,7 +622,11 @@ mod tests {
         l.moment_terms()
             .into_iter()
             .map(|t| {
-                let (x, y) = if t.shift >= 0 { (&values[t.a][0], &values[t.b][t.shift as usize]) } else { (&values[t.a][(-t.shift) as usize], &values[t.b][0]) };
+                let (x, y) = if t.shift >= 0 {
+                    (&values[t.a][0], &values[t.b][t.shift as usize])
+                } else {
+                    (&values[t.a][(-t.shift) as usize], &values[t.b][0])
+                };
                 let prod = mul(x, y);
                 // silent batched mode folds the group onto group 0
                 if group == 0 { prod } else { rot(&prod, (l.classes * group) as i64) }
@@ -593,6 +644,7 @@ mod tests {
         let mut l = Layout::with_groups(kind, input_len, reps, row, groups).unwrap();
         l.moments = Some(map.to_vec());
         l.moment_digit = d;
+        l.moment_pieces = (0..map.len()).map(|i| (i, 1)).collect();
         l
     }
 
@@ -649,7 +701,10 @@ mod tests {
                         let mut used = Vec::new();
                         for r in 0..reports {
                             let group = r as usize % l.groups;
-                            let vals: Vec<u64> = map.iter().map(|&(_, b)| if all_max { (1 << b) - 1 } else { rng.gen_range(0..1u64 << b) }).collect();
+                            let vals: Vec<u64> = map
+                                .iter()
+                                .map(|&(_, b)| if all_max { (1 << b) - 1 } else { rng.gen_range(0..1u64 << b) })
+                                .collect();
                             // chunk with junk everywhere, then the bits
                             let mut chunk: Vec<u64> = (0..l.row).map(|_| rng.gen_range(0..p)).collect();
                             for (&(start, bits), &v) in map.iter().zip(&vals) {

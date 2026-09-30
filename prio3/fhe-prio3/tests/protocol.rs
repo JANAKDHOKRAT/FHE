@@ -25,7 +25,12 @@ fn check_honest(seed: u8, t: MeasurementType, n: usize, ms: Vec<Measurement>) {
 #[test]
 fn count_two_aggregators() {
     let _g = serial();
-    check_honest(1, MeasurementType::Count, 2, vec![Measurement::Count(true), Measurement::Count(false), Measurement::Count(true)]);
+    check_honest(
+        1,
+        MeasurementType::Count,
+        2,
+        vec![Measurement::Count(true), Measurement::Count(false), Measurement::Count(true)],
+    );
 }
 
 #[test]
@@ -44,7 +49,10 @@ fn sumvec_two_aggregators() {
     let _g = serial();
     check_honest(
         3,
-        MeasurementType::SumVec { length: 3, bits: 4 },
+        MeasurementType::SumVec {
+            length: 3,
+            max_measurement: 15,
+        },
         2,
         vec![Measurement::SumVec(vec![15, 0, 7]), Measurement::SumVec(vec![1, 2, 3])],
     );
@@ -80,7 +88,10 @@ fn multihot_two_aggregators() {
 fn large_sumvec_spans_two_chunks() {
     let _g = serial();
     // 1200 * 4 = 4800 slots > 4096-slot blocks with 4 repetitions: 2 chunks.
-    let t = MeasurementType::SumVec { length: 1200, bits: 4 };
+    let t = MeasurementType::SumVec {
+        length: 1200,
+        max_measurement: 15,
+    };
     let cfg = cfg(6, t.clone(), 2);
     let mut net = Net::new(cfg);
     assert_eq!(net.client.layout().num_chunks, 2);
@@ -117,7 +128,7 @@ fn cancellation_pair(p: u64) -> (u64, u64) {
             let d = 4 * want + 1;
             let r = isqrt(d);
             if r * r == d && r % 2 == 1 {
-                let y = (r + 1) / 2;
+                let y = r.div_ceil(2); // r is odd, so this is (r + 1) / 2
                 if y >= 2 {
                     return (x as u64, y as u64);
                 }
@@ -133,7 +144,7 @@ fn malicious_clients_are_rejected() {
     let _g = serial();
     // SumVec with two 1-bit elements: the encoded vector is just two bits and
     // there are no linear constraints, so only the bit check stands in the way.
-    let t = MeasurementType::SumVec { length: 2, bits: 1 };
+    let t = MeasurementType::SumVec { length: 2, max_measurement: 1 };
     let cfg = cfg(7, t.clone(), 2);
     let field = Field::new(cfg.plain_mod).unwrap();
     let mut net = Net::new(cfg.clone());
@@ -158,20 +169,17 @@ fn malicious_clients_are_rejected() {
 #[test]
 fn linear_constraints_are_enforced() {
     let _g = serial();
-    // Sum with max 100: 7 bits + 7 offset bits.
+    // Sum with max 100: 7 range-checked slots, weights 1, 2, 4, 8, 16, 32, 37.
+    // Every 0/1 vector is in range, so the only way to claim 101 is a
+    // non-bit slot: 2 * 32 + 37.
     let t = MeasurementType::Sum { max_measurement: 100 };
-    let mut net = Net::new(cfg(8, t, 2));
-    let bits = |v: u64| -> Vec<u64> { (0..7).map(|i| (v >> i) & 1).collect() };
-    // 101 with the offset half wrapped (128 does not fit in 7 bits)
-    let mut wrapped = bits(101);
-    wrapped.extend(bits(0));
-    net.expect_reject(&net.client.shard_raw(&[wrapped]).unwrap(), RejectReason::ValidityCheckFailed);
-    // 101 with offset half saturated
-    let mut sat = bits(101);
-    sat.extend(bits(127));
-    net.expect_reject(&net.client.shard_raw(&[sat]).unwrap(), RejectReason::ValidityCheckFailed);
-    // honest 100 passes
+    let mut net = Net::new(cfg(8, t.clone(), 2));
+    assert!(t.linear_constraints().is_empty());
+    net.expect_reject(&net.client.shard_raw(&[vec![0, 0, 0, 0, 0, 2, 1]]).unwrap(), RejectReason::ValidityCheckFailed);
+    // honest 100 and 0 pass
     net.expect_accept(&net.client.shard(&Measurement::Sum(100)).unwrap());
+    net.expect_accept(&net.client.shard(&Measurement::Sum(0)).unwrap());
+    assert_eq!(net.collect().unwrap().0, AggregateResult::Sum(100));
 
     let h = MeasurementType::Histogram { length: 4 };
     let mut net = Net::new(cfg(9, h, 2));
@@ -181,7 +189,7 @@ fn linear_constraints_are_enforced() {
 
     let m = MeasurementType::MultihotCountVec { length: 4, max_weight: 1 };
     let mut net = Net::new(cfg(10, m, 2));
-    // weight 2 claimed as 1: [1,1,0,0] with weight bits for 1 + offset(0) = 1
+    // weight 2 claimed as 1: [1,1,0,0] with the weight slot (weight 1) set
     net.expect_reject(&net.client.shard_raw(&[vec![1, 1, 0, 0, 1]]).unwrap(), RejectReason::ValidityCheckFailed);
     net.expect_accept(&net.client.shard_raw(&[vec![0, 1, 0, 0, 1]]).unwrap());
 }
@@ -263,7 +271,14 @@ fn collector_needs_every_aggregator_and_agreement() {
     // an aggregator claiming other accumulators than the others
     let mut other = shares.clone();
     other[1].accumulators[0] = other[1].accumulators[0].iter().rev().copied().collect();
-    assert!(net.collector.release_challenge(0, other).err().expect("refused").to_string().contains("other accumulators"));
+    assert!(
+        net.collector
+            .release_challenge(0, other)
+            .err()
+            .expect("refused")
+            .to_string()
+            .contains("other accumulators")
+    );
     let r = net.finish_release(0, shares).unwrap();
     assert_eq!((r.aggregate, r.report_count, r.valid_count), (AggregateResult::Count(1), 1, 1));
 }

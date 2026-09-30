@@ -77,7 +77,13 @@ fn machines(n: usize) -> Machines {
     let mut text = String::from("# aggregator identity keys\n");
     for i in 0..n {
         let out = Command::new(bin())
-            .args(["init-identity", "--index", &i.to_string(), "--out-dir", dir.path().join(format!("m{i}")).to_str().unwrap()])
+            .args([
+                "init-identity",
+                "--index",
+                &i.to_string(),
+                "--out-dir",
+                dir.path().join(format!("m{i}")).to_str().unwrap(),
+            ])
             .env("FHE_PRIO3_SEAL_KEY", seal_key(i))
             .output()
             .unwrap();
@@ -104,19 +110,32 @@ fn start(m: &Machines, tasks: &[PathBuf], session: &str, timeout_secs: u64) -> P
             Command::new(bin())
                 .args([
                     "ceremony",
-                    "--task", tasks[i].to_str().unwrap(),
-                    "--index", &i.to_string(),
-                    "--identity", md.join(format!("aggregator-{i}.identity.sealed")).to_str().unwrap(),
-                    "--aggregator-keys", m.keys.to_str().unwrap(),
-                    "--session", session,
-                    "--listen", &format!("127.0.0.1:{}", ports[i]),
-                    "--aggregators", &urls,
-                    "--token", TOKEN,
-                    "--tls-cert", m.tls.cert.to_str().unwrap(),
-                    "--tls-key", m.tls.key.to_str().unwrap(),
-                    "--ca", m.tls.ca.to_str().unwrap(),
-                    "--out-dir", md.to_str().unwrap(),
-                    "--timeout-secs", &timeout_secs.to_string(),
+                    "--task",
+                    tasks[i].to_str().unwrap(),
+                    "--index",
+                    &i.to_string(),
+                    "--identity",
+                    md.join(format!("aggregator-{i}.identity.sealed")).to_str().unwrap(),
+                    "--aggregator-keys",
+                    m.keys.to_str().unwrap(),
+                    "--session",
+                    session,
+                    "--listen",
+                    &format!("127.0.0.1:{}", ports[i]),
+                    "--aggregators",
+                    &urls,
+                    "--token",
+                    TOKEN,
+                    "--tls-cert",
+                    m.tls.cert.to_str().unwrap(),
+                    "--tls-key",
+                    m.tls.key.to_str().unwrap(),
+                    "--ca",
+                    m.tls.ca.to_str().unwrap(),
+                    "--out-dir",
+                    md.to_str().unwrap(),
+                    "--timeout-secs",
+                    &timeout_secs.to_string(),
                 ])
                 .env("FHE_PRIO3_SEAL_KEY", seal_key(i))
                 .env("OMP_NUM_THREADS", "1")
@@ -134,10 +153,10 @@ fn wait_all(p: &mut Procs, limit: Duration) -> Vec<bool> {
     let mut done: Vec<Option<bool>> = vec![None; p.0.len()];
     while done.iter().any(|d| d.is_none()) {
         for (i, c) in p.0.iter_mut().enumerate() {
-            if done[i].is_none() {
-                if let Some(st) = c.try_wait().unwrap() {
-                    done[i] = Some(st.success());
-                }
+            if done[i].is_none()
+                && let Some(st) = c.try_wait().unwrap()
+            {
+                done[i] = Some(st.success());
             }
         }
         assert!(start.elapsed() < limit, "ceremony processes did not finish");
@@ -160,8 +179,8 @@ fn three_machines_run_the_ceremony_over_tls_and_the_keys_work() {
     std::fs::write(&task, encode(&cfg).unwrap()).unwrap();
     let mut p = start(&m, &vec![task; n], &hex::encode([7u8; 32]), 600);
     let ok = wait_all(&mut p, Duration::from_secs(900));
-    for i in 0..n {
-        assert!(ok[i], "party {i} failed:\n{}", log(&m, i));
+    for (i, &ok_i) in ok.iter().enumerate() {
+        assert!(ok_i, "party {i} failed:\n{}", log(&m, i));
     }
 
     // every machine holds the same attested material and transcript
@@ -182,14 +201,21 @@ fn three_machines_run_the_ceremony_over_tls_and_the_keys_work() {
     assert!(unseal(1, &seal_key(0)).is_err());
     let shares: Vec<Vec<u8>> = (0..n).map(|i| unseal(i, &seal_key(i)).unwrap()).collect();
     for i in 0..n {
-        assert!(!m.dir.path().join(format!("m{i}")).read_dir().unwrap().any(|e| {
-            let name = e.unwrap().file_name().into_string().unwrap();
-            name.starts_with("share-") && name != format!("share-{i}.sealed")
-        }), "machine {i} holds another share");
+        assert!(
+            !m.dir.path().join(format!("m{i}")).read_dir().unwrap().any(|e| {
+                let name = e.unwrap().file_name().into_string().unwrap();
+                name.starts_with("share-") && name != format!("share-{i}.sealed")
+            }),
+            "machine {i} holds another share"
+        );
     }
 
     // the keys run the protocol
-    let mut aggs: Vec<Aggregator> = shares.iter().enumerate().map(|(i, s)| Aggregator::new(cfg.clone(), &material, i, s, None).unwrap()).collect();
+    let mut aggs: Vec<Aggregator> = shares
+        .iter()
+        .enumerate()
+        .map(|(i, s)| Aggregator::new(cfg.clone(), &material, i, s, None).unwrap())
+        .collect();
     let client = Client::new(cfg.clone(), &material.context, &material.public_key).unwrap();
     for v in [17u64, 100, 0, 42] {
         let report = client.shard(&Measurement::Sum(v)).unwrap();
@@ -212,8 +238,8 @@ fn a_machine_on_another_task_stops_every_party() {
     std::fs::write(&b, encode(&other).unwrap()).unwrap();
     let mut p = start(&m, &[a.clone(), b, a], &hex::encode([8u8; 32]), 120);
     let ok = wait_all(&mut p, Duration::from_secs(600));
-    for i in 0..n {
-        assert!(!ok[i], "party {i} completed:\n{}", log(&m, i));
+    for (i, &ok_i) in ok.iter().enumerate() {
+        assert!(!ok_i, "party {i} completed:\n{}", log(&m, i));
         assert!(!m.dir.path().join(format!("m{i}/material.bin")).exists());
         assert!(!m.dir.path().join(format!("m{i}/share-{i}.sealed")).exists());
         let l = log(&m, i);

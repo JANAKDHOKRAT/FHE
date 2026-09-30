@@ -13,7 +13,14 @@ fn run_all(cfg: &TaskConfig, ids: &[AggregatorIdentity], pinned: &[[u8; 32]], se
     run_on(&MemoryNetwork::default(), cfg, ids, pinned, session, devs)
 }
 
-fn run_on(net: &MemoryNetwork, cfg: &TaskConfig, ids: &[AggregatorIdentity], pinned: &[[u8; 32]], session: [u8; 32], devs: &[Deviation]) -> Vec<Result<ceremony::CeremonyOutput>> {
+fn run_on(
+    net: &MemoryNetwork,
+    cfg: &TaskConfig,
+    ids: &[AggregatorIdentity],
+    pinned: &[[u8; 32]],
+    session: [u8; 32],
+    devs: &[Deviation],
+) -> Vec<Result<ceremony::CeremonyOutput>> {
     std::thread::scope(|s| {
         let handles: Vec<_> = (0..ids.len())
             .map(|i| {
@@ -35,7 +42,7 @@ fn identities(n: usize) -> (Vec<AggregatorIdentity>, Vec<[u8; 32]>) {
 #[test]
 fn three_aggregators_generate_working_keys_without_a_dealer() {
     let _g = serial();
-    let t = MeasurementType::SumVec { length: 4, bits: 3 };
+    let t = MeasurementType::SumVec { length: 4, max_measurement: 7 };
     let cfg = TaskConfig::new(task_id(90), t.clone(), 3);
     let (ids, pinned) = identities(3);
     let wire = MemoryNetwork::default();
@@ -56,7 +63,10 @@ fn three_aggregators_generate_working_keys_without_a_dealer() {
         assert!(!bytes.windows(32).any(|w| w == vk), "the verify key appears in a message or blob");
     }
     attest::verify_material(&cfg, &out[0].material, &pinned).unwrap();
-    assert_eq!(out[0].material.rotation_indices, cfg.layout(keys::make_context(&cfg).unwrap().row_slots()).unwrap().rotation_indices());
+    assert_eq!(
+        out[0].material.rotation_indices,
+        cfg.layout(keys::make_context(&cfg).unwrap().row_slots()).unwrap().rotation_indices()
+    );
 
     // the keys run the protocol: accept, reject, aggregate
     let shares: Vec<Vec<u8>> = out.iter().map(|o| o.secret.clone()).collect();
@@ -66,7 +76,10 @@ fn three_aggregators_generate_working_keys_without_a_dealer() {
     for r in &rows {
         net.expect_accept(&net.client.shard(&Measurement::SumVec(r.clone())).unwrap());
     }
-    net.expect_reject(&net.client.shard_raw_elements(&[vec![1, 1, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0]]).unwrap(), RejectReason::ValidityCheckFailed);
+    net.expect_reject(
+        &net.client.shard_raw_elements(&[vec![1, 1, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0]]).unwrap(),
+        RejectReason::ValidityCheckFailed,
+    );
     let res = net.collect_full().unwrap();
     assert_eq!(res.aggregate, AggregateResult::SumVec(vec![6, 9, 7, 14]));
 }
@@ -154,18 +167,53 @@ fn oversized_key_noise_is_stopped_at_the_ceremony_up_to_the_flooding_range() {
     // the flooding range of a fresh verdict-mode decryption is 2^298
     // (openfhe-tbgv-rs/tests/key_noise_gap.rs); 2^300 lets a fuser read the
     // encryption randomness of what it decrypts
-    let out = run_all(&cfg, &ids, &pinned, [30u8; 32], &[Deviation::None, Deviation::InflatedPublicKeyNoise(300), Deviation::None]);
+    let out = run_all(
+        &cfg,
+        &ids,
+        &pinned,
+        [30u8; 32],
+        &[Deviation::None, Deviation::InflatedPublicKeyNoise(300), Deviation::None],
+    );
     for i in [0, 2] {
         let e = out[i].as_ref().err().unwrap_or_else(|| panic!("honest party {i} completed")).to_string();
-        assert!(e.contains("exceeds what 3 flooded partial decryptions can reach") || e.contains("aborted"), "party {i}: {e}");
+        assert!(
+            e.contains("exceeds what 3 flooded partial decryptions can reach") || e.contains("aborted"),
+            "party {i}: {e}"
+        );
     }
-    assert!(out.iter().any(|r| r.as_ref().err().map(|e| e.to_string().contains("joint key check: fused value exceeds")).unwrap_or(false)));
+    assert!(out.iter().any(|r| {
+        r.as_ref()
+            .err()
+            .map(|e| e.to_string().contains("joint key check: fused value exceeds"))
+            .unwrap_or(false)
+    }));
     // 2^120: 178 bits below the flooding of a fresh decryption, but it would
     // stand out at the depth-3 verdict check value; the deep key check stops it
-    let out = run_all(&cfg, &ids, &pinned, [31u8; 32], &[Deviation::None, Deviation::InflatedPublicKeyNoise(120), Deviation::None]);
-    assert!(out.iter().any(|r| r.as_ref().err().map(|e| e.to_string().contains("deep key check")).unwrap_or(false)), "{:?}", out.iter().map(|r| r.as_ref().err().map(|e| e.to_string())).collect::<Vec<_>>());
+    let out = run_all(
+        &cfg,
+        &ids,
+        &pinned,
+        [31u8; 32],
+        &[Deviation::None, Deviation::InflatedPublicKeyNoise(120), Deviation::None],
+    );
+    assert!(
+        out.iter()
+            .any(|r| r.as_ref().err().map(|e| e.to_string().contains("deep key check")).unwrap_or(false)),
+        "{:?}",
+        out.iter().map(|r| r.as_ref().err().map(|e| e.to_string())).collect::<Vec<_>>()
+    );
     // 2^40: the ceremony completes (tests/key_noise_protocol.rs measures what
     // the largest accepted inflations leave at the protocol's decryptions)
-    let out = run_all(&cfg, &ids, &pinned, [32u8; 32], &[Deviation::None, Deviation::InflatedPublicKeyNoise(40), Deviation::None]);
-    assert!(out.iter().all(|r| r.is_ok()), "{:?}", out.iter().map(|r| r.as_ref().err().map(|e| e.to_string())).collect::<Vec<_>>());
+    let out = run_all(
+        &cfg,
+        &ids,
+        &pinned,
+        [32u8; 32],
+        &[Deviation::None, Deviation::InflatedPublicKeyNoise(40), Deviation::None],
+    );
+    assert!(
+        out.iter().all(|r| r.is_ok()),
+        "{:?}",
+        out.iter().map(|r| r.as_ref().err().map(|e| e.to_string())).collect::<Vec<_>>()
+    );
 }

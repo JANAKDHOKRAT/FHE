@@ -7,7 +7,7 @@ measured by running the code in this repository; nothing is estimated.
 
 ## 1. What this is
 
-Prio3 (draft-irtf-cfrg-vdaf-13) lets clients submit encoded measurements to
+Prio3 (draft-irtf-cfrg-vdaf-22) lets clients submit encoded measurements to
 two or more aggregators so that the aggregators learn only the sum over a
 batch, while a malicious client cannot inject an out-of-range value. Prio3
 achieves the second property with a Fully Linear Proof (FLP): the client
@@ -34,17 +34,28 @@ contributes zero to the batch). On top of either, **client authentication
 with per-client quotas** (Section 3.7) and **admission control** bound what
 an adversary can do before any homomorphic work is spent.
 
-Supported types, encoded exactly as in the draft (Section 7.4):
+Supported types, encoded exactly as in the draft (Section 7.4). An
+integer in `[0, max]` is a *range-checked integer* (draft Section 7.4.5,
+`encode_range_checked_int`): `bits = bitlen(max)` slots read with the
+weights `1, 2, .., 2^(bits-2)` and a last weight `max - (2^(bits-1) - 1)`.
+The weights sum to `max`, so every 0/1 vector decodes into the range and
+no linear constraint is needed; `value(x)` below is that weighted sum.
 
 | Type | Encoded slots `m` | Linear constraints | Aggregate |
 | --- | --- | --- | --- |
 | Count | 1 | none | number of ones |
-| Sum(max) | `2 * bitlen(max)` : bits of `v`, bits of `v + offset`, `offset = 2^bits - 1 - max` | `value(x) + offset - value(y) = 0` | sum |
-| SumVec(length, bits) | `length * bits` | none | element-wise sum |
+| Sum(max) | `bitlen(max)`, a range-checked integer | none | sum |
+| SumVec(length, max) | `length * bitlen(max)`, one range-checked integer per element | none | element-wise sum |
 | Histogram(length) | `length` (one-hot) | `sum(x) - 1 = 0` | per-bucket count |
-| MultihotCountVec(length, max_weight) | `length + bitlen(max_weight)` | `sum(x) + offset - value(w) = 0` | per-position count |
+| MultihotCountVec(length, max_weight) | `length + bitlen(max_weight)`, the weight a range-checked integer | `sum(x) - value(w) = 0` | per-position count |
 
 A report is valid iff every slot is a bit and every linear constraint holds.
+`types.rs` carries the draft's reference vectors for the range-checked
+encoding (produced by running the draft's Python `encode_range_checked_int`
+at tag `draft-irtf-cfrg-vdaf-22`) as a unit test. Draft-13, which this
+implementation followed before, encoded `Sum` as the bits of `v` and of
+`v + offset` with a linear constraint; that encoding is gone from this
+implementation.
 That predicate is `types::is_valid_plain`, and the tests check that the
 homomorphic verdict agrees with it on every adversarial vector they try.
 
@@ -126,7 +137,7 @@ count, same scaling factor), every residue below its modulus, and is
 rebuilt inside *this* aggregator's context. Any failure is a deterministic
 rejection that all honest aggregators reach identically.
 
-**Derive the challenge.** `Xof = SHAKE128("fhe-prio3/1", "verify", verify_key, bincode(TaskConfig), report_id)`,
+**Derive the challenge.** `Xof = SHAKE128("fhe-prio3/1", "verify", verify_key, postcard(TaskConfig), report_id)`,
 where `verify_key` is the task's 32-byte secret held by every aggregator and
 no client (§ distributed key ceremony, `keys::VerifyKey`);
 for each repetition `j` sample `r_{j,0..m-1}` (bit-check coefficients) and
@@ -311,11 +322,14 @@ Consequences, all exercised by `tests/mitigations.rs`:
 Before decoding, the collector checks the fused per-slot sums against
 `count`: every slot sum is at most `count` (every slot is a bit), and the
 type's linear constraint holds over the integers for the batch
-(`value(x_sums) + count * offset = value(y_sums)` for Sum,
-`sum = count` for Histogram, the weight relation for MultihotCountVec). A
-batch that fails is refused. In verdict mode this is defence in depth; in
-silent mode it is what catches a contribution that was not a proper
-encryption.
+(`sum = count` for Histogram, `sum(x_sums) = value(w_sums)` for
+MultihotCountVec; the range-checked types have none). A batch that fails
+is refused. In verdict mode this is defence in depth; in silent mode it is
+what catches a contribution that was not a proper encryption: such a
+contribution lands each slot on a value uniform modulo `p`, which passes
+the slot bound with probability `(count + 1) / p` per slot, at most
+`2^-15.6` per slot in silent mode with the default `max_batch_size` of
+`2^16`, and a report has at least one slot.
 
 ## 4. Security
 
@@ -369,16 +383,13 @@ small primes that the rule accepts a type exactly when no assignment
 makes a constraint a nonzero multiple of `p`.
 
 With `p ≈ 2^32` (verdict mode) every type within `MAX_BITS = 30` fits.
-With silent mode's `p = 786433`, `Sum` and each `BoundedSumVec` bound fit
-up to `2^19 − 1 = 524287`. Before this rule, the configuration accepted
-wider ranges in silent mode. That was demonstrated: for a `Sum` with
-maximum 600,000, a report of 637,858 whose offset half makes the
-constraint equal `p` passed the per-report check. The collector's
-integer consistency check then refused the whole batch, so one such
-report could block a batch's release. For ranges of 21 bits or more, a
-coefficient `2^20 > p` also underflowed when negated in `F_p`, which gave
-honest reports a wrong equation. Both are removed: such tasks are refused
-when configured (`tests/bounds.rs::silent_mode_sum_range_is_enforced_up_to_what_p_allows`).
+Range-checked integers have no constraint; for them the draft's own rule
+applies, `2^bitlen(max) < p` (`check_constraints_fit` refuses the task
+otherwise). With silent mode's `p = 786433`, `Sum`, `SumVec` and each
+`BoundedSumVec` bound therefore fit up to `2^19 − 1 = 524287`
+(`tests/bounds.rs::silent_mode_sum_range_is_enforced_up_to_what_p_allows`).
+Under draft-13's offset encoding the same limit followed from the
+constraint range; the two rules coincide for these primes.
 
 ### 4.2 Privacy
 
@@ -523,9 +534,9 @@ with the packed wire format (§6b); 8 reports per run (4 for SumVec(1200)).
 | Count | 1 | 1 | 1 | 48 ms | 373 + 70 + 7 = **451 ms** | 2.73 MiB |
 | Sum(100) | 14 | 16 | 1 | 47 ms | 493 + 64 + 7 = **565 ms** | 2.73 MiB |
 | Histogram(64) | 64 | 64 | 1 | 48 ms | 566 + 67 + 7 = **641 ms** | 2.73 MiB |
-| SumVec(8, 8 bits) | 64 | 64 | 1 | 46 ms | 535 + 65 + 7 = **607 ms** | 2.73 MiB |
+| SumVec(8, max 255) | 64 | 64 | 1 | 46 ms | 535 + 65 + 7 = **607 ms** | 2.73 MiB |
 | MultihotCountVec(32, 4) | 35 | 64 | 1 | 48 ms | 542 + 63 + 7 = **613 ms** | 2.73 MiB |
-| SumVec(1200, 4 bits) | 4800 | 4096 | 2 | 93 ms | 1075 + 67 + 9 = **1151 ms** | 5.47 MiB |
+| SumVec(1200, max 15) | 4800 | 4096 | 2 | 93 ms | 1075 + 67 + 9 = **1151 ms** | 5.47 MiB |
 | Histogram(16), 3 aggregators | 16 | 16 | 1 | 52 ms | 483 + 72 + 10 = **565 ms** | 2.73 MiB |
 
 Other sizes: mask message 2.73 MiB, verifier message 0.87 MiB, aggregate
@@ -624,7 +635,7 @@ AVX-512 machine changed nothing either: 4.75 s (native) against 4.75 s
 (default) per batched silent report, and 690 ms against 598 ms in verdict
 mode, i.e. noise. The default build is kept.
 
-**Regression pilot** (verdict mode, SumVec(3, 4 bits), `moments = true`):
+**Regression pilot** (verdict mode, SumVec(3, max 15), `moments = true`):
 1.00–1.08 s per report per aggregator against 0.64 s without moments, i.e.
 the six pair products and their alignment cost about 0.4 s per report. The simulator process, which runs the ceremony and both
 aggregators, peaked at 9.6 GiB resident; an aggregator on its own holds the
@@ -674,7 +685,7 @@ encrypted inputs, which Prio3's linear aggregation cannot do.
   inside the library. Tests serialise themselves for this reason, and key
   installation in the shim is idempotent so several aggregator objects can
   coexist in one test process.
-* **No network layer.** Messages are `serde` structs with bincode encoders;
+* **No network layer.** Messages are `serde` structs with postcard encoders;
   transport, persistence of `seen` report ids and of key shares, and client
   authentication are deliberately out of scope.
 
@@ -721,7 +732,7 @@ reports set to `p−1` in every slot of the row and checks exact results.
 
 ### Transport and persistence (`fhe-prio3-node`)
 
-HTTPS nodes with bincode bodies, a bearer token on every node-to-node call,
+HTTPS nodes with postcard bodies, a bearer token on every node-to-node call,
 body-size caps derived from the fresh-ciphertext size, a leader that drives
 the rounds, a collector that holds no key, SQLite persistence committed
 after every state-changing step, restart from the database, and key shares
@@ -822,7 +833,7 @@ share against another `a`, a residue at its modulus, a wrong length and
 mismatched rotation maps are refused). `fhe-prio3-node/tests/ceremony_node.rs`
 runs it as three OS processes over TLS, each with its own seal key.
 
-Measured, silent mode (`SumVec(3, 8 bits)` with moments: ring dimension
+Measured, silent mode (`SumVec(3, max 255)` with moments: ring dimension
 65,536, 18 rotation indices), two `ceremony` processes over TLS on this
 one 4-vCPU machine: 164.5 s each, identical transcripts, byte-identical
 material of 2.25 GB (2.0 GB of it rotation keys) on both, a 15 MB sealed
@@ -915,7 +926,7 @@ exceed `p`; an invalid record contributes nothing.
 
 *Cost.* Per report the moments cost `Σ_pairs (k_a + k_b − 1)` products and
 as many gatings: 33 for three 8-bit values in 2-bit digits, against 6 with
-single digits. Measured (silent mode, `SumVec(3, 8 bits)`, 4 groups, 2
+single digits. Measured (silent mode, `SumVec(3, max 255)`, 4 groups, 2
 aggregators in one process on this 4-vCPU machine, `simulate`, 4 reports):
 32.1 s per report per aggregator amortised over the batch including its
 close, against 4.7 s for silent-mode reports without moments; aggregate
@@ -932,32 +943,36 @@ height.
 
 ### Per-element bounds: `BoundedSumVec`
 
-`SumVec` checks every element against one width, so a task with blood
+`SumVec` checks every element against one bound, so a task with blood
 pressure (0–255) and oxygen saturation (0–100) in one vector would accept
 oxygen 200. `BoundedSumVec { bounds }` gives each element an exact range
-by applying the draft's `Sum` encoding per element: element `e` with bound
-`B_e` uses `b_e = bitlen(B_e)` value bits and `b_e` bits of
-`v_e + offset_e`, `offset_e = 2^b_e − 1 − B_e`, and one linear constraint
-`value(x_e) + offset_e − value(y_e) = 0`. If `v_e > B_e` then
-`v_e + offset_e ≥ 2^b_e` fits no `y_e`, so no assignment of the offset
-bits satisfies the constraint. The constraints enter the existing random
-linear combination, one challenge element each, so the soundness bound of
-section 4.1 is unchanged (a nonzero constraint vector survives an
-independent random combination with probability `1/p` per repetition, and
-two elements violated in opposite directions cancel only when two
-independent coefficients coincide). Cost: `2·b_e` slots per element, no
-extra depth. The aggregate and the second moments read only the value
-bits; the collector's consistency check holds per element
-(`value_sum_e + count·offset_e = offset_sum_e`). Bounds are part of the
-task binding, so a client encoding under other bounds is rejected. The
-second-moment circuit now recomposes each value from its own bit slots
-with a per-value weight mask, so values of different widths coexist, and
-the digit width for moments follows the widest value (see the regression
-section). `tests/bounds.rs`: every element at its bound
-passes; bound + 1 with a zero, wrapped or saturated offset half fails;
-inconsistent offset bits fail; the tail element fails; opposite violations
-fail across twelve fresh challenges; silent mode contributes zero;
-mixed-width moments match the plaintext fit; the bounds are bound.
+by encoding element `e` as a range-checked integer against its own bound
+`B_e`: `b_e = bitlen(B_e)` slots with weights `1, 2, .., 2^(b_e−2)` and
+`B_e − 2^(b_e−1) + 1`. The weights sum to `B_e`, so every 0/1 vector is in
+range and the bit check alone enforces the bound; there is no linear
+constraint and the soundness bound of section 4.1 is unchanged. Cost:
+`b_e` slots per element, no extra depth. Bounds are part of the task
+binding (its digest); a client that encodes against other bounds of the
+same widths produces valid slots that the task reads with its own
+weights, so it can only report a value in the task's range.
+
+The second moments recompose each value from its own slots with a
+per-value weight mask. With a bound `B_e = 2^b_e − 1` the weights are
+plain binary and the value is one piece. With any other bound the last
+weight `L_e` is not a power of two, so the value is two pieces,
+`v_e = P_e + L_e·b_e` (`P_e` the first `b_e − 1` slots, `b_e` the last),
+each accumulated with the power-of-two digit machinery of the regression
+section, and the collector recombines
+`Σ v_a v_b = S(P_a,P_b) + L_b S(P_a,b_b) + L_a S(b_a,P_b) + L_a L_b S(b_a,b_b)`
+over the exact integer accumulators (`MeasurementType::moment_pieces`,
+`Layout::moment_pieces`, `Collector::result_from`). Elements with such
+bounds therefore cost up to four times the accumulators and
+multiplications of a plain-binary element. `tests/bounds.rs`: every 0/1
+vector is in range and no constraint exists (exhaustive over the bounds
+100, 255, 5, 1); every element at its bound passes; bound + 1 needs a
+non-bit and fails, as does a non-bit inside the range and `p − 1`;
+silent mode contributes zero; mixed-width moments over bounds 100, 5 and
+15 (two split elements) match the plaintext fit; the bounds are bound.
 
 ### Per-collector release policies (`TaskConfig::collectors`, `seal.rs`)
 
@@ -1382,7 +1397,7 @@ ceremony peer or a tampered database remains outside the threat model.
 | Fermat zero test, depth 24, ≈11 s per report | masked reveal, depth 3, ≈0.5–0.7 s per report |
 | Collector decodes without validation | collector checks every aggregator's batch digest and count |
 | Panics on odd totals; partial-count crash | no rescaling; per-report accept/reject before summation |
-| Sum and Histogram only, ad hoc encodings | all five draft-13 types with the draft's encodings |
+| Sum and Histogram only, ad hoc encodings | all five draft-22 types with the draft's encodings |
 | Any party can submit anything | Ed25519-authenticated reports, registry, per-identity quota, size cap, batch close |
 | Per-report validity computed but result unused; nothing about the leakage of the aggregate | silent mode with the same "invalid contributes zero" semantics, soundly, with a documented leakage profile |
 | Collector decodes blindly | collector verifies batch consistency and refuses corrupted batches |

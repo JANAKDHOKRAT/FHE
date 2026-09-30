@@ -23,25 +23,34 @@ fn largest_inflation_each_key_can_carry_through_the_ceremony() {
         ("eval-mult round 2", Deviation::InflatedRelin2Noise),
         ("rotation keys", Deviation::InflatedRotationNoise),
     ] {
-    let (mut lo, mut hi) = (0u32, 300u32); // lo passes, hi caught
-    while hi - lo > 1 {
-        let mid = (lo + hi) / 2;
-        session += 1;
-        let net = MemoryNetwork::default();
-        let out: Vec<_> = std::thread::scope(|s| {
-            let hs: Vec<_> = (0..3).map(|i| {
-                let mut t = net.party(i);
-                let (cfg, id, pinned) = (cfg.clone(), &ids[i], &pinned);
-                let dev = if i == 1 { mk(mid) } else { Deviation::None };
-                s.spawn(move || ceremony::run_deviating(&cfg, i, id, pinned, [session; 32], &mut t, dev))
-            }).collect();
-            hs.into_iter().map(|h| h.join().unwrap()).collect()
-        });
-        let ok = out.iter().all(|r| r.is_ok());
-        let why = out.iter().filter_map(|r| r.as_ref().err().map(|e| e.to_string())).next().unwrap_or_default();
-        println!("{name} k = {mid}: {}", if ok { "completes".to_string() } else { format!("stopped: {}", &why[..why.len().min(150)]) });
-        if ok { lo = mid } else { hi = mid }
-    }
-    println!("{name}: largest inflation the ceremony lets through: 2^{lo}; smallest stopped: 2^{hi}");
+        let (mut lo, mut hi) = (0u32, 300u32); // lo passes, hi caught
+        while hi - lo > 1 {
+            let mid = (lo + hi) / 2;
+            session += 1;
+            let net = MemoryNetwork::default();
+            let out: Vec<_> = std::thread::scope(|s| {
+                let hs: Vec<_> = (0..3)
+                    .map(|i| {
+                        let mut t = net.party(i);
+                        let (cfg, id, pinned) = (cfg.clone(), &ids[i], &pinned);
+                        let dev = if i == 1 { mk(mid) } else { Deviation::None };
+                        s.spawn(move || ceremony::run_deviating(&cfg, i, id, pinned, [session; 32], &mut t, dev))
+                    })
+                    .collect();
+                hs.into_iter().map(|h| h.join().unwrap()).collect()
+            });
+            let ok = out.iter().all(|r| r.is_ok());
+            let why = out.iter().filter_map(|r| r.as_ref().err().map(|e| e.to_string())).next().unwrap_or_default();
+            println!(
+                "{name} k = {mid}: {}",
+                if ok {
+                    "completes".to_string()
+                } else {
+                    format!("stopped: {}", &why[..why.len().min(150)])
+                }
+            );
+            if ok { lo = mid } else { hi = mid }
+        }
+        println!("{name}: largest inflation the ceremony lets through: 2^{lo}; smallest stopped: 2^{hi}");
     }
 }

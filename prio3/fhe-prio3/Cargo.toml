@@ -2,6 +2,7 @@
 name = "fhe-prio3"
 version = "0.1.0"
 edition = "2024"
+publish = false
 description = "Prio3 measurement types (Count, Sum, SumVec, Histogram, MultihotCountVec) with homomorphic validity checks over threshold BGV"
 license = "MIT"
 
@@ -11,7 +12,7 @@ sha2 = "0.10"
 sha3 = "0.10"
 rand = "0.8"
 serde = { version = "1", features = ["derive"] }
-bincode = "1.3"
+postcard = { version = "1.1", features = ["use-std"] }
 thiserror = "1"
 hex = "0.4"
 ed25519-dalek = { version = "2", features = ["rand_core"] }

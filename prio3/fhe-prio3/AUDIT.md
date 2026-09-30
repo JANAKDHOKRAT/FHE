@@ -126,6 +126,65 @@ recorded builds) until such proofs exist.
 4. `ceremony.rs`: commit-before-reveal, the CRS, the joint key check.
 5. The node's handlers: authentication of each route, and body limits.
 
+## 6a. Internal audit of the shim, 2026-09-30
+
+**This is still not an external audit.** It is a pass by the authors over
+`openfhe-tbgv-rs/wrapper/tbgv.cpp` with three instruments, recorded so an
+external reviewer can start from its results rather than repeat them.
+
+*Manual review, findings and fixes (all in the same change):*
+
+1. Three helper blocks (`namespace { .. }` at the key ceremony, the
+   verifiable-decryption helpers and the file-static full-precision
+   helpers) were opened inside the `extern "C"` region, which gives C
+   linkage to C++ helpers returning C++ types (`clang -Wreturn-type-c-linkage`).
+   The region is now closed before each helper block and reopened after.
+2. Eight exported functions called OpenFHE or allocated without the
+   `TBGV_TRY`/`TBGV_CATCH` guard, so a C++ exception (out of memory in
+   `std::string`, a throwing getter) would have unwound into Rust, which is
+   an abort at best: `tbgv_context_plain_mod`, `tbgv_context_ring_dim`,
+   `tbgv_context_mult_depth`, `tbgv_context_log2_q`, `tbgv_pubkey_tag`,
+   `tbgv_ciphertext_key_tag`, `tbgv_ciphertext_same_context`,
+   `tbgv_context_num_towers`. All are guarded; the integer ones return 0
+   and the string ones NULL with the error set.
+3. `tbgv_context_mult_depth` computed `towers - 2` on an unsigned value:
+   a context with fewer than two towers would have returned about 2^32.
+   Guarded.
+4. `tbgv_fuse_magnitude` started its ModReduce loop at `sizeQl - 1`: a
+   partial decryption with zero towers would have wrapped the index.
+   Guarded (such an object cannot come from the wire, whose builder
+   refuses `num_towers = 0`, but the function no longer relies on that).
+5. Not changed, recorded: every handle-taking export dereferences its
+   handle without a NULL check; the Rust owner types (`Context`,
+   `PublicKey`, `Ciphertext`, ..) construct only from non-NULL returns and
+   are the only callers, so a NULL cannot reach the shim from safe code.
+
+*clang-tidy 18* (`bugprone-*`, `cert-*`, `clang-analyzer-*`,
+`performance-*`, minus the two style checks named in the CI comment): 13
+warnings before, 0 after. Besides the linkage finding above they were a
+float infinity narrowed to double, three needless copies of big integers,
+a `memcpy` into a binary buffer flagged as a C-string copy (replaced by
+`std::copy_n`) and a signed-char-to-integer conversion on the `int8_t`
+noise coefficients, which is numeric use (annotated).
+
+*AddressSanitizer + UndefinedBehaviorSanitizer* (gcc 13, shim compiled
+with `-fsanitize=address,undefined -fno-sanitize-recover=undefined`, the
+runtimes linked into the Rust test binaries and `libasan` preloaded; leak
+detection off because OpenFHE's static tables are never freed): every
+suite of `openfhe-tbgv-rs` (unit, `crs_ceremony`, `key_noise_gap`,
+`openfhe_loader_facts`, `raw_residues`, `threshold`, `vdec_primitives`)
+passed with no report. The protocol crate's `wire` suite, which feeds the
+shim its hostile residues and the seeded mutation fuzz, has **not** been
+run under the sanitizers yet: two attempts to build it instrumented, made
+while the migration suites were using the same machine, stalled in the
+compiler and were killed. That run is still owed and is recorded here
+when it completes. OpenFHE itself is not instrumented in these runs, so
+an error inside OpenFHE's own code would be seen only where it touches
+memory the shim allocated.
+
+*What this pass does not do:* prove memory safety, review OpenFHE, or
+replace an external audit. The trusted base is unchanged.
+
 ## 7. Reproducing every claim
 
 ```sh
@@ -155,4 +214,13 @@ the exact object layout. Moving to another version requires:
    `tbgv_fuse_magnitude` if they changed;
 3. passing the start-up self-test, `vdec_primitives` and every suite above.
 
-OpenFHE security advisories must be tracked by the deployer.
+OpenFHE security advisories are tracked by CI: the nightly `OpenFHE pin
+against upstream` job (`.github/scripts/openfhe-pin-check.sh`) fails when
+the pinned tag no longer resolves to the pinned commit, when upstream has
+published a security advisory after the pinned release, or when upstream's
+latest release is newer than the pin. The last of these is expected to be
+red until the pin is moved through the three steps above (at the time of
+writing upstream is at v1.6.0); on pull requests it annotates without
+failing. Rust dependencies are checked by `cargo-deny` on every change
+(`prio3/deny.toml`: RustSec advisories including unmaintained crates,
+licenses, wildcard and duplicate versions, sources).

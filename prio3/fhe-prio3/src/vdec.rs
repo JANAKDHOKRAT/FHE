@@ -227,7 +227,9 @@ pub fn check_flooding(ctx: &Context, partials: &[&PartialDecryption], what: &str
 pub fn fuse_checked(ctx: &Context, partials: &[&PartialDecryption], what: &str) -> Result<Vec<u64>> {
     let (mx, q0) = ctx.fuse_magnitude(partials)?;
     if mx >= q0 / 4 {
-        return Err(Error::Protocol(format!("vdec: {what}: fused value reaches q0/4 (a partial decryption is not what it should be, or the ciphertext's noise overflowed)")));
+        return Err(Error::Protocol(format!(
+            "vdec: {what}: fused value reaches q0/4 (a partial decryption is not what it should be, or the ciphertext's noise overflowed)"
+        )));
     }
     check_flooding(ctx, partials, &format!("vdec: {what}"))?;
     Ok(ctx.fuse(partials, ctx.ring_dim() as usize)?)
@@ -261,7 +263,15 @@ impl SlotPowers {
                 return Err(Error::Protocol("vdec: slot value of X is not a primitive 2N-th root of unity".into()));
             }
         }
-        let log = w.iter().map(|v| index.get(v).copied().ok_or_else(|| Error::Protocol("vdec: slot values of X are not powers of one root".into()))).collect::<Result<Vec<_>>>()?;
+        let log = w
+            .iter()
+            .map(|v| {
+                index
+                    .get(v)
+                    .copied()
+                    .ok_or_else(|| Error::Protocol("vdec: slot values of X are not powers of one root".into()))
+            })
+            .collect::<Result<Vec<_>>>()?;
         Ok(Self { p, table, log })
     }
 
@@ -280,14 +290,18 @@ pub fn verify(powers: &SlotPowers, accs_groups: &[Vec<usize>], fused_accs: &[Vec
     }
     let p = powers.p as u128;
     for (i, (ch, got)) in opening.checks.iter().zip(fused_checks).enumerate() {
-        let members = accs_groups.get(ch.group as usize).ok_or_else(|| Error::Protocol("vdec: unknown group".into()))?;
+        let members = accs_groups
+            .get(ch.group as usize)
+            .ok_or_else(|| Error::Protocol("vdec: unknown group".into()))?;
         for (s, &g) in got.iter().enumerate() {
             let mut want = 0u128;
             for (&a, &k) in members.iter().zip(&ch.ks) {
                 want += powers.pow(s, k) as u128 * fused_accs[a][s] as u128 % p;
             }
             if (want % p) as u64 != g {
-                return Err(Error::Protocol(format!("vdec: check {i} fails in slot {s}: an aggregator's partial decryption is not a decryption of the agreed ciphertexts")));
+                return Err(Error::Protocol(format!(
+                    "vdec: check {i} fails in slot {s}: an aggregator's partial decryption is not a decryption of the agreed ciphertexts"
+                )));
             }
         }
     }

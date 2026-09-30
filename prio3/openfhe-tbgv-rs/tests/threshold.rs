@@ -20,7 +20,12 @@ struct Party {
 /// Runs the full n-of-n ceremony over serialized messages and returns
 /// (context with joint keys installed, joint pk, parties).
 fn ceremony(n: usize, indices: &[i32], depth: u32) -> (Context, PublicKey, Vec<Party>) {
-    let ctx = Context::new(Params { plain_mod: P, mult_depth: depth, security_bits: 128 }).unwrap();
+    let ctx = Context::new(Params {
+        plain_mod: P,
+        mult_depth: depth,
+        security_bits: 128,
+    })
+    .unwrap();
 
     // --- public key: sequential -------------------------------------
     let (pk0, sk0) = keygen_first(&ctx).unwrap();
@@ -105,16 +110,28 @@ fn check_arith(n_parties: usize) {
     let mul = |x: u64, y: u64| ((x as u128 * y as u128) % P as u128) as u64;
 
     let sum = ctx.add(&ca, &cb).unwrap();
-    assert_eq!(threshold_decrypt(&ctx, &parties, &sum, 64), a.iter().zip(&b).map(|(x, y)| (x + y) % P).collect::<Vec<_>>());
+    assert_eq!(
+        threshold_decrypt(&ctx, &parties, &sum, 64),
+        a.iter().zip(&b).map(|(x, y)| (x + y) % P).collect::<Vec<_>>()
+    );
 
     let dif = ctx.sub(&ca, &cb).unwrap();
-    assert_eq!(threshold_decrypt(&ctx, &parties, &dif, 64), a.iter().zip(&b).map(|(x, y)| (x + P - y) % P).collect::<Vec<_>>());
+    assert_eq!(
+        threshold_decrypt(&ctx, &parties, &dif, 64),
+        a.iter().zip(&b).map(|(x, y)| (x + P - y) % P).collect::<Vec<_>>()
+    );
 
     let prod = ctx.mult(&ca, &cb).unwrap();
-    assert_eq!(threshold_decrypt(&ctx, &parties, &prod, 64), a.iter().zip(&b).map(|(&x, &y)| mul(x, y)).collect::<Vec<_>>());
+    assert_eq!(
+        threshold_decrypt(&ctx, &parties, &prod, 64),
+        a.iter().zip(&b).map(|(&x, &y)| mul(x, y)).collect::<Vec<_>>()
+    );
 
     let prod_pt = ctx.mult_plain(&ca, &pb).unwrap();
-    assert_eq!(threshold_decrypt(&ctx, &parties, &prod_pt, 64), a.iter().zip(&b).map(|(&x, &y)| mul(x, y)).collect::<Vec<_>>());
+    assert_eq!(
+        threshold_decrypt(&ctx, &parties, &prod_pt, 64),
+        a.iter().zip(&b).map(|(&x, &y)| mul(x, y)).collect::<Vec<_>>()
+    );
 
     // depth 3 with worst-case magnitudes: (a*b)*b*b then flooding decryption
     let d2 = ctx.mult(&prod, &cb).unwrap();
@@ -189,7 +206,12 @@ fn context_and_key_serialization_roundtrip() {
 #[test]
 fn plaintext_rejects_unreduced_values() {
     let _g = serial();
-    let ctx = Context::new(Params { plain_mod: P, mult_depth: 1, security_bits: 128 }).unwrap();
+    let ctx = Context::new(Params {
+        plain_mod: P,
+        mult_depth: 1,
+        security_bits: 128,
+    })
+    .unwrap();
     assert!(ctx.plaintext(&[P]).is_err());
     assert!(ctx.plaintext(&[P - 1]).is_ok());
 }
@@ -203,7 +225,11 @@ fn injected_noise_keeps_plaintext_until_it_overflows() {
     // Small extra noise: still a correct encryption of v.
     let small = ctx.add_noise_for_tests(&ct, 40, 1).unwrap();
     assert_eq!(threshold_decrypt(&ctx, &parties, &small, 4), v);
-    assert_eq!(small.info().unwrap(), ct.info().unwrap(), "structure is indistinguishable from a fresh ciphertext");
+    assert_eq!(
+        small.info().unwrap(),
+        ct.info().unwrap(),
+        "structure is indistinguishable from a fresh ciphertext"
+    );
     // Noise far beyond the modulus: no longer decrypts to v.
     let huge = ctx.add_noise_for_tests(&ct, 340, 2).unwrap();
     assert_eq!(huge.info().unwrap(), ct.info().unwrap());

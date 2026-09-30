@@ -22,7 +22,7 @@ shares sealed at rest.
   deployment, see below. Holds no key, sees no ciphertext.
 
 All node-to-node calls carry a bearer token in `x-fhe-prio3-token` over TLS
-and are refused otherwise. Bodies are bincode. Every ciphertext inside a body
+and are refused otherwise. Bodies are postcard (serde; one value has one encoding, and a trailing byte is refused). Every ciphertext inside a body
 is in the packed wire format (spec §6b). It is parsed in safe Rust, and none
 reaches OpenFHE's deserializer. Body limits are set per route:
 
@@ -50,6 +50,13 @@ self-test that rebuilds every kind of exchanged object at every level the
 task reaches with throwaway keys, and refuse to start if any rebuild is not
 exact (spec §6b). The self-test takes about 2 s in verdict mode and about
 30 s in silent mode, once per process.
+
+Upgrading across the change of message codec (bincode 1, unmaintained
+per RUSTSEC-2025-0141, to postcard): finish collecting every batch before
+upgrading. Task files, public material, sealed shares and persisted node
+state written by an earlier build are in the old encoding and are refused
+with a serialization error; re-run `task-config` and the ceremony for new
+tasks. The packed ciphertext wire format is unchanged.
 
 Upgrading across the change to the packed format: finish collecting every
 batch before upgrading. The database layout is unchanged, but an earlier

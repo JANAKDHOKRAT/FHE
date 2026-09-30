@@ -35,7 +35,10 @@ fuzz_target!(|data: &[u8]| {
         .collect();
     let bytes = f.encode_raw(&meta, &residues).expect("valid input must encode");
     assert_eq!(bytes.len(), f.encoded_len(&meta));
-    assert_eq!(f.parse(&bytes, Expect::Exactly(meta)).expect("own encoding must parse"), (meta, residues.clone()));
+    assert_eq!(
+        f.parse(&bytes, Expect::Exactly(meta)).expect("own encoding must parse"),
+        (meta, residues.clone())
+    );
     // one residue pushed to its modulus is refused by both directions
     let mut bad = residues;
     let j = data[1] as usize % count;

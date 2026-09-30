@@ -24,14 +24,22 @@ fn forge_related(net: &Net, honest: &Report, delta_slots: &[u64]) -> Report {
     // the sum of two fresh ciphertexts has exactly the shape of a fresh one
     let chunks = vec![codec.encode(&ctx.add(&ct, &delta).unwrap()).unwrap()];
     let report_id = Report::compute_id(&honest.task_id, 0, &chunks);
-    Report { task_id: honest.task_id, report_id, group: 0, chunks, auth: None }
+    Report {
+        task_id: honest.task_id,
+        report_id,
+        group: 0,
+        chunks,
+        auth: None,
+    }
 }
 
 #[test]
 fn authentication_blocks_unregistered_forgeries_and_enforces_quota() {
     let _g = serial();
     let mut cfg = verdict_cfg(30, MeasurementType::Count);
-    cfg.auth = AuthPolicy::Required { max_reports_per_client_per_batch: 1 };
+    cfg.auth = AuthPolicy::Required {
+        max_reports_per_client_per_batch: 1,
+    };
     let honest_id = ClientIdentity::generate();
     let attacker_id = ClientIdentity::generate(); // an identity the adversary controls
     let outsider_id = ClientIdentity::generate(); // not registered
@@ -74,7 +82,11 @@ fn authentication_blocks_unregistered_forgeries_and_enforces_quota() {
     let mut probe = forged.clone();
     probe.auth = Some(attacker_id.sign(&probe.task_id, &probe.report_id));
     let v = net.run_report(&probe);
-    assert!(v.iter().all(|v| matches!(v, Verdict::Accepted | Verdict::Rejected(RejectReason::ValidityCheckFailed))), "{v:?}");
+    assert!(
+        v.iter()
+            .all(|v| matches!(v, Verdict::Accepted | Verdict::Rejected(RejectReason::ValidityCheckFailed))),
+        "{v:?}"
+    );
     let mut probe2 = forge_related(&net, &honest, &[0]);
     probe2.auth = Some(attacker_id.sign(&probe2.task_id, &probe2.report_id));
     net.expect_reject(&probe2, RejectReason::QuotaExceeded);
@@ -84,11 +96,16 @@ fn authentication_blocks_unregistered_forgeries_and_enforces_quota() {
 fn aggregator_without_registry_refuses_auth_tasks() {
     let _g = serial();
     let mut cfg = verdict_cfg(31, MeasurementType::Count);
-    cfg.auth = AuthPolicy::Required { max_reports_per_client_per_batch: 1 };
+    cfg.auth = AuthPolicy::Required {
+        max_reports_per_client_per_batch: 1,
+    };
     let (material, shares) = keys::run_local_ceremony(&cfg).unwrap();
     assert!(Aggregator::new(cfg.clone(), &material, 0, &shares[0], None).is_err());
     let client = Client::new(cfg.clone(), &material.context, &material.public_key).unwrap();
-    assert!(client.shard(&Measurement::Count(true)).is_err(), "client without identity cannot produce a report");
+    assert!(
+        client.shard(&Measurement::Count(true)).is_err(),
+        "client without identity cannot produce a report"
+    );
 }
 
 #[test]
@@ -130,8 +147,14 @@ fn verdict_mode_noise_ordering() {
     // ~2^80 extra noise on a fresh ciphertext (honest noise is ~2^5): still exact.
     net.expect_accept(&net.client.shard_noisy_for_tests(&Measurement::Sum(49), 80, 11).unwrap());
     // ~2^300: the depth-3 check overflows the ~2^345-bit modulus chain.
-    net.expect_reject(&net.client.shard_noisy_for_tests(&Measurement::Sum(7), 300, 12).unwrap(), RejectReason::ValidityCheckFailed);
-    net.expect_reject(&net.client.shard_noisy_for_tests(&Measurement::Sum(7), 200, 13).unwrap(), RejectReason::ValidityCheckFailed);
+    net.expect_reject(
+        &net.client.shard_noisy_for_tests(&Measurement::Sum(7), 300, 12).unwrap(),
+        RejectReason::ValidityCheckFailed,
+    );
+    net.expect_reject(
+        &net.client.shard_noisy_for_tests(&Measurement::Sum(7), 200, 13).unwrap(),
+        RejectReason::ValidityCheckFailed,
+    );
     assert_eq!(net.collect().unwrap(), (AggregateResult::Sum(100), 2));
 }
 
@@ -148,17 +171,16 @@ fn silent_mode_sum_with_invalid_report_contributing_zero() {
     for m in &honest {
         net.expect_accept(&net.client.shard(m).unwrap());
     }
-    // Out of range: 101 with a saturated offset half. Admitted (no verdict is
-    // ever produced) but must contribute exactly zero to every slot.
-    let bits = |v: u64| -> Vec<u64> { (0..7).map(|i| (v >> i) & 1).collect() };
-    let mut bad = bits(101);
-    bad.extend(bits(127));
+    // Out of range: 101 needs a non-bit slot (2 * 32 + 37). Admitted (no
+    // verdict is ever produced) but must contribute exactly zero to every slot.
+    let bad = vec![0u64, 0, 0, 0, 0, 2, 1];
     let r = net.client.shard_raw_elements(&[bad]).unwrap();
-    assert!(net.run_report(&r).iter().all(|v| *v == Verdict::Accepted), "silent mode never reports a verdict");
-    // A non-bit value as well.
-    let mut nonbit = bits(3);
-    nonbit[0] = 5;
-    nonbit.extend(bits(3 + 27));
+    assert!(
+        net.run_report(&r).iter().all(|v| *v == Verdict::Accepted),
+        "silent mode never reports a verdict"
+    );
+    // A non-bit value that stays in range (5 * 1 + 2 = 7) as well.
+    let nonbit = vec![5u64, 1, 0, 0, 0, 0, 0];
     let r = net.client.shard_raw_elements(&[nonbit]).unwrap();
     assert!(net.run_report(&r).iter().all(|v| *v == Verdict::Accepted));
 
@@ -178,7 +200,10 @@ fn silent_mode_histogram_three_aggregators_and_noisy_report_detected() {
     net.expect_accept(&net.client.shard(&Measurement::Histogram(2)).unwrap());
     net.expect_accept(&net.client.shard_raw_elements(&[vec![1, 1, 0, 0]]).unwrap()); // two-hot: contributes zero
     let r = net.collect_full().unwrap();
-    assert_eq!((r.aggregate, r.report_count, r.valid_count), (AggregateResult::Histogram(vec![0, 0, 1, 0]), 2, 1));
+    assert_eq!(
+        (r.aggregate, r.report_count, r.valid_count),
+        (AggregateResult::Histogram(vec![0, 0, 1, 0]), 2, 1)
+    );
     // Release the three aggregators (and their 2 GiB of keys each) before
     // building the next network; two complete silent-mode key sets in one
     // process exceed a 16 GiB machine.
@@ -192,8 +217,11 @@ fn silent_mode_histogram_three_aggregators_and_noisy_report_detected() {
     let mut net = Net::new(TaskConfig::new_silent(task_id(36), t.clone(), 2));
     net.expect_accept(&net.client.shard(&Measurement::Histogram(1)).unwrap());
     net.expect_accept(&net.client.shard_noisy_for_tests(&Measurement::Histogram(3), 1200, 21).unwrap());
-    let err = net.collect().err().expect("corrupted batch must be refused").to_string();
-    assert!(err.contains("reaches q0/4") || err.contains("exceeds what") || err.contains("inconsistent") || err.contains("corrupted"), "{err}");
+    let err = net.collect().expect_err("corrupted batch must be refused").to_string();
+    assert!(
+        err.contains("reaches q0/4") || err.contains("exceeds what") || err.contains("inconsistent") || err.contains("corrupted"),
+        "{err}"
+    );
     assert!(net.aggs[0].aggregate_share().is_err(), "nothing may be released from a refused batch");
 }
 
@@ -208,7 +236,7 @@ fn silent_mode_min_batch_counts_valid_reports_only() {
     net.expect_accept(&net.client.shard_raw_elements(&[vec![2]]).unwrap()); // invalid, contributes zero
     // Two admitted, one valid: the aggregators reveal the count (1) and then
     // refuse to release the sum.
-    let err = net.collect().err().expect("one valid report is below the minimum");
+    let err = net.collect().expect_err("one valid report is below the minimum");
     assert!(err.to_string().contains("valid reports"), "{err}");
     // The count share was released once; asking again returns the same bytes.
     let first = encode(&net.aggs[1].count_share().unwrap()).unwrap();
@@ -218,7 +246,13 @@ fn silent_mode_min_batch_counts_valid_reports_only() {
 #[test]
 fn messages_roundtrip_with_auth() {
     let id = ClientIdentity::generate();
-    let r = Report { task_id: [1; 32], report_id: [2; 32], group: 0, chunks: vec![vec![1, 2, 3]], auth: Some(id.sign(&[1; 32], &[2; 32])) };
+    let r = Report {
+        task_id: [1; 32],
+        report_id: [2; 32],
+        group: 0,
+        chunks: vec![vec![1, 2, 3]],
+        auth: Some(id.sign(&[1; 32], &[2; 32])),
+    };
     let back: Report = decode(&encode(&r).unwrap()).unwrap();
     assert_eq!(back.auth, r.auth);
     assert_eq!(back.chunks, r.chunks);
@@ -244,10 +278,8 @@ fn batched_silent_sum_shares_one_chain() {
         net.expect_accept(&r);
     }
     assert_eq!(net.aggs[0].pending_silent_reports(), 1);
-    // an invalid report in group 1 of the second sub-batch
-    let bits = |v: u64| -> Vec<u64> { (0..7).map(|i| (v >> i) & 1).collect() };
-    let mut bad = bits(101);
-    bad.extend(bits(127));
+    // an invalid report (a non-bit slot claiming 101) in group 1 of the second sub-batch
+    let bad = vec![0u64, 0, 0, 0, 0, 2, 1];
     net.expect_accept(&net.client.shard_raw_elements_in_group(&[bad], 1).unwrap());
     let r = net.collect_full().unwrap();
     assert_eq!(r.aggregate, AggregateResult::Sum(207));
@@ -274,7 +306,7 @@ fn batched_silent_cross_group_injection_is_ignored() {
     slots[l.group_slot(0, 0)] = 1; // into group 0 (would add bucket 0)
     slots[l.group_slot(2, 1)] = 5; // into group 2
     slots[l.group_slot(3, 2)] = cfg.plain_mod - 1;
-    slots[1 + l.classes * 1] = 9; // class 1 of its own group
+    slots[1 + l.classes] = 9; // class 1 of its own group
     slots[l.row - 1] = 3;
     net.expect_accept(&net.client.shard_raw_in_group(&[slots], 1).unwrap());
     // honest report in group 2: bucket 1
@@ -300,7 +332,7 @@ fn batched_silent_worst_case_inputs_gate() {
     let mut expected = 0u64;
     for chain in 0..chains {
         for g in 0..4u32 {
-            if (chain + g as usize) % 2 == 0 {
+            if (chain + g as usize).is_multiple_of(2) {
                 // worst case: every slot of the row holds p-1
                 let slots = vec![cfg.plain_mod - 1; l.row];
                 net.expect_accept(&net.client.shard_raw_in_group(&[slots], g).unwrap());

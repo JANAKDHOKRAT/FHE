@@ -43,7 +43,12 @@ impl Rng {
 
 #[test]
 fn three_parties_build_joint_keys_from_residues() {
-    let ctx = Context::new(Params { plain_mod: P, mult_depth: 3, security_bits: 128 }).unwrap();
+    let ctx = Context::new(Params {
+        plain_mod: P,
+        mult_depth: 3,
+        security_bits: 128,
+    })
+    .unwrap();
     let n = ctx.ring_dim() as usize;
     let pk_mod = ctx.key_basis_moduli(KeyBasis::PublicKey).unwrap();
     let ks_mod = ctx.key_basis_moduli(KeyBasis::KeySwitch).unwrap();
@@ -106,8 +111,8 @@ fn three_parties_build_joint_keys_from_residues() {
     for (k, &idx) in indices.iter().enumerate() {
         let t = EvalMultKey::template(&ctx, &a_rot[k]).unwrap();
         let mut acc = RotationKeys::single(&ctx, idx, &EvalMultKey::with_b(&ctx, &t, &rot_b[0][k]).unwrap()).unwrap();
-        for p in 1..3 {
-            let c = RotationKeys::single(&ctx, idx, &EvalMultKey::with_b(&ctx, &t, &rot_b[p][k]).unwrap()).unwrap();
+        for rb in &rot_b[1..3] {
+            let c = RotationKeys::single(&ctx, idx, &EvalMultKey::with_b(&ctx, &t, &rb[k]).unwrap()).unwrap();
             acc = RotationKeys::add(&ctx, &acc, &c, TAG).unwrap();
         }
         ctx.merge_rotation_keys(&acc, TAG).unwrap();
@@ -144,7 +149,12 @@ fn err<T>(r: Result<T>) -> String {
 
 #[test]
 fn contributions_are_checked_before_they_enter() {
-    let ctx = Context::new(Params { plain_mod: P, mult_depth: 3, security_bits: 128 }).unwrap();
+    let ctx = Context::new(Params {
+        plain_mod: P,
+        mult_depth: 3,
+        security_bits: 128,
+    })
+    .unwrap();
     let n = ctx.ring_dim() as usize;
     let pk_mod = ctx.key_basis_moduli(KeyBasis::PublicKey).unwrap();
     let ks_mod = ctx.key_basis_moduli(KeyBasis::KeySwitch).unwrap();

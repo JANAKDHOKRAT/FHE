@@ -29,7 +29,12 @@ fn setup(id: u8) -> Setup {
         .iter()
         .map(|s| ctx.deserialize_secret_share(&keys::AggregatorSecret::decode(s).unwrap().share).unwrap())
         .collect();
-    Setup { ctx, pk, shares, _lease: lease }
+    Setup {
+        ctx,
+        pk,
+        shares,
+        _lease: lease,
+    }
 }
 
 impl Setup {
@@ -97,11 +102,21 @@ fn checks_accept_honest_and_catch_shifted_partials() {
     run(&s, &accs, &keep, &keep_c).unwrap();
 
     // aggregator 1 shifts the second accumulator by 1 in slot 0
-    let e = run(&s, &accs, &|i, q| if i == 1 { s.shifted(q, 1) } else { keep(i, q) }, &keep_c).unwrap_err().to_string();
+    let e = run(&s, &accs, &|i, q| if i == 1 { s.shifted(q, 1) } else { keep(i, q) }, &keep_c)
+        .unwrap_err()
+        .to_string();
     assert!(e.contains("fails in slot 0"), "{e}");
     // ... and also shifts every check by what it would need for a guessed exponent
-    let guess = |i: usize, q: &PartialDecryption, _: &vdec::Opening| if i < per { s.shifted(q, 1) } else { keep_c(i, q, &vdec::Opening { checks: vec![] }) };
-    let e = run(&s, &accs, &|i, q| if i == 1 { s.shifted(q, 1) } else { keep(i, q) }, &guess).unwrap_err().to_string();
+    let guess = |i: usize, q: &PartialDecryption, _: &vdec::Opening| {
+        if i < per {
+            s.shifted(q, 1)
+        } else {
+            keep_c(i, q, &vdec::Opening { checks: vec![] })
+        }
+    };
+    let e = run(&s, &accs, &|i, q| if i == 1 { s.shifted(q, 1) } else { keep(i, q) }, &guess)
+        .unwrap_err()
+        .to_string();
     assert!(e.contains("fails in slot 0"), "{e}");
     // with the exponents in hand the same cheat would pass: the check rests
     // on their secrecy until the commitments are in
@@ -121,17 +136,36 @@ fn checks_accept_honest_and_catch_shifted_partials() {
     };
     run(&s, &accs, &|i, q| if i == 1 { s.shifted(q, 1) } else { keep(i, q) }, &knowing).unwrap();
     // a shifted check alone
-    let e = run(&s, &accs, &keep, &|i, q, o| if i == per + 1 { s.shifted(q, 3) } else { keep_c(i, q, o) }).unwrap_err().to_string();
+    let e = run(&s, &accs, &keep, &|i, q, o| if i == per + 1 { s.shifted(q, 3) } else { keep_c(i, q, o) })
+        .unwrap_err()
+        .to_string();
     assert!(e.contains(&format!("check {} fails", per + 1)), "{e}");
     // a shift that is a multiple of t below the decryption bound changes
     // nothing and passes; one reaching the size of the modulus makes the
     // fusion wrap and is caught by the magnitude bound
-    let small = |i: usize, q: &PartialDecryption| if i == 0 { PartialDecryption::from_ciphertext(s.ctx.add_noise_for_tests(q.ciphertext(), 60, 9).unwrap(), q.is_lead()) } else { keep(i, q) };
+    let small = |i: usize, q: &PartialDecryption| {
+        if i == 0 {
+            PartialDecryption::from_ciphertext(s.ctx.add_noise_for_tests(q.ciphertext(), 60, 9).unwrap(), q.is_lead())
+        } else {
+            keep(i, q)
+        }
+    };
     run(&s, &accs, &small, &keep_c).unwrap();
     let wrap_bits = s.ctx.log2_q().floor() as u32 - (64 - p.leading_zeros());
-    let e = run(&s, &accs, &|i, q| if i == 0 { PartialDecryption::from_ciphertext(s.ctx.add_noise_for_tests(q.ciphertext(), wrap_bits, 9).unwrap(), q.is_lead()) } else { keep(i, q) }, &keep_c)
-        .unwrap_err()
-        .to_string();
+    let e = run(
+        &s,
+        &accs,
+        &|i, q| {
+            if i == 0 {
+                PartialDecryption::from_ciphertext(s.ctx.add_noise_for_tests(q.ciphertext(), wrap_bits, 9).unwrap(), q.is_lead())
+            } else {
+                keep(i, q)
+            }
+        },
+        &keep_c,
+    )
+    .unwrap_err()
+    .to_string();
     assert!(e.contains("reaches q0/4"), "{e}");
 }
 
@@ -139,13 +173,16 @@ fn checks_accept_honest_and_catch_shifted_partials() {
 fn aggregators_refuse_a_check_that_is_not_one() {
     let _g = serial();
     let s = setup(121);
-    let accs = vec![s.enc(&[5, 6]), s.enc(&[7])];
+    let accs = [s.enc(&[5, 6]), s.enc(&[7])];
     let refs: Vec<&Ciphertext> = accs.iter().collect();
     let opening = vdec::draw(&s.ctx, &refs, &mut rand::thread_rng()).unwrap();
     let honest = vdec::build(&s.ctx, &s.pk, &refs, &opening).unwrap();
     // a verifier sends a client's ciphertext (plus the blinding) as check 0
     let victim = s.enc(&[31337]);
-    let z = s.ctx.zero_encryption(&s.pk, &victim, &opening.checks[0].u, &opening.checks[0].e0, &opening.checks[0].e1).unwrap();
+    let z = s
+        .ctx
+        .zero_encryption(&s.pk, &victim, &opening.checks[0].u, &opening.checks[0].e0, &opening.checks[0].e1)
+        .unwrap();
     let forged = s.ctx.add(&victim, &z).unwrap();
     assert!(!vdec::same(&forged, &honest[0]).unwrap());
     // openings outside the ranges are refused before anything is built

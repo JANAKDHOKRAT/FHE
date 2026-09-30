@@ -12,10 +12,11 @@ use fhe_prio3_node::wire::{SubmitOutcome, http_get, http_post, https_client};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::Mutex;
 use std::time::Instant;
 
-static SERIAL: Mutex<()> = Mutex::new(());
+/// Serialises the tests of this file. An async lock, because the guard is
+/// held across the awaits of a whole deployment.
+static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 const SEAL_KEY: &str = "2222222222222222222222222222222222222222222222222222222222222222";
 const TOKEN: &str = "shard-t0k3n";
 
@@ -48,7 +49,12 @@ fn make_tls(dir: &Path) -> Tls {
     std::fs::write(&cert, format!("{}{}", leaf.pem(), ca.pem())).unwrap();
     std::fs::write(&key, leaf_key.serialize_pem()).unwrap();
     std::fs::write(&ca_path, ca.pem()).unwrap();
-    Tls { ca_pem: ca.pem().into_bytes(), ca: ca_path, cert, key }
+    Tls {
+        ca_pem: ca.pem().into_bytes(),
+        ca: ca_path,
+        cert,
+        key,
+    }
 }
 
 struct Procs(Vec<Child>);
@@ -100,7 +106,15 @@ async fn deploy(base: &TaskConfig, shards: usize, threads: usize) -> Deployment 
     std::fs::write(&task_path, encode(base).unwrap()).unwrap();
     let keys_dir = dir.path().join("keys");
     let st = Command::new(bin())
-        .args(["keygen-shards", "--task", task_path.to_str().unwrap(), "--shards", &shards.to_string(), "--out-dir", keys_dir.to_str().unwrap()])
+        .args([
+            "keygen-shards",
+            "--task",
+            task_path.to_str().unwrap(),
+            "--shards",
+            &shards.to_string(),
+            "--out-dir",
+            keys_dir.to_str().unwrap(),
+        ])
         .env("FHE_PRIO3_SEAL_KEY", SEAL_KEY)
         .stdout(Stdio::null())
         .status()
@@ -119,32 +133,51 @@ async fn deploy(base: &TaskConfig, shards: usize, threads: usize) -> Deployment 
         procs.push(spawn(
             &[
                 "collector".into(),
-                "--task".into(), sdir.join("task.bin").to_str().unwrap().into(),
-                "--material".into(), sdir.join("material.bin").to_str().unwrap().into(),
-                "--db".into(), dir.path().join(format!("col{s}.db")).to_str().unwrap().into(),
-                "--listen".into(), format!("127.0.0.1:{col_port}"),
-                "--token".into(), TOKEN.into(),
-                "--tls-cert".into(), tls.cert.to_str().unwrap().into(),
-                "--tls-key".into(), tls.key.to_str().unwrap().into(),
+                "--task".into(),
+                sdir.join("task.bin").to_str().unwrap().into(),
+                "--material".into(),
+                sdir.join("material.bin").to_str().unwrap().into(),
+                "--db".into(),
+                dir.path().join(format!("col{s}.db")).to_str().unwrap().into(),
+                "--listen".into(),
+                format!("127.0.0.1:{col_port}"),
+                "--token".into(),
+                TOKEN.into(),
+                "--tls-cert".into(),
+                tls.cert.to_str().unwrap().into(),
+                "--tls-key".into(),
+                tls.key.to_str().unwrap().into(),
             ],
             1,
         ));
-        for i in 0..base.num_aggregators {
+        for (i, &port) in agg_ports.iter().enumerate() {
             procs.push(spawn(
                 &[
                     "aggregator".into(),
-                    "--index".into(), i.to_string(),
-                    "--task".into(), sdir.join("task.bin").to_str().unwrap().into(),
-                    "--material".into(), sdir.join("material.bin").to_str().unwrap().into(),
-                    "--share".into(), sdir.join(format!("share-{i}.sealed")).to_str().unwrap().into(),
-                    "--db".into(), dir.path().join(format!("agg{s}-{i}.db")).to_str().unwrap().into(),
-                    "--listen".into(), format!("127.0.0.1:{}", agg_ports[i]),
-                    "--aggregators".into(), agg_urls.join(","),
-                    "--collector".into(), col_url.clone(),
-                    "--token".into(), TOKEN.into(),
-                    "--tls-cert".into(), tls.cert.to_str().unwrap().into(),
-                    "--tls-key".into(), tls.key.to_str().unwrap().into(),
-                    "--ca".into(), tls.ca.to_str().unwrap().into(),
+                    "--index".into(),
+                    i.to_string(),
+                    "--task".into(),
+                    sdir.join("task.bin").to_str().unwrap().into(),
+                    "--material".into(),
+                    sdir.join("material.bin").to_str().unwrap().into(),
+                    "--share".into(),
+                    sdir.join(format!("share-{i}.sealed")).to_str().unwrap().into(),
+                    "--db".into(),
+                    dir.path().join(format!("agg{s}-{i}.db")).to_str().unwrap().into(),
+                    "--listen".into(),
+                    format!("127.0.0.1:{port}"),
+                    "--aggregators".into(),
+                    agg_urls.join(","),
+                    "--collector".into(),
+                    col_url.clone(),
+                    "--token".into(),
+                    TOKEN.into(),
+                    "--tls-cert".into(),
+                    tls.cert.to_str().unwrap().into(),
+                    "--tls-key".into(),
+                    tls.key.to_str().unwrap().into(),
+                    "--ca".into(),
+                    tls.ca.to_str().unwrap().into(),
                 ],
                 threads,
             ));
@@ -158,19 +191,32 @@ async fn deploy(base: &TaskConfig, shards: usize, threads: usize) -> Deployment 
     procs.push(spawn(
         &[
             "router".into(),
-            "--shards-dir".into(), keys_dir.to_str().unwrap().into(),
-            "--leaders".into(), leaders.join(","),
-            "--listen".into(), format!("127.0.0.1:{router_port}"),
-            "--token".into(), TOKEN.into(),
-            "--tls-cert".into(), tls.cert.to_str().unwrap().into(),
-            "--tls-key".into(), tls.key.to_str().unwrap().into(),
-            "--ca".into(), tls.ca.to_str().unwrap().into(),
+            "--shards-dir".into(),
+            keys_dir.to_str().unwrap().into(),
+            "--leaders".into(),
+            leaders.join(","),
+            "--listen".into(),
+            format!("127.0.0.1:{router_port}"),
+            "--token".into(),
+            TOKEN.into(),
+            "--tls-cert".into(),
+            tls.cert.to_str().unwrap().into(),
+            "--tls-key".into(),
+            tls.key.to_str().unwrap().into(),
+            "--ca".into(),
+            tls.ca.to_str().unwrap().into(),
         ],
         1,
     ));
     let router_url = format!("https://localhost:{router_port}");
     wait_ready(&http, &format!("{router_url}/v1/shards")).await;
-    Deployment { _dir: dir, tls, keys_dir, router_url, _procs: Procs(procs) }
+    Deployment {
+        _dir: dir,
+        tls,
+        keys_dir,
+        router_url,
+        _procs: Procs(procs),
+    }
 }
 
 /// Submits `values` concurrently through the router; returns wall time.
@@ -190,7 +236,11 @@ async fn submit_all(d: &Deployment, values: &[u64]) -> std::time::Duration {
         shards_used.insert(shard);
     }
     let elapsed = t0.elapsed();
-    assert_eq!(shards_used.len(), std::cmp::min(values.len(), d._procs.0.len() / 3), "every shard received reports");
+    assert_eq!(
+        shards_used.len(),
+        std::cmp::min(values.len(), d._procs.0.len() / 3),
+        "every shard received reports"
+    );
     elapsed
 }
 
@@ -201,7 +251,7 @@ async fn close_all(d: &Deployment) -> BatchResult {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_shards_as_processes_scale_and_combine() {
-    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let _g = SERIAL.lock().await;
     let base = TaskConfig::new([21u8; 32], MeasurementType::Sum { max_measurement: 100 }, 2);
     let values: Vec<u64> = (0..16).map(|i| (i * 37) % 101).collect();
     let expected: u128 = values.iter().map(|&v| v as u128).sum();
@@ -216,7 +266,11 @@ async fn two_shards_as_processes_scale_and_combine() {
         let d = deploy(&base, shards, threads).await;
         let t = submit_all(&d, &values).await;
         let r = close_all(&d).await;
-        assert_eq!((r.aggregate.clone(), r.report_count, r.valid_count), (AggregateResult::Sum(expected), 16, 16), "config {shards}x{threads}");
+        assert_eq!(
+            (r.aggregate.clone(), r.report_count, r.valid_count),
+            (AggregateResult::Sum(expected), 16, 16),
+            "config {shards}x{threads}"
+        );
         if i == configs.len() - 1 {
             // closing again is idempotent: every aggregator returns the share
             // it already released, so the combined result is byte-identical
@@ -237,7 +291,7 @@ async fn two_shards_as_processes_scale_and_combine() {
             // a client pinning other aggregator keys refuses what the router serves
             let rogue = vec![AggregatorIdentity::generate().public_key(), pinned[1]];
             let c = ShardedClient::new(d.router_url.clone(), &d.tls.ca_pem, None, rogue).unwrap();
-            let err = c.submit(&Measurement::Sum(1)).await.err().expect("unattested material must be refused");
+            let err = c.submit(&Measurement::Sum(1)).await.expect_err("unattested material must be refused");
             assert!(err.to_string().contains("pinned key") || err.to_string().contains("attest"), "{err}");
             // shard 0's attestations do not validate shard 1's material
             let task0: TaskConfig = http_get(&http, &format!("{}/v1/shard/0/task", d.router_url), None).await.unwrap();
@@ -257,9 +311,21 @@ async fn two_shards_as_processes_scale_and_combine() {
         let swapped = format!("{},{}", list[1].leader, list[0].leader);
         let st = Command::new(bin())
             .args([
-                "router", "--shards-dir", d.keys_dir.to_str().unwrap(), "--leaders", &swapped,
-                "--listen", &format!("127.0.0.1:{}", free_port()), "--token", TOKEN,
-                "--tls-cert", d.tls.cert.to_str().unwrap(), "--tls-key", d.tls.key.to_str().unwrap(), "--ca", d.tls.ca.to_str().unwrap(),
+                "router",
+                "--shards-dir",
+                d.keys_dir.to_str().unwrap(),
+                "--leaders",
+                &swapped,
+                "--listen",
+                &format!("127.0.0.1:{}", free_port()),
+                "--token",
+                TOKEN,
+                "--tls-cert",
+                d.tls.cert.to_str().unwrap(),
+                "--tls-key",
+                d.tls.key.to_str().unwrap(),
+                "--ca",
+                d.tls.ca.to_str().unwrap(),
             ])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -272,7 +338,11 @@ async fn two_shards_as_processes_scale_and_combine() {
     for (s, th, t) in &timings {
         out.push_str(&format!("SHARDING: 16 reports, {s} shard(s) x {th} thread(s): {t:.1} s\n"));
     }
-    out.push_str(&format!("SHARDING: speedup 2 shards vs 1 at 1 thread: {:.2}x; at a 4-thread budget: {:.2}x\n", timings[0].2 / timings[1].2, timings[2].2 / timings[3].2));
+    out.push_str(&format!(
+        "SHARDING: speedup 2 shards vs 1 at 1 thread: {:.2}x; at a 4-thread budget: {:.2}x\n",
+        timings[0].2 / timings[1].2,
+        timings[2].2 / timings[3].2
+    ));
     print!("{out}");
     std::fs::write(std::env::temp_dir().join("fhe_prio3_sharding_timing.txt"), out).unwrap();
 }

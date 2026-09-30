@@ -23,12 +23,18 @@ pub enum RejectReason {
     WrongTask,
     ReportIdMismatch,
     Replay,
-    WrongChunkCount { expected: usize, got: usize },
+    WrongChunkCount {
+        expected: usize,
+        got: usize,
+    },
     MalformedCiphertext(String),
     ValidityCheckFailed,
     BatchFull,
     BatchClosed,
-    TooLarge { limit: usize, got: usize },
+    TooLarge {
+        limit: usize,
+        got: usize,
+    },
     /// Policy requires a signature and none was supplied, or it did not verify.
     Unauthenticated(String),
     /// The signing key is not in the aggregator's registry.

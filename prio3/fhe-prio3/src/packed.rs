@@ -56,7 +56,9 @@ const FINGERPRINT_DOMAIN: &[u8] = b"fhe-prio3/1 packed-ciphertext";
 /// Rust before any OpenFHE call.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WireError {
-    Truncated { len: usize },
+    Truncated {
+        len: usize,
+    },
     BadMagic,
     BadVersion(u8),
     NonZeroReserved,
@@ -64,9 +66,19 @@ pub enum WireError {
     WrongParameters,
     BadShape(String),
     /// The shape is valid but not the one this message must have.
-    UnexpectedShape { expected: CiphertextMeta, got: CiphertextMeta },
-    BadLength { expected: usize, got: usize },
-    ResidueOutOfRange { element: usize, tower: usize, index: usize },
+    UnexpectedShape {
+        expected: CiphertextMeta,
+        got: CiphertextMeta,
+    },
+    BadLength {
+        expected: usize,
+        got: usize,
+    },
+    ResidueOutOfRange {
+        element: usize,
+        tower: usize,
+        index: usize,
+    },
     NonZeroPadding,
     /// The shim refused to build the ciphertext (it re-checks everything).
     Rebuild(String),
@@ -154,7 +166,13 @@ impl WireFormat {
         }
         let widths = moduli.iter().map(|&q| bit_length(q - 1).max(1)).collect();
         let fp = fingerprint(plain_mod, ring_dim as u32, &moduli, public_key);
-        Ok(Self { moduli, widths, ring_dim, plain_mod, fingerprint: fp })
+        Ok(Self {
+            moduli,
+            widths,
+            ring_dim,
+            plain_mod,
+            fingerprint: fp,
+        })
     }
 
     pub fn fingerprint(&self) -> [u8; 32] {
@@ -210,7 +228,10 @@ impl WireFormat {
         let n = self.ring_dim;
         let count = meta.num_elements as usize * k * n;
         if residues.len() != count {
-            return Err(WireError::BadLength { expected: count, got: residues.len() });
+            return Err(WireError::BadLength {
+                expected: count,
+                got: residues.len(),
+            });
         }
         let mut out = Vec::with_capacity(self.encoded_len(meta));
         out.extend_from_slice(&MAGIC);
@@ -230,7 +251,11 @@ impl WireFormat {
                 let width = self.widths[t];
                 for (i, &v) in residues[(e * k + t) * n..(e * k + t + 1) * n].iter().enumerate() {
                     if v >= q {
-                        return Err(WireError::ResidueOutOfRange { element: e, tower: t, index: i });
+                        return Err(WireError::ResidueOutOfRange {
+                            element: e,
+                            tower: t,
+                            index: i,
+                        });
                     }
                     w.put(v, width);
                 }
@@ -296,7 +321,11 @@ impl WireFormat {
                 for i in 0..n {
                     let v = r.get(width);
                     if v >= q {
-                        return Err(WireError::ResidueOutOfRange { element: e, tower: t, index: i });
+                        return Err(WireError::ResidueOutOfRange {
+                            element: e,
+                            tower: t,
+                            index: i,
+                        });
                     }
                     residues.push(v);
                 }
@@ -348,7 +377,12 @@ impl Codec {
         if fresh.num_towers as usize != format.moduli.len() || fresh.level != 0 {
             return Err(Error::Config("a fresh encryption does not use the full modulus chain".into()));
         }
-        Ok(Self { ctx: ctx.clone(), format, reference, fresh })
+        Ok(Self {
+            ctx: ctx.clone(),
+            format,
+            reference,
+            fresh,
+        })
     }
 
     /// The format this codec encodes and parses.
@@ -378,7 +412,9 @@ impl Codec {
     pub fn encode(&self, ct: &Ciphertext) -> Result<Vec<u8>> {
         let meta = ct.meta()?;
         let residues = ct.export_residues()?;
-        self.format.encode_raw(&meta, &residues).map_err(|e| Error::Protocol(format!("cannot encode this ciphertext: {e}")))
+        self.format
+            .encode_raw(&meta, &residues)
+            .map_err(|e| Error::Protocol(format!("cannot encode this ciphertext: {e}")))
     }
 
     /// Parses and validates, in safe Rust and without any OpenFHE call.
@@ -399,7 +435,10 @@ impl Codec {
     /// As [`Self::decode`], also returning the validated metadata.
     pub fn decode_with_meta(&self, bytes: &[u8], expect: Expect) -> std::result::Result<(CiphertextMeta, Ciphertext), WireError> {
         let (meta, residues) = self.format.parse(bytes, expect)?;
-        let ct = self.ctx.build_ciphertext(&self.reference, &meta, &residues).map_err(|e| WireError::Rebuild(e.0))?;
+        let ct = self
+            .ctx
+            .build_ciphertext(&self.reference, &meta, &residues)
+            .map_err(|e| WireError::Rebuild(e.0))?;
         Ok((meta, ct))
     }
 }
@@ -447,7 +486,12 @@ struct BitReader<'a> {
 
 impl<'a> BitReader<'a> {
     fn new(data: &'a [u8]) -> Self {
-        Self { data, pos: 0, acc: 0, nbits: 0 }
+        Self {
+            data,
+            pos: 0,
+            acc: 0,
+            nbits: 0,
+        }
     }
     fn get(&mut self, width: u32) -> u64 {
         while self.nbits < width {
@@ -508,10 +552,12 @@ mod tests {
         }
         // mixed widths, as a ciphertext has
         let widths = [48u32, 60, 60, 55, 55, 55, 17];
-        let vals: Vec<(u64, u32)> = (0..7000).map(|i| {
-            let w = widths[i % 7];
-            (next() & ((1u64 << w) - 1), w)
-        }).collect();
+        let vals: Vec<(u64, u32)> = (0..7000)
+            .map(|i| {
+                let w = widths[i % 7];
+                (next() & ((1u64 << w) - 1), w)
+            })
+            .collect();
         let mut wr = BitWriter::new(vec![9, 9]);
         for &(v, w) in &vals {
             wr.put(v, w);
@@ -552,7 +598,13 @@ mod tests {
             for k in 1..=l {
                 for deg in 1..=2 {
                     for sf in [1u64, 2, 65536] {
-                        v.push(CiphertextMeta { num_elements: ne, num_towers: k, level: l - k, noise_scale_deg: deg, scaling_factor_int: sf });
+                        v.push(CiphertextMeta {
+                            num_elements: ne,
+                            num_towers: k,
+                            level: l - k,
+                            noise_scale_deg: deg,
+                            scaling_factor_int: sf,
+                        });
                     }
                 }
             }
@@ -568,7 +620,9 @@ mod tests {
             for m in all_metas(&f) {
                 let k = m.num_towers as usize;
                 let n = f.ring_dim();
-                let res: Vec<u64> = (0..m.num_elements as usize * k * n).map(|j| xorshift(&mut seed) % f.moduli()[(j / n) % k]).collect();
+                let res: Vec<u64> = (0..m.num_elements as usize * k * n)
+                    .map(|j| xorshift(&mut seed) % f.moduli()[(j / n) % k])
+                    .collect();
                 let bytes = f.encode_raw(&m, &res).unwrap();
                 assert_eq!(bytes.len(), f.encoded_len(&m));
                 let (m2, r2) = f.parse(&bytes, Expect::Any).unwrap();
@@ -598,11 +652,33 @@ mod tests {
     #[test]
     fn encode_refuses_what_parse_refuses() {
         let f = WireFormat::new(65537, 3, vec![17, 3], b"k").unwrap();
-        let m = CiphertextMeta { num_elements: 1, num_towers: 2, level: 0, noise_scale_deg: 2, scaling_factor_int: 5 };
-        assert_eq!(f.encode_raw(&m, &[0, 16, 1, 2, 0, 3]), Err(WireError::ResidueOutOfRange { element: 0, tower: 1, index: 2 }));
+        let m = CiphertextMeta {
+            num_elements: 1,
+            num_towers: 2,
+            level: 0,
+            noise_scale_deg: 2,
+            scaling_factor_int: 5,
+        };
+        assert_eq!(
+            f.encode_raw(&m, &[0, 16, 1, 2, 0, 3]),
+            Err(WireError::ResidueOutOfRange {
+                element: 0,
+                tower: 1,
+                index: 2
+            })
+        );
         assert!(matches!(f.encode_raw(&m, &[0; 5]), Err(WireError::BadLength { .. })));
         assert!(matches!(f.encode_raw(&CiphertextMeta { level: 1, ..m }, &[0; 6]), Err(WireError::BadShape(_))));
-        assert!(matches!(f.encode_raw(&CiphertextMeta { scaling_factor_int: 65537, ..m }, &[0; 6]), Err(WireError::BadShape(_))));
+        assert!(matches!(
+            f.encode_raw(
+                &CiphertextMeta {
+                    scaling_factor_int: 65537,
+                    ..m
+                },
+                &[0; 6]
+            ),
+            Err(WireError::BadShape(_))
+        ));
         assert!(WireFormat::new(65537, 0, vec![17], b"k").is_err());
         assert!(WireFormat::new(65537, MAX_RING_DIM + 1, vec![17], b"k").is_err());
         assert!(WireFormat::new(65537, 4, vec![], b"k").is_err());

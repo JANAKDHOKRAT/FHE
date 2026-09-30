@@ -29,10 +29,14 @@ pub struct AggregatorIdentity {
 
 impl AggregatorIdentity {
     pub fn generate() -> Self {
-        Self { key: SigningKey::generate(&mut rand_core::OsRng) }
+        Self {
+            key: SigningKey::generate(&mut rand_core::OsRng),
+        }
     }
     pub fn from_secret_bytes(bytes: &[u8; 32]) -> Self {
-        Self { key: SigningKey::from_bytes(bytes) }
+        Self {
+            key: SigningKey::from_bytes(bytes),
+        }
     }
     pub fn secret_bytes(&self) -> [u8; 32] {
         self.key.to_bytes()
@@ -79,7 +83,11 @@ pub fn material_message(cfg: &TaskConfig, m: &PublicMaterial) -> Vec<u8> {
 /// Signs the material as aggregator `index`.
 pub fn attest(cfg: &TaskConfig, m: &PublicMaterial, index: usize, id: &AggregatorIdentity) -> MaterialAttestation {
     let sig = id.key.sign(&material_message(cfg, m));
-    MaterialAttestation { aggregator: index, aggregator_key: id.public_key(), signature: sig.to_bytes().to_vec() }
+    MaterialAttestation {
+        aggregator: index,
+        aggregator_key: id.public_key(),
+        signature: sig.to_bytes().to_vec(),
+    }
 }
 
 /// Verifies that the material carries a valid attestation from every
@@ -88,7 +96,11 @@ pub fn attest(cfg: &TaskConfig, m: &PublicMaterial, index: usize, id: &Aggregato
 /// not the pinned one, or a bad signature.
 pub fn verify_material(cfg: &TaskConfig, m: &PublicMaterial, pinned: &[[u8; 32]]) -> Result<()> {
     if pinned.len() != cfg.num_aggregators {
-        return Err(Error::Config(format!("{} pinned aggregator keys for a task with {} aggregators", pinned.len(), cfg.num_aggregators)));
+        return Err(Error::Config(format!(
+            "{} pinned aggregator keys for a task with {} aggregators",
+            pinned.len(),
+            cfg.num_aggregators
+        )));
     }
     let msg = material_message(cfg, m);
     let mut seen = vec![false; cfg.num_aggregators];
@@ -97,11 +109,19 @@ pub fn verify_material(cfg: &TaskConfig, m: &PublicMaterial, pinned: &[[u8; 32]]
             return Err(Error::Protocol("attestation for an out-of-range or repeated aggregator".into()));
         }
         if a.aggregator_key != pinned[a.aggregator] {
-            return Err(Error::Protocol(format!("attestation of aggregator {} is not under its pinned key", a.aggregator)));
+            return Err(Error::Protocol(format!(
+                "attestation of aggregator {} is not under its pinned key",
+                a.aggregator
+            )));
         }
         let vk = VerifyingKey::from_bytes(&a.aggregator_key).map_err(|_| Error::Protocol("invalid aggregator public key".into()))?;
-        let sig_bytes: [u8; 64] = a.signature.as_slice().try_into().map_err(|_| Error::Protocol("attestation signature must be 64 bytes".into()))?;
-        vk.verify_strict(&msg, &Signature::from_bytes(&sig_bytes)).map_err(|_| Error::Protocol(format!("bad attestation from aggregator {}", a.aggregator)))?;
+        let sig_bytes: [u8; 64] = a
+            .signature
+            .as_slice()
+            .try_into()
+            .map_err(|_| Error::Protocol("attestation signature must be 64 bytes".into()))?;
+        vk.verify_strict(&msg, &Signature::from_bytes(&sig_bytes))
+            .map_err(|_| Error::Protocol(format!("bad attestation from aggregator {}", a.aggregator)))?;
     }
     if let Some(i) = seen.iter().position(|s| !s) {
         return Err(Error::Protocol(format!("material is not attested by aggregator {i}")));

@@ -32,7 +32,14 @@ impl NetworkClient {
     /// aggregator or the client refuses to encrypt under it. `None` means
     /// the caller obtained the material itself over a trusted channel (a
     /// file handed over out of band); the router path never passes `None`.
-    pub fn new(task: TaskConfig, material: &PublicMaterial, identity: Option<ClientIdentity>, leader: String, ca_pem: &[u8], pinned: Option<&[[u8; 32]]>) -> anyhow::Result<Self> {
+    pub fn new(
+        task: TaskConfig,
+        material: &PublicMaterial,
+        identity: Option<ClientIdentity>,
+        leader: String,
+        ca_pem: &[u8],
+        pinned: Option<&[[u8; 32]]>,
+    ) -> anyhow::Result<Self> {
         if let Some(p) = pinned {
             fhe_prio3::attest::verify_material(&task, material, p)?;
         }
@@ -41,7 +48,12 @@ impl NetworkClient {
             client = client.with_identity(id);
         }
         let batched = task.mode == VerificationMode::Silent && task.silent_batch_groups > 1;
-        Ok(Self { client, http: https_client(ca_pem)?, leader, batched })
+        Ok(Self {
+            client,
+            http: https_client(ca_pem)?,
+            leader,
+            batched,
+        })
     }
 
     pub async fn submit(&self, m: &Measurement) -> anyhow::Result<SubmitOutcome> {
@@ -103,7 +115,14 @@ impl ShardedClient {
         let task: TaskConfig = http_get(&self.http, &format!("{}/v1/shard/{shard}/task", self.router), None).await?;
         let material: PublicMaterial = http_get(&self.http, &format!("{}/v1/shard/{shard}/material", self.router), None).await?;
         let identity = self.identity_secret.map(|s| ClientIdentity::from_secret_bytes(&s));
-        let c = std::sync::Arc::new(NetworkClient::new(task, &material, identity, leader.to_string(), &self.ca_pem, Some(&self.pinned))?);
+        let c = std::sync::Arc::new(NetworkClient::new(
+            task,
+            &material,
+            identity,
+            leader.to_string(),
+            &self.ca_pem,
+            Some(&self.pinned),
+        )?);
         cache.insert(shard, c.clone());
         Ok(c)
     }

@@ -132,7 +132,10 @@ impl TaskConfig {
             }
             return Ok((0..self.measurement_type.num_elements()).collect());
         }
-        self.collectors.get(c).map(|p| p.elements.clone()).ok_or_else(|| Error::Config(format!("no collector {c} in the task")))
+        self.collectors
+            .get(c)
+            .map(|p| p.elements.clone())
+            .ok_or_else(|| Error::Config(format!("no collector {c} in the task")))
     }
 
     /// Whether collector `c` receives second moments.
@@ -168,7 +171,9 @@ impl TaskConfig {
             let mask: u128 = if self.collectors.is_empty() {
                 1
             } else {
-                (0..n).filter(|&c| self.collectors[c].elements.contains(&e)).fold(0u128, |acc, c| acc | (1 << c))
+                (0..n)
+                    .filter(|&c| self.collectors[c].elements.contains(&e))
+                    .fold(0u128, |acc, c| acc | (1 << c))
             };
             for i in t.element_slots(e) {
                 classes[i] = mask;
@@ -222,10 +227,11 @@ impl TaskConfig {
         Ok(out)
     }
 
-    /// Width of the widest value, whose square bounds every product of two
-    /// values and of two digits. `None` when the type has no values.
+    /// Width of the widest moment piece (all pieces are plain binary), whose
+    /// square bounds every product of two pieces and of two digits. `None`
+    /// when the type has no values.
     fn widest_value(&self) -> Option<u32> {
-        self.measurement_type.value_slots()?.iter().map(|&(_, b)| b).max()
+        self.measurement_type.moment_pieces()?.iter().map(|p| p.bits).max()
     }
 
     /// Digit width `D` of the second-moment decomposition: the largest
@@ -281,7 +287,10 @@ impl TaskConfig {
         if !matches!(self.security_bits, 128 | 192 | 256) {
             return Err(Error::Config("security_bits must be 128, 192 or 256".into()));
         }
-        if let AuthPolicy::Required { max_reports_per_client_per_batch: 0 } = self.auth {
+        if let AuthPolicy::Required {
+            max_reports_per_client_per_batch: 0,
+        } = self.auth
+        {
             return Err(Error::Config("max_reports_per_client_per_batch must be >= 1".into()));
         }
         if !self.silent_batch_groups.is_power_of_two() {
@@ -291,12 +300,22 @@ impl TaskConfig {
             match self.measurement_type.value_slots() {
                 Some(map) => {
                     if map.len() < 2 {
-                        return Err(Error::Config("moments need at least two values (features + target)".into()));
+                        return Err(Error::Config("moments need at least two elements (features + target)".into()));
                     }
-                    let w = self.widest_value().expect("two values");
-                    // recombined moments are u128: max_batch_size * (2^w - 1)^2 < 2^128
+                    // recombined moments are u128: max_batch_size * B_a * B_b < 2^128
+                    let w = self
+                        .measurement_type
+                        .value_bounds()
+                        .expect("vector type")
+                        .iter()
+                        .map(|&b| 64 - b.leading_zeros())
+                        .max()
+                        .unwrap_or(1);
                     if 2 * w + (64 - self.max_batch_size.leading_zeros()) > 128 {
-                        return Err(Error::Config(format!("moments: {w}-bit values over batches of {} overflow 128-bit moments", self.max_batch_size)));
+                        return Err(Error::Config(format!(
+                            "moments: {w}-bit values over batches of {} overflow 128-bit moments",
+                            self.max_batch_size
+                        )));
                     }
                     if self.moment_digit_bits().is_none() {
                         return Err(Error::Config("moments: max_batch_size must be below plain_mod".into()));
@@ -319,14 +338,18 @@ impl TaskConfig {
                     return Err(Error::Config(format!("collector {c}: elements must be ascending, distinct and below {n}")));
                 }
                 if p.moments && (!self.moments || p.elements.len() < 2) {
-                    return Err(Error::Config(format!("collector {c}: moments need the task's moments on and at least two elements")));
+                    return Err(Error::Config(format!(
+                        "collector {c}: moments need the task's moments on and at least two elements"
+                    )));
                 }
                 for &e in &p.elements {
                     covered[e] = true;
                 }
             }
             if let Some(e) = covered.iter().position(|c| !c) {
-                return Err(Error::Config(format!("element {e} is released to no collector; drop it from the task or assign it")));
+                return Err(Error::Config(format!(
+                    "element {e} is released to no collector; drop it from the task or assign it"
+                )));
             }
             // Chunks are cut wherever the visibility class changes, so any
             // policy set is expressible; interleaved policies simply cost one
@@ -354,21 +377,37 @@ impl TaskConfig {
     }
 
     pub fn layout(&self, row: usize) -> Result<Layout> {
-        let groups = if self.layout_kind() == LayoutKind::Batched { self.silent_batch_groups } else { 1 };
-        let mut l = Layout::with_cuts(self.layout_kind(), self.measurement_type.input_len(), self.repetitions, row, groups, &self.chunk_cuts())?;
-        if self.moments {
-            if let Some(map) = self.measurement_type.value_slots() {
-                for &(start, bits) in &map {
-                    let k = l.chunk_of(start);
-                    if l.chunk_range(k).end < start + bits as usize {
-                        return Err(Error::Config("moments need each value's bits inside one chunk".into()));
-                    }
+        let groups = if self.layout_kind() == LayoutKind::Batched {
+            self.silent_batch_groups
+        } else {
+            1
+        };
+        let mut l = Layout::with_cuts(
+            self.layout_kind(),
+            self.measurement_type.input_len(),
+            self.repetitions,
+            row,
+            groups,
+            &self.chunk_cuts(),
+        )?;
+        if self.moments
+            && let Some(pieces) = self.measurement_type.moment_pieces()
+        {
+            for p in &pieces {
+                let k = l.chunk_of(p.start);
+                if l.chunk_range(k).end < p.start + p.bits as usize {
+                    return Err(Error::Config("moments need each value's bits inside one chunk".into()));
                 }
-                l.moments = Some(map);
-                l.moment_digit = self.moment_digit_bits().ok_or_else(|| Error::Config("moments: max_batch_size must be below plain_mod".into()))?;
-                if !l.moment_slots_fit() {
-                    return Err(Error::Config("moments: the digits of the widest pair do not fit in a row of this layout".into()));
-                }
+            }
+            l.moments = Some(pieces.iter().map(|p| (p.start, p.bits)).collect());
+            l.moment_pieces = pieces.iter().map(|p| (p.element, p.multiplier)).collect();
+            l.moment_digit = self
+                .moment_digit_bits()
+                .ok_or_else(|| Error::Config("moments: max_batch_size must be below plain_mod".into()))?;
+            if !l.moment_slots_fit() {
+                return Err(Error::Config(
+                    "moments: the digits of the widest pair do not fit in a row of this layout".into(),
+                ));
             }
         }
         Ok(l)
@@ -399,7 +438,7 @@ impl TaskConfig {
 
     /// Canonical bytes that every derived randomness commits to.
     pub fn binding(&self) -> Vec<u8> {
-        bincode::serialize(self).expect("TaskConfig is serializable")
+        postcard::to_allocvec(self).expect("TaskConfig is serializable")
     }
 
     /// Hash of the configuration, for logging and for peers to compare.
@@ -420,9 +459,14 @@ mod tests {
         for silent in [false, true] {
             for bounds in [vec![255u64, 255, 255], vec![100, 5, 15], vec![65535, 1], vec![1, 1]] {
                 let t = MeasurementType::BoundedSumVec { bounds };
-                let mut c = if silent { TaskConfig::new_silent([0; 32], t.clone(), 2) } else { TaskConfig::new([0; 32], t.clone(), 2) };
+                let mut c = if silent {
+                    TaskConfig::new_silent([0; 32], t.clone(), 2)
+                } else {
+                    TaskConfig::new([0; 32], t.clone(), 2)
+                };
                 c.moments = true;
-                let w = t.value_slots().unwrap().iter().map(|&(_, b)| b).max().unwrap();
+                // digits are of the power-of-two pieces, whose widest sets the width
+                let w = t.moment_pieces().unwrap().iter().map(|p| p.bits).max().unwrap();
                 let fits = |d: u32, n: u64| ((1u128 << d) - 1).pow(2) * n as u128 <= (c.plain_mod - 1) as u128;
                 for n in [1u64, 2, 12, 13, 1000, 1 << 16, 1 << 20, c.plain_mod - 1] {
                     if n >= c.plain_mod {

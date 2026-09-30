@@ -241,9 +241,18 @@ pub fn batch_digest(mut ids: Vec<ReportId>) -> [u8; 32] {
     h.finalize().into()
 }
 
+/// Message codec: postcard (serde, canonical, varint lengths). One value
+/// has exactly one encoding, which the commitments and digests taken over
+/// encoded messages rely on.
 pub fn encode<T: Serialize>(t: &T) -> crate::Result<Vec<u8>> {
-    bincode::serialize(t).map_err(|e| crate::Error::Serialization(e.to_string()))
+    postcard::to_allocvec(t).map_err(|e| crate::Error::Serialization(e.to_string()))
 }
+/// Decodes exactly one value: trailing bytes are an error, so a message
+/// cannot carry an unparsed tail.
 pub fn decode<'a, T: Deserialize<'a>>(b: &'a [u8]) -> crate::Result<T> {
-    bincode::deserialize(b).map_err(|e| crate::Error::Serialization(e.to_string()))
+    let (v, rest) = postcard::take_from_bytes::<T>(b).map_err(|e| crate::Error::Serialization(e.to_string()))?;
+    if !rest.is_empty() {
+        return Err(crate::Error::Serialization(format!("{} trailing byte(s) after the message", rest.len())));
+    }
+    Ok(v)
 }

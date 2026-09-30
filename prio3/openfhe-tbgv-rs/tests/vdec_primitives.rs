@@ -13,7 +13,12 @@ struct Keys {
 }
 
 fn keys(plain_mod: u64, depth: u32) -> Keys {
-    let ctx = Context::new(Params { plain_mod, mult_depth: depth, security_bits: 128 }).unwrap();
+    let ctx = Context::new(Params {
+        plain_mod,
+        mult_depth: depth,
+        security_bits: 128,
+    })
+    .unwrap();
     let (pk0, s0) = keygen_first(&ctx).unwrap();
     let (pk, s1) = keygen_next(&ctx, &pk0).unwrap();
     let tag = pk.tag().unwrap();
@@ -22,7 +27,8 @@ fn keys(plain_mod: u64, depth: u32) -> Keys {
     let r1sum = EvalMultKey::round1_add(&ctx, &r1, &r1b, &tag).unwrap();
     let r2a = EvalMultKey::round2(&ctx, &s0, &r1sum, &tag).unwrap();
     let r2b = EvalMultKey::round2(&ctx, &s1, &r1sum, &tag).unwrap();
-    ctx.install_eval_mult_key(&EvalMultKey::round2_add(&ctx, &r2a, &r2b, &tag).unwrap(), &tag).unwrap();
+    ctx.install_eval_mult_key(&EvalMultKey::round2_add(&ctx, &r2a, &r2b, &tag).unwrap(), &tag)
+        .unwrap();
     Keys { ctx, pk, s: [s0, s1], tag }
 }
 
@@ -67,7 +73,11 @@ fn check(k: &Keys, deep: &Ciphertext, label: &str) {
     for kk in [0u32, 1, 7, n as u32 - 1, n as u32, n as u32 + 3, 2 * n as u32 - 1] {
         let got = k.dec(&k.ctx.mult_monomial(deep, kk).unwrap());
         for s in 0..n {
-            assert_eq!(got[s], ((m[s] as u128 * powmod(w[s], kk as u64, p) as u128) % p as u128) as u64, "{label} k={kk} slot {s}");
+            assert_eq!(
+                got[s],
+                ((m[s] as u128 * powmod(w[s], kk as u64, p) as u128) % p as u128) as u64,
+                "{label} k={kk} slot {s}"
+            );
         }
     }
     assert!(k.ctx.mult_monomial(deep, 2 * n as u32).is_err());
@@ -84,7 +94,12 @@ fn check(k: &Keys, deep: &Ciphertext, label: &str) {
     for (what, c) in [("value", deep), ("check", &sum)] {
         let (mx, q0) = k.magnitude(c);
         let margin = (q0 as f64 / 2.0).log2() - (mx as f64).log2();
-        println!("{label} {what}: towers {} max |fused| 2^{:.1}, q0 2^{:.1}, margin {margin:.1} bits", c.meta().unwrap().num_towers, (mx as f64).log2(), (q0 as f64).log2());
+        println!(
+            "{label} {what}: towers {} max |fused| 2^{:.1}, q0 2^{:.1}, margin {margin:.1} bits",
+            c.meta().unwrap().num_towers,
+            (mx as f64).log2(),
+            (q0 as f64).log2()
+        );
         assert!(mx < q0 / 4, "{label} {what}: honest fusion reaches q0/4");
     }
 }

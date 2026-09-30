@@ -1,4 +1,4 @@
-//! In-process network: every message crosses bincode serialization.
+//! In-process network: every message crosses postcard serialization.
 #![allow(dead_code)]
 
 use fhe_prio3::messages::{decode, encode};
@@ -58,7 +58,13 @@ impl Net {
         let material = full;
         let client = Client::new(cfg.clone(), &material.context, &material.public_key).expect("client");
         let collector = Collector::new(cfg.clone(), &material).expect("collector");
-        Self { cfg, material, aggs, client, collector }
+        Self {
+            cfg,
+            material,
+            aggs,
+            client,
+            collector,
+        }
     }
 
     /// Runs the three preparation steps for one report on every aggregator.

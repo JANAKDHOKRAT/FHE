@@ -20,7 +20,12 @@ struct Party {
 /// Runs the full n-of-n ceremony over serialized messages and returns
 /// (context with joint keys installed, joint pk, parties).
 fn ceremony(n: usize, indices: &[i32], depth: u32) -> (Context, PublicKey, Vec<Party>) {
-    let ctx = Context::new(Params { plain_mod: P, mult_depth: depth, security_bits: 128 }).unwrap();
+    let ctx = Context::new(Params {
+        plain_mod: P,
+        mult_depth: depth,
+        security_bits: 128,
+    })
+    .unwrap();
 
     // --- public key: sequential -------------------------------------
     let (pk0, sk0) = keygen_first(&ctx).unwrap();
@@ -85,7 +90,6 @@ fn threshold_decrypt(ctx: &Context, parties: &[Party], ct: &Ciphertext, n: usize
     ctx.fuse(&refs, n).unwrap()
 }
 
-
 /// Rebuilds `ct` from residues and metadata and checks it is the same
 /// ciphertext: identical metadata, identical residues, and (with all key
 /// shares) `original - rebuilt` decrypts to zero in every slot of both rows,
@@ -102,12 +106,19 @@ fn roundtrip(ctx: &Context, reference: &Ciphertext, parties: &[Party], ct: &Ciph
     assert_eq!(back.info().unwrap(), ct.info().unwrap());
     let diff = ctx.sub(ct, &back).unwrap();
     let all = 2 * ctx.row_slots();
-    assert!(threshold_decrypt(ctx, parties, &diff, all).iter().all(|&v| v == 0), "original - rebuilt is not zero ({meta:?})");
+    assert!(
+        threshold_decrypt(ctx, parties, &diff, all).iter().all(|&v| v == 0),
+        "original - rebuilt is not zero ({meta:?})"
+    );
     if fresh {
         let (x, y) = (back.serialize().unwrap(), ct.serialize().unwrap());
         if x != y {
             let d = x.iter().zip(&y).position(|(a, b)| a != b).unwrap_or(x.len().min(y.len()));
-            panic!("fresh ciphertext rebuilt differs: lengths {} vs {}, first difference at byte {d}", x.len(), y.len());
+            panic!(
+                "fresh ciphertext rebuilt differs: lengths {} vs {}, first difference at byte {d}",
+                x.len(),
+                y.len()
+            );
         }
     }
     back
@@ -151,7 +162,15 @@ fn rebuild_is_exact_for_every_protocol_object_kind() {
     let rot = ctx.rotate(&ca, 4).unwrap();
     let pmul = ctx.mult_plain(&ca, &ctx.plaintext(&b).unwrap()).unwrap();
     let mut seen = Vec::new();
-    for (name, ct) in [("fresh", &ca), ("sum", &sum), ("product", &prod), ("product2", &prod2), ("product3", &prod3), ("rotation", &rot), ("plain product", &pmul)] {
+    for (name, ct) in [
+        ("fresh", &ca),
+        ("sum", &sum),
+        ("product", &prod),
+        ("product2", &prod2),
+        ("product3", &prod3),
+        ("rotation", &rot),
+        ("plain product", &pmul),
+    ] {
         let m = ct.meta().unwrap();
         assert_eq!(m.level + m.num_towers, l, "{name}: level + towers must equal the chain length ({m:?})");
         assert!((1..=2).contains(&m.noise_scale_deg), "{name}: {m:?}");
@@ -165,7 +184,12 @@ fn rebuild_is_exact_for_every_protocol_object_kind() {
         assert_eq!(pm.level + pm.num_towers, l, "{name} partial: {pm:?}");
         let r0 = roundtrip_partial(&ctx, &reference, p0.ciphertext());
         let r1 = roundtrip_partial(&ctx, &reference, p1.ciphertext());
-        let fused_rebuilt = ctx.fuse(&[&PartialDecryption::from_ciphertext(r0, true), &PartialDecryption::from_ciphertext(r1, false)], 64).unwrap();
+        let fused_rebuilt = ctx
+            .fuse(
+                &[&PartialDecryption::from_ciphertext(r0, true), &PartialDecryption::from_ciphertext(r1, false)],
+                64,
+            )
+            .unwrap();
         let fused_direct = ctx.fuse(&[&p0, &p1], 64).unwrap();
         assert_eq!(fused_rebuilt, fused_direct, "{name}: fusion of rebuilt partials differs");
         seen.push((name, m, pm));
@@ -174,7 +198,13 @@ fn rebuild_is_exact_for_every_protocol_object_kind() {
     let dsum = threshold_decrypt(&ctx, &parties, &roundtrip(&ctx, &reference, &parties, &sum, false), 64);
     assert_eq!(dsum, a.iter().zip(&b).map(|(x, y)| (x + y) % P).collect::<Vec<_>>());
     let dprod = threshold_decrypt(&ctx, &parties, &roundtrip(&ctx, &reference, &parties, &prod, false), 64);
-    assert_eq!(dprod, a.iter().zip(&b).map(|(x, y)| ((*x as u128 * *y as u128) % P as u128) as u64).collect::<Vec<_>>());
+    assert_eq!(
+        dprod,
+        a.iter()
+            .zip(&b)
+            .map(|(x, y)| ((*x as u128 * *y as u128) % P as u128) as u64)
+            .collect::<Vec<_>>()
+    );
     // a rebuilt ciphertext is a working ciphertext: evaluate on it
     let rebuilt_a = roundtrip(&ctx, &reference, &parties, &ca, true);
     let d = threshold_decrypt(&ctx, &parties, &ctx.mult(&rebuilt_a, &cb).unwrap(), 64);
@@ -224,7 +254,14 @@ fn rebuild_refuses_every_malformed_argument() {
     refuse(good, &long, "one residue extra");
     refuse(good, &[], "no residues");
     // fewer towers with the matching (shorter) residue list is legal; a mismatched list is not
-    refuse(with(&|m| { m.num_towers = l - 1; m.level = 1; }), &res, "residues for L towers, metadata for L-1");
+    refuse(
+        with(&|m| {
+            m.num_towers = l - 1;
+            m.level = 1;
+        }),
+        &res,
+        "residues for L towers, metadata for L-1",
+    );
     for t in 0..l as usize {
         let mut r = res.clone();
         r[t * n] = moduli[t];
@@ -259,7 +296,12 @@ fn rebuild_refuses_every_malformed_argument() {
 #[test]
 fn rebuild_is_refused_before_the_self_test() {
     let _g = serial();
-    let ctx = Context::new(Params { plain_mod: P, mult_depth: 4, security_bits: 128 }).unwrap();
+    let ctx = Context::new(Params {
+        plain_mod: P,
+        mult_depth: 4,
+        security_bits: 128,
+    })
+    .unwrap();
     let (pk, _sk) = keygen_first(&ctx).unwrap();
     let reference = ctx.encrypt(&pk, &ctx.plaintext(&[0]).unwrap()).unwrap();
     let ct = ctx.encrypt(&pk, &ctx.plaintext(&[3, 1, 4]).unwrap()).unwrap();

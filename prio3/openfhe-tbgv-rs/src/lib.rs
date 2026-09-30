@@ -15,7 +15,7 @@
 mod ffi;
 mod selftest;
 
-pub use selftest::{rebuild_verified, verify_rebuild_once, RebuildReport};
+pub use selftest::{RebuildReport, rebuild_verified, verify_rebuild_once};
 
 use std::ffi::{CStr, CString};
 use std::fmt;
@@ -150,7 +150,9 @@ impl Context {
         if p.is_null() {
             return Err(last_error());
         }
-        Ok(Self { inner: Arc::new(ContextInner(p)) })
+        Ok(Self {
+            inner: Arc::new(ContextInner(p)),
+        })
     }
 
     fn raw(&self) -> ffi::TbgvContext {
@@ -191,7 +193,9 @@ impl Context {
         if p.is_null() {
             return Err(last_error());
         }
-        Ok(Self { inner: Arc::new(ContextInner(p)) })
+        Ok(Self {
+            inner: Arc::new(ContextInner(p)),
+        })
     }
 
     fn center(&self, v: u64) -> Result<i64> {
@@ -255,7 +259,9 @@ impl Context {
     pub fn build_ciphertext(&self, reference: &Ciphertext, meta: &CiphertextMeta, residues: &[u64]) -> Result<Ciphertext> {
         match rebuild_verified(self)? {
             None => {
-                return Err(Error("ciphertext rebuild has not been verified on this OpenFHE library for these parameters; call verify_rebuild_once at startup".into()))
+                return Err(Error(
+                    "ciphertext rebuild has not been verified on this OpenFHE library for these parameters; call verify_rebuild_once at startup".into(),
+                ));
             }
             Some(d) if meta.level > d => {
                 return Err(Error(format!("rebuild at level {} is deeper than the verified depth {d}", meta.level)));
@@ -651,7 +657,10 @@ impl SecretShare {
         if p.is_null() {
             return Err(last_error());
         }
-        Ok(PartialDecryption { ct: Ciphertext { ptr: p, ctx: self.ctx.clone() }, lead })
+        Ok(PartialDecryption {
+            ct: Ciphertext { ptr: p, ctx: self.ctx.clone() },
+            lead,
+        })
     }
 
     /// Single-share decryption. With more than one party this returns
@@ -897,7 +906,13 @@ impl Ciphertext {
         if unsafe { ffi::tbgv_ciphertext_meta(self.ptr, &mut ne, &mut nt, &mut lvl, &mut deg, &mut sf) } == 0 {
             return Err(last_error());
         }
-        Ok(CiphertextMeta { num_elements: ne, num_towers: nt, level: lvl, noise_scale_deg: deg, scaling_factor_int: sf })
+        Ok(CiphertextMeta {
+            num_elements: ne,
+            num_towers: nt,
+            level: lvl,
+            noise_scale_deg: deg,
+            scaling_factor_int: sf,
+        })
     }
     /// Residues element-major, then tower, then coefficient index.
     pub fn export_residues(&self) -> Result<Vec<u64>> {
@@ -914,7 +929,14 @@ impl Ciphertext {
             return Err(last_error());
         }
         let key_tag = take_string(unsafe { ffi::tbgv_ciphertext_key_tag(self.ptr) })?;
-        Ok(CiphertextInfo { level, num_elements: ne, noise_scale_deg: nsd, num_limbs: limbs, packed_encoding: packed == 1, key_tag })
+        Ok(CiphertextInfo {
+            level,
+            num_elements: ne,
+            noise_scale_deg: nsd,
+            num_limbs: limbs,
+            packed_encoding: packed == 1,
+            key_tag,
+        })
     }
 }
 
@@ -938,7 +960,10 @@ impl PartialDecryption {
     /// (OpenFHE's own format); untrusted input goes through
     /// [`Context::build_ciphertext`] and [`PartialDecryption::from_ciphertext`].
     pub fn deserialize(ctx: &Context, bytes: &[u8], lead: bool) -> Result<Self> {
-        Ok(Self { ct: ctx.deserialize_ciphertext(bytes)?, lead })
+        Ok(Self {
+            ct: ctx.deserialize_ciphertext(bytes)?,
+            lead,
+        })
     }
     /// The partial decryption as a (one-element) ciphertext, for transport.
     pub fn ciphertext(&self) -> &Ciphertext {

@@ -53,8 +53,10 @@ type Rebuild<'a> = &'a dyn Fn(&Context, &Ciphertext, &CiphertextMeta, &[u64]) ->
 type Outcome = std::result::Result<RebuildReport, String>;
 
 /// Outcomes by (parameters, depth).
-fn cache() -> &'static Mutex<HashMap<(Vec<u64>, u32), Outcome>> {
-    static CACHE: OnceLock<Mutex<HashMap<(Vec<u64>, u32), Outcome>>> = OnceLock::new();
+type Outcomes = HashMap<(Vec<u64>, u32), Outcome>;
+
+fn cache() -> &'static Mutex<Outcomes> {
+    static CACHE: OnceLock<Mutex<Outcomes>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -84,7 +86,11 @@ pub fn verify_rebuild_once(ctx: &Context, depth: u32) -> Result<RebuildReport> {
     }
     let params = params_key(ctx)?;
     let mut cache = cache().lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(r) = cache.iter().find(|((p, d), r)| *p == params && *d >= depth && r.is_ok()).map(|(_, r)| r.clone()) {
+    if let Some(r) = cache
+        .iter()
+        .find(|((p, d), r)| *p == params && *d >= depth && r.is_ok())
+        .map(|(_, r)| r.clone())
+    {
         return r.map_err(Error);
     }
     if let Some(r) = cache.get(&(params.clone(), depth)) {
@@ -178,7 +184,10 @@ fn run(ctx: &Context, depth: u32, rebuild: Rebuild<'_>) -> Result<RebuildReport>
         let got = ctx.fuse(&[&pa, &pb], n)?;
         if got != expected {
             let i = got.iter().zip(expected).position(|(a, b)| a != b).unwrap_or(0);
-            return fail(format!("{name}: rebuilt object decrypts wrongly (slot {i}: {} instead of {})", got[i], expected[i]));
+            return fail(format!(
+                "{name}: rebuilt object decrypts wrongly (slot {i}: {} instead of {})",
+                got[i], expected[i]
+            ));
         }
         let mut rebuilt_partials = Vec::with_capacity(2);
         for (which, pd) in [("lead", &pa), ("main", &pb)] {
@@ -205,7 +214,15 @@ fn run(ctx: &Context, depth: u32, rebuild: Rebuild<'_>) -> Result<RebuildReport>
     let half = n / 2;
     let mulp = |x: u64, y: u64| ((x as u128 * y as u128) % p as u128) as u64;
     let spread = |f: &dyn Fn(u64) -> u64| -> Vec<u64> {
-        (0..n).map(|j| if j % half < 16 { f(j as u64 % half as u64 + 17 * (j / half) as u64) % p } else { 0 }).collect()
+        (0..n)
+            .map(|j| {
+                if j % half < 16 {
+                    f(j as u64 % half as u64 + 17 * (j / half) as u64) % p
+                } else {
+                    0
+                }
+            })
+            .collect()
     };
     let a = spread(&|i| i + 2);
     let b = spread(&|i| 3 * i + 5);
@@ -255,7 +272,12 @@ mod tests {
     const P: u64 = 4_293_918_721;
 
     fn ctx() -> Context {
-        Context::new(Params { plain_mod: P, mult_depth: 3, security_bits: 128 }).unwrap()
+        Context::new(Params {
+            plain_mod: P,
+            mult_depth: 3,
+            security_bits: 128,
+        })
+        .unwrap()
     }
 
     #[test]
@@ -283,7 +305,14 @@ mod tests {
         let ctx = ctx();
         let e = run(&ctx, 3, &|c, r, m, v| {
             let fresh = r.meta()?;
-            c.build_ciphertext_unverified(r, &CiphertextMeta { scaling_factor_int: fresh.scaling_factor_int, ..*m }, v)
+            c.build_ciphertext_unverified(
+                r,
+                &CiphertextMeta {
+                    scaling_factor_int: fresh.scaling_factor_int,
+                    ..*m
+                },
+                v,
+            )
         })
         .unwrap_err();
         println!("SELFTEST scaling factor: {e}");
@@ -292,7 +321,10 @@ mod tests {
     #[test]
     fn detects_a_rebuild_that_ignores_the_noise_degree() {
         let ctx = ctx();
-        let e = run(&ctx, 3, &|c, r, m, v| c.build_ciphertext_unverified(r, &CiphertextMeta { noise_scale_deg: 1, ..*m }, v)).unwrap_err();
+        let e = run(&ctx, 3, &|c, r, m, v| {
+            c.build_ciphertext_unverified(r, &CiphertextMeta { noise_scale_deg: 1, ..*m }, v)
+        })
+        .unwrap_err();
         println!("SELFTEST noise degree: {e}");
     }
 

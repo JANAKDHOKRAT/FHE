@@ -42,14 +42,20 @@ fn inflated_keys_that_pass_the_ceremony_leave_the_decryptions_inside_the_floodin
     // (source, largest inflation ceremony_sweep saw pass): at the boundary
     // the ceremony's randomized check passes or stops it by chance, so step
     // down until it passes, as a party would
-    let cases: Vec<(&str, fn(u32) -> Deviation, u32)> = vec![
+    // (name, deviation at inflation 2^k, the sweep's largest passing k)
+    type Case = (&'static str, fn(u32) -> Deviation, u32);
+    let cases: Vec<Case> = vec![
         ("honest keys", |_| Deviation::None, 0),
         ("public key", Deviation::InflatedPublicKeyNoise, 59),
         ("eval-mult round 1", Deviation::InflatedRelin1Noise, 116),
         ("eval-mult round 2", Deviation::InflatedRelin2Noise, 123),
         ("rotation keys", Deviation::InflatedRotationNoise, 130),
         // every contribution at once, stepping all four down together
-        ("all four keys (public key 2^k-71, rounds 2^k-14 and 2^k-7, rotations 2^k)", |k| Deviation::InflatedKeys([k - 71, k - 14, k - 7, k]), 130),
+        (
+            "all four keys (public key 2^k-71, rounds 2^k-14 and 2^k-7, rotations 2^k)",
+            |k| Deviation::InflatedKeys([k - 71, k - 14, k - 7, k]),
+            130,
+        ),
     ];
     let mut worst = f64::MAX;
     let mut session = 60u8;
@@ -106,5 +112,8 @@ fn inflated_keys_that_pass_the_ceremony_leave_the_decryptions_inside_the_floodin
         worst = worst.min(m_fresh).min(m_check).min(m_sum);
     }
     println!("smallest margin over every case and decryption point: {worst:.1} bits");
-    assert!(worst > 60.0, "an inflation the ceremony accepts leaves a decryption within 2^-60 of the flooding");
+    assert!(
+        worst > 60.0,
+        "an inflation the ceremony accepts leaves a decryption within 2^-60 of the flooding"
+    );
 }

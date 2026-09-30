@@ -57,7 +57,10 @@ fn released_shares_from_before_are_refused_at_restore() {
     net.aggs[0].restore(st, &[]).unwrap();
     let again = net.aggs[0].aggregate_share().unwrap();
     assert_eq!(again.partials, released[0].partials);
-    assert_eq!(net.finish_release(0, vec![again, released[1].clone()]).unwrap().aggregate, AggregateResult::Count(1));
+    assert_eq!(
+        net.finish_release(0, vec![again, released[1].clone()]).unwrap().aggregate,
+        AggregateResult::Count(1)
+    );
 }
 
 #[test]
@@ -77,7 +80,7 @@ fn silent_state_from_before_is_refused_at_restore() {
     old.silent_pending[0].1 = old_report.report_id;
     let e = net.aggs[0].restore(old, &[old_report]).unwrap_err().to_string();
     assert!(e.contains(LEGACY_STATE) && e.contains("pending report"), "{e}");
-    net.aggs[0].restore(st, &[good.clone()]).unwrap();
+    net.aggs[0].restore(st, std::slice::from_ref(&good)).unwrap();
 
     // a count share released before the upgrade
     let counts: Vec<CountShare> = net.aggs.iter_mut().map(|a| a.count_share().unwrap()).collect();

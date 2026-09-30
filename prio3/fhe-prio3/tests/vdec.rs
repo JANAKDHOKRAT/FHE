@@ -24,7 +24,11 @@ fn setup(id: u8) -> Setup {
     let ctx = keys::make_context(&cfg).unwrap();
     let lease = keys::install(&ctx, &material).unwrap();
     let pk = ctx.deserialize_public_key(&material.public_key).unwrap();
-    let shares = shares.iter().map(|s| ctx.deserialize_secret_share(s).unwrap()).collect();
+    // the ceremony hands out encoded AggregatorSecrets; the share is inside
+    let shares = shares
+        .iter()
+        .map(|s| ctx.deserialize_secret_share(&keys::AggregatorSecret::decode(s).unwrap().share).unwrap())
+        .collect();
     Setup { ctx, pk, shares, _lease: lease }
 }
 

@@ -269,10 +269,27 @@ jobs:
     name: OpenFHE pin against upstream
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    continue-on-error: ${{ github.event_name == 'pull_request' }}
     steps:
       - uses: actions/checkout@v4
+      # A finding fails the nightly and manual runs. On a pull request or a
+      # push it is a warning annotation and the job passes: a newer upstream
+      # release is a standing fact until the pin moves, and a red check on
+      # every pull request for months would only teach people to ignore red.
       - name: check
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: .github/scripts/openfhe-pin-check.sh "$OPENFHE_TAG" "$OPENFHE_COMMIT"
+          STRICT: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+        run: |
+          set +e
+          out=$(.github/scripts/openfhe-pin-check.sh "$OPENFHE_TAG" "$OPENFHE_COMMIT" 2>&1)
+          rc=$?
+          set -e
+          printf '%s\n' "$out"
+          if [ "$rc" -ne 0 ]; then
+            if [ "$STRICT" = "true" ]; then
+              exit "$rc"
+            fi
+            while IFS= read -r line; do
+              case "$line" in FAIL:*) echo "::warning title=OpenFHE pin::${line#FAIL: }";; esac
+            done <<< "$out"
+          fi

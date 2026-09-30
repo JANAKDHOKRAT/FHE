@@ -137,7 +137,10 @@ fn verdict_mask_cancellation_needs_the_honest_mask_and_is_refused() {
     let mut net = Net::with_keys(cfg.clone(), full, &share_bytes, None);
     let ctx = keys::make_context(&cfg).unwrap();
     let pk = ctx.deserialize_public_key(&net.material.public_key).unwrap();
-    let shares: Vec<_> = share_bytes.iter().map(|s| ctx.deserialize_secret_share(s).unwrap()).collect();
+    let shares: Vec<_> = share_bytes
+        .iter()
+        .map(|s| ctx.deserialize_secret_share(&keys::AggregatorSecret::decode(s).unwrap().share).unwrap())
+        .collect();
     let codec = fhe_prio3::packed::Codec::new(&ctx, &pk, &net.material.public_key).unwrap();
     let layout = net.aggs[0].layout().clone();
     let span = layout.result_span();

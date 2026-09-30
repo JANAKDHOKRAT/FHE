@@ -66,7 +66,10 @@ fn inflated_keys_that_pass_the_ceremony_leave_the_decryptions_inside_the_floodin
         let name = if top == 0 { name.to_string() } else { format!("{name} 2^{k}") };
         let mut net = Net::with_keys(cfg.clone(), material.clone(), &shares, None);
         let ctx = keys::make_context(&cfg).unwrap();
-        let sks: Vec<_> = shares.iter().map(|s| ctx.deserialize_secret_share(s).unwrap()).collect();
+        let sks: Vec<_> = shares
+            .iter()
+            .map(|s| ctx.deserialize_secret_share(&keys::AggregatorSecret::decode(s).unwrap().share).unwrap())
+            .collect();
         let sk_refs: Vec<_> = sks.iter().collect();
         let lt = (cfg.plain_mod as f64).log2();
         let lq0 = (ctx.moduli().unwrap()[0] as f64).log2();

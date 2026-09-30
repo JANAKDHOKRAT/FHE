@@ -30,7 +30,14 @@ impl Client {
         let pk = ctx.deserialize_public_key(public_key)?;
         let layout = cfg.layout(ctx.row_slots())?;
         let codec = Codec::new(&ctx, &pk, public_key)?;
-        Ok(Self { cfg, ctx, pk, layout, identity: None, codec })
+        Ok(Self {
+            cfg,
+            ctx,
+            pk,
+            layout,
+            identity: None,
+            codec,
+        })
     }
 
     /// Attaches the signing identity used when the task requires authentication.
@@ -58,7 +65,13 @@ impl Client {
             (AuthPolicy::Required { .. }, Some(id)) => Some(id.sign(&self.cfg.task_id, &report_id)),
             (AuthPolicy::Required { .. }, None) => return Err(Error::Config("task requires authentication but the client has no identity".into())),
         };
-        Ok(Report { task_id: self.cfg.task_id, report_id, group, chunks, auth })
+        Ok(Report {
+            task_id: self.cfg.task_id,
+            report_id,
+            group,
+            chunks,
+            auth,
+        })
     }
 
     /// Encodes and encrypts `m` in group 0. Unlike Prio3 there is one

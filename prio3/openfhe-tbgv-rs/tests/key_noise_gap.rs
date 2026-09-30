@@ -36,7 +36,12 @@ struct Keys {
 }
 
 fn keys(plain_mod: u64, depth: u32, relin: bool) -> Keys {
-    let ctx = Context::new(Params { plain_mod, mult_depth: depth, security_bits: 128 }).unwrap();
+    let ctx = Context::new(Params {
+        plain_mod,
+        mult_depth: depth,
+        security_bits: 128,
+    })
+    .unwrap();
     let (pk0, s0) = keygen_first(&ctx).unwrap();
     let (pk, s1) = keygen_next(&ctx, &pk0).unwrap();
     let tag = pk.tag().unwrap();
@@ -46,7 +51,8 @@ fn keys(plain_mod: u64, depth: u32, relin: bool) -> Keys {
         let r1sum = EvalMultKey::round1_add(&ctx, &r1, &r1b, &tag).unwrap();
         let r2a = EvalMultKey::round2(&ctx, &s0, &r1sum, &tag).unwrap();
         let r2b = EvalMultKey::round2(&ctx, &s1, &r1sum, &tag).unwrap();
-        ctx.install_eval_mult_key(&EvalMultKey::round2_add(&ctx, &r2a, &r2b, &tag).unwrap(), &tag).unwrap();
+        ctx.install_eval_mult_key(&EvalMultKey::round2_add(&ctx, &r2a, &r2b, &tag).unwrap(), &tag)
+            .unwrap();
     }
     Keys { ctx, pk, s: [s0, s1], tag }
 }
@@ -113,7 +119,10 @@ fn guess_rate(obs: &[Vec<f64>], a: f64, half: f64, u: &[i8]) -> f64 {
     let mut r = xorshift(99);
     let mut right = 0usize;
     for i in 0..u.len() {
-        let feasible: Vec<i8> = [-1i8, 0, 1].into_iter().filter(|&c| obs.iter().all(|y| (y[i] - a * c as f64).abs() <= half * (1.0 + 1e-9))).collect();
+        let feasible: Vec<i8> = [-1i8, 0, 1]
+            .into_iter()
+            .filter(|&c| obs.iter().all(|y| (y[i] - a * c as f64).abs() <= half * (1.0 + 1e-9)))
+            .collect();
         if feasible.is_empty() {
             continue;
         }
@@ -142,7 +151,10 @@ fn key_noise_gap_verdict_parameters() {
     let m2 = e.iter().map(|x| (x / half).powi(2)).sum::<f64>() / n as f64;
     let m4 = e.iter().map(|x| (x / half).powi(4)).sum::<f64>() / n as f64;
     let max = e.iter().fold(0f64, |a, x| a.max(x.abs())) / half;
-    println!("flooding of one partial, in units of Q'/2: max {max:.6}, mean {mean:.4}, E[x^2] {m2:.4} (uniform: 1/3), kurtosis {:.3} (uniform: 1.8)", m4 / (m2 * m2));
+    println!(
+        "flooding of one partial, in units of Q'/2: max {max:.6}, mean {mean:.4}, E[x^2] {m2:.4} (uniform: 1/3), kurtosis {:.3} (uniform: 1.8)",
+        m4 / (m2 * m2)
+    );
     assert!(max <= 1.0 + 1e-9 && max > 0.999, "flooding is bounded by Q'/2 and reaches it");
     assert!((m2 - 1.0 / 3.0).abs() < 0.02 && (m4 / (m2 * m2) - 1.8).abs() < 0.05, "flooding is uniform");
     let (within, ratio) = ctx.fuse_flooding_check(&[&pz], SLACK).unwrap();
@@ -184,7 +196,12 @@ fn key_noise_gap_verdict_parameters() {
         let (vals, _, _) = ctx.fuse_raw_over_t(&[&parts[0], &parts[1]]).unwrap();
         let scale = 2f64.powi(kk as i32);
         let rate = (0..n).filter(|&i| ((vals[i] / scale).round() as i64).clamp(-1, 1) == u[i] as i64).count() as f64 / n as f64;
-        println!("  {kk:>3} | {:>8} | {:>4} | {:>6} ({ratio:.4}) | {rate:.4}", decrypts, if mx < q0v / 4 { "pass" } else { "fail" }, if within { "pass" } else { "CAUGHT" });
+        println!(
+            "  {kk:>3} | {:>8} | {:>4} | {:>6} ({ratio:.4}) | {rate:.4}",
+            decrypts,
+            if mx < q0v / 4 { "pass" } else { "fail" },
+            if within { "pass" } else { "CAUGHT" }
+        );
         if rate > 0.9 && decrypts && within {
             caught_all_recovering = false;
         }
@@ -201,7 +218,11 @@ fn key_noise_gap_verdict_parameters() {
     for _ in 0..rounds {
         let honest = k.s[0].partial_decrypt(&victim, true).unwrap();
         let shaped = ctx.partial_decrypt_shaped_for_tests(&victim, &k.s[1], false, 1, 3).unwrap();
-        assert_eq!(ctx.fuse(&[&honest, &shaped], msg.len()).unwrap(), msg, "the tuned party's decryption is correct");
+        assert_eq!(
+            ctx.fuse(&[&honest, &shaped], msg.len()).unwrap(),
+            msg,
+            "the tuned party's decryption is correct"
+        );
         let (within, ratio) = ctx.fuse_flooding_check(&[&honest, &shaped], SLACK).unwrap();
         let (mx, q0v) = ctx.fuse_magnitude(&[&honest, &shaped]).unwrap();
         if within && mx < q0v / 4 {
@@ -216,7 +237,9 @@ fn key_noise_gap_verdict_parameters() {
     }
     let one = guess_rate(&obs[..1], a, half, &u);
     let all = guess_rate(&obs, a, half, &u);
-    println!("tuned party: passes every check {passes}/{rounds}; u guessed right {one:.4} after one decryption (1/3 by chance, 5/9 predicted), {all:.4} after {rounds}");
+    println!(
+        "tuned party: passes every check {passes}/{rounds}; u guessed right {one:.4} after one decryption (1/3 by chance, 5/9 predicted), {all:.4} after {rounds}"
+    );
     assert_eq!(passes, rounds, "the tuned party is invisible to the bounds");
     assert!(one > 0.5 && all > one, "and still learns about u");
     Context::clear_keys_for_tag(&k.tag).unwrap();

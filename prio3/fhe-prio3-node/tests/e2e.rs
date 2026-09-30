@@ -6,12 +6,13 @@ use fhe_prio3::*;
 use fhe_prio3_node::aggregator_node::{AggregatorNode, AggregatorNodeConfig};
 use fhe_prio3_node::client::NetworkClient;
 use fhe_prio3_node::collector_node::{CollectorNode, CollectorNodeConfig};
-use fhe_prio3_node::wire::{SubmitOutcome, http_get, http_post, https_client};
+use fhe_prio3_node::wire::{ServerHandle, SubmitOutcome, http_get, http_post, https_client};
 use std::net::{SocketAddr, TcpListener};
 use std::path::PathBuf;
-use std::sync::Mutex;
 
-static SERIAL: Mutex<()> = Mutex::new(());
+/// Serialises the tests of this file. An async lock: each guard is held
+/// across the awaits of a whole deployment.
+static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 struct Tls {
     ca_pem: Vec<u8>,
@@ -31,7 +32,11 @@ fn make_tls(dir: &std::path::Path) -> Tls {
     let key = dir.join("server.key");
     std::fs::write(&cert, format!("{}{}", leaf.pem(), ca.pem())).unwrap();
     std::fs::write(&key, leaf_key.serialize_pem()).unwrap();
-    Tls { ca_pem: ca.pem().into_bytes(), cert, key }
+    Tls {
+        ca_pem: ca.pem().into_bytes(),
+        cert,
+        key,
+    }
 }
 
 fn free_port() -> u16 {
@@ -51,7 +56,7 @@ struct Cluster {
     /// Sealing keys by collector id (empty without policies).
     seal_keys: Vec<CollectorSealKey>,
     token: String,
-    handles: Vec<axum_server::Handle>,
+    handles: Vec<ServerHandle>,
 }
 
 impl Cluster {
@@ -68,7 +73,20 @@ impl Cluster {
         let col_ports: Vec<u16> = (0..task.num_collectors()).map(|_| free_port()).collect();
         let agg_urls = agg_ports.iter().map(|p| format!("https://localhost:{p}")).collect();
         let col_urls = col_ports.iter().map(|p| format!("https://localhost:{p}")).collect();
-        Self { dir, tls, task, material, shares, agg_urls, col_urls, agg_ports, col_ports, seal_keys, token: "t0k3n".into(), handles: Vec::new() }
+        Self {
+            dir,
+            tls,
+            task,
+            material,
+            shares,
+            agg_urls,
+            col_urls,
+            agg_ports,
+            col_ports,
+            seal_keys,
+            token: "t0k3n".into(),
+            handles: Vec::new(),
+        }
     }
 
     fn agg_config(&self, i: usize) -> AggregatorNodeConfig {
@@ -88,9 +106,11 @@ impl Cluster {
 
     async fn start_aggregator(&mut self, i: usize) {
         let node = AggregatorNode::new(self.agg_config(i)).unwrap();
-        let handle = axum_server::Handle::new();
+        let handle = ServerHandle::new();
         let addr: SocketAddr = format!("127.0.0.1:{}", self.agg_ports[i]).parse().unwrap();
-        let tls = AggregatorNode::tls_config(self.tls.cert.clone(), self.tls.key.clone()).await.expect("tls config");
+        let tls = AggregatorNode::tls_config(self.tls.cert.clone(), self.tls.key.clone())
+            .await
+            .expect("tls config");
         let h = handle.clone();
         let task = tokio::spawn(async move { node.serve(addr, Some(tls), h).await });
         self.await_listening(&handle, task).await;
@@ -98,7 +118,7 @@ impl Cluster {
     }
 
     /// Waits for the server to listen, failing fast if it exited instead.
-    async fn await_listening(&self, handle: &axum_server::Handle, task: tokio::task::JoinHandle<anyhow::Result<()>>) {
+    async fn await_listening(&self, handle: &ServerHandle, task: tokio::task::JoinHandle<anyhow::Result<()>>) {
         tokio::select! {
             r = handle.listening() => assert!(r.is_some(), "server did not start listening"),
             r = task => panic!("server exited before listening: {:?}", r),
@@ -116,9 +136,11 @@ impl Cluster {
             db: self.dir.path().join(format!("collector{c}.db")),
         })
         .unwrap();
-        let handle = axum_server::Handle::new();
+        let handle = ServerHandle::new();
         let addr: SocketAddr = format!("127.0.0.1:{}", self.col_ports[c]).parse().unwrap();
-        let tls = CollectorNode::tls_config(self.tls.cert.clone(), self.tls.key.clone()).await.expect("tls config");
+        let tls = CollectorNode::tls_config(self.tls.cert.clone(), self.tls.key.clone())
+            .await
+            .expect("tls config");
         let h = handle.clone();
         let task = tokio::spawn(async move { node.serve(addr, Some(tls), h).await });
         self.await_listening(&handle, task).await;
@@ -165,7 +187,7 @@ impl Cluster {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn verdict_count_over_tls_with_leader_restart() {
-    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let _g = SERIAL.lock().await;
     let task = TaskConfig::new([9u8; 32], MeasurementType::Count, 2);
     let mut c = Cluster::new(task);
     c.start_all().await;
@@ -189,14 +211,22 @@ async fn verdict_count_over_tls_with_leader_restart() {
     // unauthenticated internal calls are refused
     let http = https_client(&c.tls.ca_pem).unwrap();
     // malformed and oversized bodies are refused without touching the aggregator
-    // (an all-zero body decodes as a report for task id 0 and is rejected as WrongTask;
-    // a truncated body cannot decode at all)
+    // (a truncated body cannot decode at all; a well-formed report for
+    // another task decodes and is rejected as WrongTask; a body with bytes
+    // after the message is refused, since a message has exactly one encoding)
     let resp = http.post(format!("{}/v1/submit", c.agg_urls[0])).body(vec![0xffu8; 3]).send().await.unwrap();
     assert_eq!(resp.status().as_u16(), 400, "undecodable body");
-    let resp = http.post(format!("{}/v1/submit", c.agg_urls[0])).body(vec![0u8; 100]).send().await.unwrap();
+    let mut other_task = client.inner().shard(&Measurement::Count(true)).unwrap();
+    other_task.task_id = [0u8; 32];
+    let body = fhe_prio3::messages::encode(&other_task).unwrap();
+    let resp = http.post(format!("{}/v1/submit", c.agg_urls[0])).body(body.clone()).send().await.unwrap();
     assert_eq!(resp.status().as_u16(), 200);
     let out: SubmitOutcome = fhe_prio3::messages::decode(&resp.bytes().await.unwrap()).unwrap();
     assert!(matches!(out, SubmitOutcome::Rejected(ref r) if r.contains("WrongTask")), "{out:?}");
+    let mut trailing = body;
+    trailing.push(0);
+    let resp = http.post(format!("{}/v1/submit", c.agg_urls[0])).body(trailing).send().await.unwrap();
+    assert_eq!(resp.status().as_u16(), 400, "trailing byte after the report");
     let cap = 4 << 20; // above one packed fresh ciphertext (2.7 MiB) plus the 64 KiB slack
     // The server answers 413 as soon as the declared length exceeds the cap,
     // while the client may still be uploading; the client then sees either
@@ -224,7 +254,12 @@ async fn verdict_count_over_tls_with_leader_restart() {
     let resp = http.get(format!("{}/v1/group", c.agg_urls[1])).send().await.unwrap();
     assert_eq!(resp.status().as_u16(), 404);
     // a wrong-token close is refused
-    let resp = http.post(format!("{}/v1/close", c.agg_urls[0])).header("x-fhe-prio3-token", "nope").send().await.unwrap();
+    let resp = http
+        .post(format!("{}/v1/close", c.agg_urls[0]))
+        .header("x-fhe-prio3-token", "nope")
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status().as_u16(), 401);
     let r: anyhow::Result<CountShare> = http_post(&http, &format!("{}/v1/count-share", c.agg_urls[1]), Some("wrong"), &()).await;
     match r {
@@ -253,7 +288,7 @@ async fn verdict_count_over_tls_with_leader_restart() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn silent_batched_sum_over_tls() {
-    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let _g = SERIAL.lock().await;
     let mut task = TaskConfig::new_silent([10u8; 32], MeasurementType::Sum { max_measurement: 100 }, 2);
     task.silent_batch_groups = 2;
     let mut c = Cluster::new(task);
@@ -262,10 +297,8 @@ async fn silent_batched_sum_over_tls() {
     for v in [51u64, 49, 100] {
         assert_eq!(client.submit(&Measurement::Sum(v)).await.unwrap(), SubmitOutcome::Accepted);
     }
-    // invalid (out of range) report is admitted and contributes zero
-    let bits = |v: u64| -> Vec<u64> { (0..7).map(|i| (v >> i) & 1).collect() };
-    let mut bad = bits(101);
-    bad.extend(bits(127));
+    // invalid (a non-bit slot claiming 101) report is admitted and contributes zero
+    let bad = vec![0u64, 0, 0, 0, 0, 2, 1];
     let r = client.inner().shard_raw_elements_in_group(&[bad], 1).unwrap();
     assert_eq!(client.submit_report(&r).await.unwrap(), SubmitOutcome::Accepted);
     let r = c.close().await.unwrap();
@@ -281,18 +314,32 @@ async fn silent_batched_sum_over_tls() {
 /// fails at startup.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_collectors_with_policies_over_tls() {
-    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let _g = SERIAL.lock().await;
     let t = MeasurementType::BoundedSumVec { bounds: vec![100, 5, 15, 15] };
     let k0 = CollectorSealKey::generate();
     let k1 = CollectorSealKey::generate();
     let mut task = TaskConfig::new([11u8; 32], t.clone(), 2);
     task.moments = true;
     task.collectors = vec![
-        CollectorPolicy { elements: vec![0, 1], moments: false, seal_key: k0.public_key() },
-        CollectorPolicy { elements: vec![2, 3], moments: true, seal_key: k1.public_key() },
+        CollectorPolicy {
+            elements: vec![0, 1],
+            moments: false,
+            seal_key: k0.public_key(),
+        },
+        CollectorPolicy {
+            elements: vec![2, 3],
+            moments: true,
+            seal_key: k1.public_key(),
+        },
     ];
     task.validate().unwrap();
-    let mut c = Cluster::with_seal_keys(task.clone(), vec![CollectorSealKey::from_secret_bytes(&k0.secret_bytes()), CollectorSealKey::from_secret_bytes(&k1.secret_bytes())]);
+    let mut c = Cluster::with_seal_keys(
+        task.clone(),
+        vec![
+            CollectorSealKey::from_secret_bytes(&k0.secret_bytes()),
+            CollectorSealKey::from_secret_bytes(&k1.secret_bytes()),
+        ],
+    );
     c.start_all().await;
     let client = c.client();
     let rows = vec![vec![10u64, 1, 8, 8], vec![20, 5, 7, 6], vec![100, 3, 15, 15], vec![40, 1, 11, 12]];
@@ -301,28 +348,57 @@ async fn two_collectors_with_policies_over_tls() {
     }
     let http = https_client(&c.tls.ca_pem).unwrap();
     // a helper refuses a collector id the task does not declare
-    let r: anyhow::Result<fhe_prio3_node::wire::ShareReply> =
-        http_post(&http, &format!("{}/v1/aggregate-share", c.agg_urls[1]), Some(&c.token), &fhe_prio3_node::wire::ShareRequest { collector: 7 }).await;
+    let r: anyhow::Result<fhe_prio3_node::wire::ShareReply> = http_post(
+        &http,
+        &format!("{}/v1/aggregate-share", c.agg_urls[1]),
+        Some(&c.token),
+        &fhe_prio3_node::wire::ShareRequest { collector: 7 },
+    )
+    .await;
     assert!(r.err().expect("unknown collector").to_string().contains("400"));
     // the leader closes: releases go to both collectors, no result comes back
     assert_eq!(c.close_policies().await.unwrap(), vec![0, 1]);
-    let all = t.aggregate_plain(&rows.iter().map(|r| Measurement::SumVec(r.clone())).collect::<Vec<_>>()).unwrap();
+    let all = t
+        .aggregate_plain(&rows.iter().map(|r| Measurement::SumVec(r.clone())).collect::<Vec<_>>())
+        .unwrap();
     let AggregateResult::SumVec(all) = all else { panic!() };
     let r0 = c.result_of(0).await.unwrap().expect("collector 0 complete");
-    assert_eq!((r0.collector, &r0.elements, r0.aggregate.clone(), r0.report_count), (0, &vec![0, 1], AggregateResult::SumVec(vec![all[0], all[1], 0, 0]), 4));
+    assert_eq!(
+        (r0.collector, &r0.elements, r0.aggregate.clone(), r0.report_count),
+        (0, &vec![0, 1], AggregateResult::SumVec(vec![all[0], all[1], 0, 0]), 4)
+    );
     assert!(r0.regression.is_none());
     let r1 = c.result_of(1).await.unwrap().expect("collector 1 complete");
-    assert_eq!((r1.collector, &r1.elements, r1.aggregate.clone()), (1, &vec![2, 3], AggregateResult::SumVec(vec![0, 0, all[2], all[3]])));
+    assert_eq!(
+        (r1.collector, &r1.elements, r1.aggregate.clone()),
+        (1, &vec![2, 3], AggregateResult::SumVec(vec![0, 0, all[2], all[3]]))
+    );
     let reg = r1.regression.expect("collector 1 has moments");
     let plain = fhe_prio3::types::regression_plain(&rows.iter().map(|r| vec![r[2], r[3]]).collect::<Vec<_>>());
     assert_eq!((reg.n, &reg.first, &reg.second), (plain.n, &plain.first, &plain.second));
     // an envelope sealed for collector 1 is refused by collector 0
-    let sealed1: fhe_prio3_node::wire::ShareReply =
-        http_post(&http, &format!("{}/v1/aggregate-share", c.agg_urls[1]), Some(&c.token), &fhe_prio3_node::wire::ShareRequest { collector: 1 }).await.unwrap();
-    let fhe_prio3_node::wire::ShareReply::Sealed(sealed1) = sealed1 else { panic!("policy tasks seal") };
-    assert!(fhe_prio3::seal::open(&sealed1, &k0).is_err(), "the leader-visible envelope is opaque to another key");
-    let r: anyhow::Result<fhe_prio3_node::wire::ShareReceipt> =
-        http_post(&http, &format!("{}/v1/aggregate-share", c.col_urls[0]), Some(&c.token), &fhe_prio3_node::wire::SealedEnvelope { sealed: sealed1 }).await;
+    let sealed1: fhe_prio3_node::wire::ShareReply = http_post(
+        &http,
+        &format!("{}/v1/aggregate-share", c.agg_urls[1]),
+        Some(&c.token),
+        &fhe_prio3_node::wire::ShareRequest { collector: 1 },
+    )
+    .await
+    .unwrap();
+    let fhe_prio3_node::wire::ShareReply::Sealed(sealed1) = sealed1 else {
+        panic!("policy tasks seal")
+    };
+    assert!(
+        fhe_prio3::seal::open(&sealed1, &k0).is_err(),
+        "the leader-visible envelope is opaque to another key"
+    );
+    let r: anyhow::Result<fhe_prio3_node::wire::ShareReceipt> = http_post(
+        &http,
+        &format!("{}/v1/aggregate-share", c.col_urls[0]),
+        Some(&c.token),
+        &fhe_prio3_node::wire::SealedEnvelope { sealed: sealed1 },
+    )
+    .await;
     assert!(r.err().expect("wrong collector").to_string().contains("400"));
     // closing again is idempotent: the same releases
     assert_eq!(c.close_policies().await.unwrap(), vec![0, 1]);
@@ -337,7 +413,14 @@ async fn two_collectors_with_policies_over_tls() {
         db: c.dir.path().join("bad.db"),
     });
     assert!(bad.is_err());
-    let none = CollectorNode::new(CollectorNodeConfig { task, material: c.material.clone(), collector_id: 0, seal_key: None, token: c.token.clone(), db: c.dir.path().join("bad2.db") });
+    let none = CollectorNode::new(CollectorNodeConfig {
+        task,
+        material: c.material.clone(),
+        collector_id: 0,
+        seal_key: None,
+        token: c.token.clone(),
+        db: c.dir.path().join("bad2.db"),
+    });
     assert!(none.is_err());
 }
 
@@ -346,17 +429,15 @@ async fn two_collectors_with_policies_over_tls() {
 /// two aggregators in one request, which is larger than one report.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn three_aggregators_verdict_over_tls() {
-    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let _g = SERIAL.lock().await;
     let task = TaskConfig::new([12u8; 32], MeasurementType::Sum { max_measurement: 100 }, 3);
     let mut c = Cluster::new(task);
     c.start_all().await;
     let client = c.client();
     assert_eq!(client.submit(&Measurement::Sum(40)).await.unwrap(), SubmitOutcome::Accepted);
     assert_eq!(client.submit(&Measurement::Sum(2)).await.unwrap(), SubmitOutcome::Accepted);
-    // out of range: 101 with a saturated offset half
-    let bits = |v: u64| -> Vec<u64> { (0..7).map(|i| (v >> i) & 1).collect() };
-    let mut bad = bits(101);
-    bad.extend(bits(127));
+    // out of range: 101 needs a non-bit slot (2 * 32 + 37)
+    let bad = vec![0u64, 0, 0, 0, 0, 2, 1];
     match client.submit_report(&client.inner().shard_raw(&[bad]).unwrap()).await.unwrap() {
         SubmitOutcome::Rejected(r) => assert!(r.contains("ValidityCheckFailed"), "{r}"),
         o => panic!("expected rejection, got {o:?}"),

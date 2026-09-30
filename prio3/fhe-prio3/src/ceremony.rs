@@ -117,23 +117,47 @@ pub enum Payload {
     /// shapes, so parties on different parameters stop here.
     /// `vk_dh` is this party's ephemeral X25519 public key for the verify
     /// key exchange of round 2.
-    SeedCommit { commit: [u8; 32], params: [u8; 32], vk_dh: [u8; 32] },
+    SeedCommit {
+        commit: [u8; 32],
+        params: [u8; 32],
+        vk_dh: [u8; 32],
+    },
     /// `vk_sealed[j]` is this party's verify-key contribution encrypted to
     /// party `j` (empty at this party's own index).
-    SeedReveal { seed: [u8; 32], vk_sealed: Vec<Vec<u8>> },
+    SeedReveal {
+        seed: [u8; 32],
+        vk_sealed: Vec<Vec<u8>>,
+    },
     /// Hashes of the blobs released with round 4: the public-key share,
     /// the round-1 eval-mult contribution and one per rotation index.
-    KeyCommit { pk: [u8; 32], relin1: [u8; 32], rot: Vec<[u8; 32]> },
+    KeyCommit {
+        pk: [u8; 32],
+        relin1: [u8; 32],
+        rot: Vec<[u8; 32]>,
+    },
     KeyReveal,
     /// Hashes of the round-2 eval-mult contribution and of the test
     /// ciphertext, and the commitment to the test vector's seed.
-    Relin2Commit { relin2: [u8; 32], check_ct: [u8; 32], check_seed: [u8; 32] },
+    Relin2Commit {
+        relin2: [u8; 32],
+        check_ct: [u8; 32],
+        check_seed: [u8; 32],
+    },
     Relin2Reveal,
-    PartialCommit { partial: [u8; 32], deep: Vec<[u8; 32]> },
-    PartialReveal { check_seed: [u8; 32] },
+    PartialCommit {
+        partial: [u8; 32],
+        deep: Vec<[u8; 32]>,
+    },
+    PartialReveal {
+        check_seed: [u8; 32],
+    },
     /// Digest of the transcript and the joint material, the attestation, and
     /// a hash of the verify key this party derived (equal for all parties).
-    Confirm { transcript: [u8; 32], attestation: MaterialAttestation, verify_key_check: [u8; 32] },
+    Confirm {
+        transcript: [u8; 32],
+        attestation: MaterialAttestation,
+        verify_key_check: [u8; 32],
+    },
 }
 
 /// A signed ceremony message.
@@ -245,21 +269,43 @@ fn seed_commit(label: &[u8], session: &[u8; 32], sender: usize, seed: &[u8; 32])
 fn vk_cipher(session: &[u8; 32], task_digest: &[u8; 32], from: usize, to: usize, shared: &x25519_dalek::SharedSecret) -> Result<aes_gcm::Aes256Gcm> {
     use aes_gcm::KeyInit;
     if !shared.was_contributory() {
-        return Err(Error::Protocol(format!("ceremony: the verify-key exchange between parties {from} and {to} produced a non-contributory secret (low-order public key)")));
+        return Err(Error::Protocol(format!(
+            "ceremony: the verify-key exchange between parties {from} and {to} produced a non-contributory secret (low-order public key)"
+        )));
     }
     let hk = hkdf::Hkdf::<Sha256>::new(Some(session), shared.as_bytes());
     let mut key = [0u8; 32];
-    let info = [CEREMONY_DOMAIN, b" verify key", task_digest, &(from as u64).to_le_bytes(), &(to as u64).to_le_bytes()].concat();
+    let info = [
+        CEREMONY_DOMAIN,
+        b" verify key",
+        task_digest,
+        &(from as u64).to_le_bytes(),
+        &(to as u64).to_le_bytes(),
+    ]
+    .concat();
     hk.expand(&info, &mut key).map_err(|_| Error::Protocol("ceremony: HKDF expand failed".into()))?;
     let c = aes_gcm::Aes256Gcm::new_from_slice(&key).map_err(|_| Error::Protocol("ceremony: bad AES key length".into()));
     zeroize::Zeroize::zeroize(&mut key);
     c
 }
 
-fn vk_seal(session: &[u8; 32], task_digest: &[u8; 32], from: usize, to: usize, shared: &x25519_dalek::SharedSecret, contribution: &[u8; 32]) -> Result<Vec<u8>> {
+fn vk_seal(
+    session: &[u8; 32],
+    task_digest: &[u8; 32],
+    from: usize,
+    to: usize,
+    shared: &x25519_dalek::SharedSecret,
+    contribution: &[u8; 32],
+) -> Result<Vec<u8>> {
     use aes_gcm::aead::{Aead, Payload};
     vk_cipher(session, task_digest, from, to, shared)?
-        .encrypt(&aes_gcm::Nonce::default(), Payload { msg: contribution, aad: session })
+        .encrypt(
+            &aes_gcm::Nonce::default(),
+            Payload {
+                msg: contribution,
+                aad: session,
+            },
+        )
         .map_err(|_| Error::Protocol("ceremony: sealing the verify-key contribution failed".into()))
 }
 
@@ -350,22 +396,26 @@ fn protocol_decryption_points(
             let ch = Challenge::derive(cfg, field, &layout, &verify_key, &report_id, 0);
             let s = circuit.check_sum(&chunks, &ch)?;
             out.push(circuit.apply_masks(&s, &masks.iter().collect::<Vec<_>>())?);
-            if layout.moments.is_some() {
-                if let Some(p) = circuit.moment_products(&chunks, 0)?.into_iter().next() {
-                    out.push(p);
-                }
+            if layout.moments.is_some()
+                && let Some(p) = circuit.moment_products(&chunks, 0)?.into_iter().next()
+            {
+                out.push(p);
             }
         }
         VerificationMode::Silent => {
             let ch = Challenge::derive(cfg, field, &layout, &verify_key, &report_id, 0);
             let g = circuit.silent_validity(&circuit.class_sums(&circuit.report_terms(&chunks, &ch)?)?)?;
-            let masked: Vec<Ciphertext> = chunks.iter().enumerate().map(|(c, ct)| circuit.mask_to_group(ct, c, 0)).collect::<Result<_>>()?;
+            let masked: Vec<Ciphertext> = chunks
+                .iter()
+                .enumerate()
+                .map(|(c, ct)| circuit.mask_to_group(ct, c, 0))
+                .collect::<Result<_>>()?;
             out.push(circuit.fold_to_group0(&ctx.mult(&masked[0], &g)?, 0)?);
             out.push(circuit.fold_to_group0(&circuit.count_of_group(&g, 0)?, 0)?);
-            if layout.moments.is_some() {
-                if let Some(p) = circuit.moment_products(&masked, 0)?.into_iter().next() {
-                    out.push(circuit.fold_to_group0(&ctx.mult(&p, &g)?, 0)?);
-                }
+            if layout.moments.is_some()
+                && let Some(p) = circuit.moment_products(&masked, 0)?.into_iter().next()
+            {
+                out.push(circuit.fold_to_group0(&ctx.mult(&p, &g)?, 0)?);
             }
         }
     }
@@ -402,7 +452,10 @@ fn deep_ok(c: &Ciphertext, cfg: &TaskConfig) -> Result<bool> {
 /// 1 eval-mult round 1, 2 round 2, 3 rotations), if any.
 fn inflation(dev: Deviation, which: usize) -> Option<u32> {
     let k = match (dev, which) {
-        (Deviation::InflatedPublicKeyNoise(k), 0) | (Deviation::InflatedRelin1Noise(k), 1) | (Deviation::InflatedRelin2Noise(k), 2) | (Deviation::InflatedRotationNoise(k), 3) => k,
+        (Deviation::InflatedPublicKeyNoise(k), 0)
+        | (Deviation::InflatedRelin1Noise(k), 1)
+        | (Deviation::InflatedRelin2Noise(k), 2)
+        | (Deviation::InflatedRotationNoise(k), 3) => k,
         (Deviation::InflatedKeys(ks), w) => ks[w],
         _ => 0,
     };
@@ -483,7 +536,14 @@ struct Party<'a> {
 
 impl<'a> Party<'a> {
     fn sign(&self, round: Round, payload: Payload) -> Result<Message> {
-        let mut m = Message { task_digest: self.task_digest, session: self.session, round, sender: self.index as u32, payload, signature: Vec::new() };
+        let mut m = Message {
+            task_digest: self.task_digest,
+            session: self.session,
+            round,
+            sender: self.index as u32,
+            payload,
+            signature: Vec::new(),
+        };
         let bytes = m.signed_bytes()?;
         m.signature = if self.dev == Deviation::WrongIdentity {
             ed25519_dalek::SigningKey::generate(&mut rand_core::OsRng).sign(&bytes).to_bytes().to_vec()
@@ -510,12 +570,21 @@ impl<'a> Party<'a> {
 
     fn verify(&self, m: &Message, round: Round, from: usize) -> Result<()> {
         if m.round != round || m.sender as usize != from {
-            return Err(Error::Protocol(format!("ceremony: party {from} sent a message for round {:?} from {}", m.round, m.sender)));
+            return Err(Error::Protocol(format!(
+                "ceremony: party {from} sent a message for round {:?} from {}",
+                m.round, m.sender
+            )));
         }
         if m.task_digest != self.task_digest || m.session != self.session {
-            return Err(Error::Protocol(format!("ceremony: party {from}'s round {round:?} message is for another task or session")));
+            return Err(Error::Protocol(format!(
+                "ceremony: party {from}'s round {round:?} message is for another task or session"
+            )));
         }
-        let sig: [u8; 64] = m.signature.as_slice().try_into().map_err(|_| Error::Protocol(format!("ceremony: party {from}: signature must be 64 bytes")))?;
+        let sig: [u8; 64] = m
+            .signature
+            .as_slice()
+            .try_into()
+            .map_err(|_| Error::Protocol(format!("ceremony: party {from}: signature must be 64 bytes")))?;
         self.pinned[from]
             .verify_strict(&m.signed_bytes()?, &Signature::from_bytes(&sig))
             .map_err(|_| Error::Protocol(format!("ceremony: party {from}'s round {round:?} message is not signed by its pinned identity")))?;
@@ -532,7 +601,9 @@ impl<'a> Party<'a> {
                 | (Round::Confirm, Payload::Confirm { .. })
         );
         if !kind_ok {
-            return Err(Error::Protocol(format!("ceremony: party {from} sent the wrong kind of message for round {round:?}")));
+            return Err(Error::Protocol(format!(
+                "ceremony: party {from} sent the wrong kind of message for round {round:?}"
+            )));
         }
         Ok(())
     }
@@ -541,7 +612,10 @@ impl<'a> Party<'a> {
     fn blob(&self, t: &mut dyn Transport, from: usize, blob: &Blob, committed: &[u8; 32]) -> Result<Vec<u8>> {
         let bytes = t.fetch_blob(blob.round(), from, &blob.name())?;
         if blob_hash(&self.session, from, blob, &bytes) != *committed {
-            return Err(Error::Protocol(format!("ceremony: party {from}'s {} does not match its commitment", blob.name())));
+            return Err(Error::Protocol(format!(
+                "ceremony: party {from}'s {} does not match its commitment",
+                blob.name()
+            )));
         }
         Ok(bytes)
     }
@@ -556,7 +630,12 @@ impl<'a> Party<'a> {
 /// Fingerprint of everything the parties must agree on before any key
 /// material is made.
 fn params_fingerprint(cfg: &TaskConfig, ctx: &Context, indices: &[i32]) -> Result<[u8; 32]> {
-    let mut parts: Vec<Vec<u8>> = vec![cfg.digest().to_vec(), ctx.plain_mod().to_le_bytes().to_vec(), ctx.ring_dim().to_le_bytes().to_vec(), (ctx.key_num_parts()? as u64).to_le_bytes().to_vec()];
+    let mut parts: Vec<Vec<u8>> = vec![
+        cfg.digest().to_vec(),
+        ctx.plain_mod().to_le_bytes().to_vec(),
+        ctx.ring_dim().to_le_bytes().to_vec(),
+        (ctx.key_num_parts()? as u64).to_le_bytes().to_vec(),
+    ];
     parts.push(to_bytes(&ctx.moduli()?));
     parts.push(to_bytes(&ctx.key_basis_moduli(KeyBasis::PublicKey)?));
     parts.push(to_bytes(&ctx.key_basis_moduli(KeyBasis::KeySwitch)?));
@@ -570,13 +649,28 @@ fn material_digest(m: &PublicMaterial) -> [u8; 32] {
     let rot: Vec<[u8; 32]> = m.rotation_keys.iter().map(|k| Sha256::digest(k).into()).collect();
     let rot_bytes: Vec<u8> = rot.iter().flatten().copied().collect();
     let idx: Vec<u8> = m.rotation_indices.iter().flat_map(|i| i.to_le_bytes()).collect();
-    h(&[b"material", &m.context, &m.public_key, m.joint_tag.as_bytes(), &Sha256::digest(&m.eval_mult_key), &rot_bytes, &idx])
+    h(&[
+        b"material",
+        &m.context,
+        &m.public_key,
+        m.joint_tag.as_bytes(),
+        &Sha256::digest(&m.eval_mult_key),
+        &rot_bytes,
+        &idx,
+    ])
 }
 
 /// Runs the ceremony as aggregator `index`. `pinned[j]` is aggregator `j`'s
 /// identity key (this party's own included); `session` is a fresh value all
 /// parties agreed on for this run.
-pub fn run(cfg: &TaskConfig, index: usize, identity: &AggregatorIdentity, pinned: &[[u8; 32]], session: [u8; 32], t: &mut dyn Transport) -> Result<CeremonyOutput> {
+pub fn run(
+    cfg: &TaskConfig,
+    index: usize,
+    identity: &AggregatorIdentity,
+    pinned: &[[u8; 32]],
+    session: [u8; 32],
+    t: &mut dyn Transport,
+) -> Result<CeremonyOutput> {
     run_deviating(cfg, index, identity, pinned, session, t, Deviation::None)
 }
 
@@ -608,7 +702,10 @@ fn run_inner(
 ) -> Result<CeremonyOutput> {
     let n = cfg.num_aggregators;
     if pinned.len() != n || index >= n {
-        return Err(Error::Config(format!("ceremony: {} pinned keys and index {index} for {n} aggregators", pinned.len())));
+        return Err(Error::Config(format!(
+            "ceremony: {} pinned keys and index {index} for {n} aggregators",
+            pinned.len()
+        )));
     }
     if pinned[index] != identity.public_key() {
         return Err(Error::Config(format!("ceremony: this identity is not the pinned key of aggregator {index}")));
@@ -617,7 +714,16 @@ fn run_inner(
         .iter()
         .map(|k| VerifyingKey::from_bytes(k).map_err(|_| Error::Config("ceremony: invalid pinned identity key".into())))
         .collect::<Result<Vec<_>>>()?;
-    let mut me = Party { index, n, identity, pinned: pinned_keys, session, task_digest: cfg.digest(), transcript: Vec::new(), dev };
+    let mut me = Party {
+        index,
+        n,
+        identity,
+        pinned: pinned_keys,
+        session,
+        task_digest: cfg.digest(),
+        transcript: Vec::new(),
+        dev,
+    };
 
     let ctx = make_context(cfg)?;
     // test ciphertexts and partial decryptions arrive in the packed format,
@@ -643,17 +749,29 @@ fn run_inner(
     let vk_dh = x25519_dalek::PublicKey::from(&vk_secret).to_bytes();
     let mut vk_contribution = [0u8; 32];
     rand_core::RngCore::fill_bytes(&mut rand_core::OsRng, &mut vk_contribution);
-    let commits = me.exchange(t, Round::SeedCommit, Payload::SeedCommit { commit: seed_commit(b"crs seed", &session, index, &seed), params, vk_dh })?;
+    let commits = me.exchange(
+        t,
+        Round::SeedCommit,
+        Payload::SeedCommit {
+            commit: seed_commit(b"crs seed", &session, index, &seed),
+            params,
+            vk_dh,
+        },
+    )?;
     for (j, c) in commits.iter().enumerate() {
-        if let Payload::SeedCommit { params: q, .. } = c {
-            if *q != params {
-                return Err(Error::Protocol(format!("ceremony: party {j} runs other parameters (context, key shapes, rotation indices or task)")));
-            }
+        if let Payload::SeedCommit { params: q, .. } = c
+            && *q != params
+        {
+            return Err(Error::Protocol(format!(
+                "ceremony: party {j} runs other parameters (context, key shapes, rotation indices or task)"
+            )));
         }
     }
     let revealed = if dev == Deviation::WrongSeed { [0u8; 32] } else { seed };
     let peer_dh = |j: usize| -> x25519_dalek::PublicKey {
-        let Payload::SeedCommit { vk_dh, .. } = &commits[j] else { unreachable!("kinds checked") };
+        let Payload::SeedCommit { vk_dh, .. } = &commits[j] else {
+            unreachable!("kinds checked")
+        };
         x25519_dalek::PublicKey::from(*vk_dh)
     };
     let mut vk_sealed = Vec::with_capacity(n);
@@ -672,14 +790,26 @@ fn run_inner(
     let reveals = me.exchange(t, Round::SeedReveal, Payload::SeedReveal { seed: revealed, vk_sealed })?;
     let mut vk_parts: Vec<[u8; 32]> = Vec::with_capacity(n);
     for (j, r) in reveals.iter().enumerate() {
-        let Payload::SeedReveal { vk_sealed, .. } = r else { unreachable!("kinds checked") };
+        let Payload::SeedReveal { vk_sealed, .. } = r else {
+            unreachable!("kinds checked")
+        };
         if vk_sealed.len() != n {
-            return Err(Error::Protocol(format!("ceremony: party {j} sent {} verify-key contributions for {n} parties", vk_sealed.len())));
+            return Err(Error::Protocol(format!(
+                "ceremony: party {j} sent {} verify-key contributions for {n} parties",
+                vk_sealed.len()
+            )));
         }
         if j == index {
             vk_parts.push(vk_contribution);
         } else {
-            vk_parts.push(vk_open(&session, &me.task_digest, j, index, &vk_secret.diffie_hellman(&peer_dh(j)), &vk_sealed[index])?);
+            vk_parts.push(vk_open(
+                &session,
+                &me.task_digest,
+                j,
+                index,
+                &vk_secret.diffie_hellman(&peer_dh(j)),
+                &vk_sealed[index],
+            )?);
         }
     }
     drop(vk_secret);
@@ -694,9 +824,13 @@ fn run_inner(
     }
     let mut crs_parts: Vec<Vec<u8>> = vec![b"crs".to_vec(), me.task_digest.to_vec(), session.to_vec()];
     for (j, (c, r)) in commits.iter().zip(&reveals).enumerate() {
-        let (Payload::SeedCommit { commit, .. }, Payload::SeedReveal { seed: s, .. }) = (c, r) else { unreachable!("kinds checked") };
+        let (Payload::SeedCommit { commit, .. }, Payload::SeedReveal { seed: s, .. }) = (c, r) else {
+            unreachable!("kinds checked")
+        };
         if seed_commit(b"crs seed", &session, j, s) != *commit {
-            return Err(Error::Protocol(format!("ceremony: party {j} revealed a seed other than the one it committed to")));
+            return Err(Error::Protocol(format!(
+                "ceremony: party {j} revealed a seed other than the one it committed to"
+            )));
         }
         crs_parts.push(s.to_vec());
     }
@@ -710,7 +844,10 @@ fn run_inner(
     let mut rng = rand::thread_rng();
     let garbage = |moduli: &[u64], polys: usize, rng: &mut rand::rngs::ThreadRng| -> Vec<u64> {
         use rand::Rng;
-        (0..polys).flat_map(|_| moduli.iter().flat_map(|&q| (0..ring).map(move |_| q)).collect::<Vec<_>>()).map(|q| rng.gen_range(0..q)).collect()
+        (0..polys)
+            .flat_map(|_| moduli.iter().flat_map(|&q| (0..ring).map(move |_| q)).collect::<Vec<_>>())
+            .map(|q| rng.gen_range(0..q))
+            .collect()
     };
     let pk_b = match dev {
         Deviation::GarbagePublicKey => garbage(&pk_moduli, 1, &mut rng),
@@ -734,7 +871,11 @@ fn run_inner(
         let b = if dev == Deviation::GarbageRotation(k) {
             garbage(&ks_moduli, parts, &mut rng)
         } else {
-            let tmpl = RotationKeys::single(&ctx, idx, &EvalMultKey::template(&ctx, &expand_crs(&crs, &format!("rot {idx}"), &ks_moduli, ring, parts))?)?;
+            let tmpl = RotationKeys::single(
+                &ctx,
+                idx,
+                &EvalMultKey::template(&ctx, &expand_crs(&crs, &format!("rot {idx}"), &ks_moduli, ring, parts))?,
+            )?;
             let b = RotationKeys::next(&ctx, &share, &tmpl, &[idx], &joint_tag)?.get(idx)?.export(1)?;
             match inflation(dev, 3) {
                 Some(e) => inflated(b, &ks_moduli, ring, cfg.plain_mod, e),
@@ -743,12 +884,24 @@ fn run_inner(
         };
         h_rot.push(me.stage(t, &Blob::Rotation(k), to_bytes(&b))?);
     }
-    let key_commits = me.exchange(t, Round::KeyCommit, Payload::KeyCommit { pk: h_pk, relin1: h_r1, rot: h_rot })?;
+    let key_commits = me.exchange(
+        t,
+        Round::KeyCommit,
+        Payload::KeyCommit {
+            pk: h_pk,
+            relin1: h_r1,
+            rot: h_rot,
+        },
+    )?;
     for (j, c) in key_commits.iter().enumerate() {
-        if let Payload::KeyCommit { rot, .. } = c {
-            if rot.len() != indices.len() {
-                return Err(Error::Protocol(format!("ceremony: party {j} committed {} rotation keys, expected {}", rot.len(), indices.len())));
-            }
+        if let Payload::KeyCommit { rot, .. } = c
+            && rot.len() != indices.len()
+        {
+            return Err(Error::Protocol(format!(
+                "ceremony: party {j} committed {} rotation keys, expected {}",
+                rot.len(),
+                indices.len()
+            )));
         }
     }
 
@@ -816,7 +969,15 @@ fn run_inner(
     let my_ct = ctx.encrypt(&joint_pk, &ctx.plaintext(&check_vector(&session, &check_seed, &field, row))?)?;
     let h_ct = me.stage(t, &Blob::CheckCiphertext, codec.encode(&my_ct)?)?;
     let c_seed = seed_commit(b"check seed", &session, index, &check_seed);
-    let r2_commits = me.exchange(t, Round::Relin2Commit, Payload::Relin2Commit { relin2: h_r2, check_ct: h_ct, check_seed: c_seed })?;
+    let r2_commits = me.exchange(
+        t,
+        Round::Relin2Commit,
+        Payload::Relin2Commit {
+            relin2: h_r2,
+            check_ct: h_ct,
+            check_seed: c_seed,
+        },
+    )?;
 
     // Round 6: reveal; the joint eval-mult key and the test ciphertext.
     me.exchange(t, Round::Relin2Reveal, Payload::Relin2Reveal)?;
@@ -825,7 +986,9 @@ fn run_inner(
     let mut test_cts: Vec<Ciphertext> = Vec::with_capacity(n);
     let mut ct_hashes = Vec::with_capacity(n);
     for (j, c) in r2_commits.iter().enumerate() {
-        let Payload::Relin2Commit { relin2, check_ct, .. } = c else { unreachable!("kinds checked") };
+        let Payload::Relin2Commit { relin2, check_ct, .. } = c else {
+            unreachable!("kinds checked")
+        };
         let bytes = me.blob(t, j, &Blob::Relin2, relin2)?;
         let v = from_bytes(&bytes, 2 * ks_len, "eval-mult round-2 contribution")?;
         let part = EvalMultKey::build(&ctx, &v[..ks_len], &v[ks_len..])?;
@@ -865,7 +1028,10 @@ fn run_inner(
     for (k, &idx) in indices.iter().enumerate() {
         t_ct = ctx.add(&t_ct, &ctx.mult_plain(&ctx.rotate(&x, idx)?, &ctx.plaintext(&vec![weights[k + 1]; row])?)?)?;
     }
-    let partial_meta = CiphertextMeta { num_elements: 1, ..t_ct.meta()? };
+    let partial_meta = CiphertextMeta {
+        num_elements: 1,
+        ..t_ct.meta()?
+    };
     let mine = match dev {
         Deviation::WrongPartial => PublicKey::share(&ctx, &pk_t)?.1.partial_decrypt(&t_ct, index == 0)?,
         Deviation::MisshapedPartial => share.partial_decrypt(&x, index == 0)?,
@@ -913,7 +1079,10 @@ fn run_inner(
     for v in protocol_decryption_points(cfg, &ctx, &field, &session, &ct_hashes, &x, &test_cts)? {
         deep_values.push(amplified(&ctx, v)?);
     }
-    let deep_metas: Vec<CiphertextMeta> = deep_values.iter().map(|c| Ok(CiphertextMeta { num_elements: 1, ..c.meta()? })).collect::<Result<_>>()?;
+    let deep_metas: Vec<CiphertextMeta> = deep_values
+        .iter()
+        .map(|c| Ok(CiphertextMeta { num_elements: 1, ..c.meta()? }))
+        .collect::<Result<_>>()?;
     let mut h_deep = Vec::with_capacity(deep_values.len());
     for (i, v) in deep_values.iter().enumerate() {
         h_deep.push(me.stage(t, &Blob::DeepPartial(i), codec.encode(share.partial_decrypt(v, index == 0)?.ciphertext())?)?);
@@ -927,11 +1096,15 @@ fn run_inner(
     let mut deep_partials: Vec<Vec<PartialDecryption>> = deep_metas.iter().map(|_| Vec::with_capacity(n)).collect();
     let mut sum = vec![0u64; row];
     for j in 0..n {
-        let (Payload::PartialCommit { partial, deep }, Payload::PartialReveal { check_seed: s }, Payload::Relin2Commit { check_seed: c, .. }) = (&pd_commits[j], &seeds[j], &r2_commits[j]) else {
+        let (Payload::PartialCommit { partial, deep }, Payload::PartialReveal { check_seed: s }, Payload::Relin2Commit { check_seed: c, .. }) =
+            (&pd_commits[j], &seeds[j], &r2_commits[j])
+        else {
             unreachable!("kinds checked")
         };
         if seed_commit(b"check seed", &session, j, s) != *c {
-            return Err(Error::Protocol(format!("ceremony: party {j} revealed a test vector seed other than the one it committed to")));
+            return Err(Error::Protocol(format!(
+                "ceremony: party {j} revealed a test vector seed other than the one it committed to"
+            )));
         }
         for (acc, v) in sum.iter_mut().zip(check_vector(&session, s, &field, row)) {
             *acc = (*acc + v) % p;
@@ -941,7 +1114,11 @@ fn run_inner(
             .map_err(|e| Error::Protocol(format!("ceremony: party {j}'s partial decryption: {e}")))?;
         partials.push(PartialDecryption::from_ciphertext(ct, j == 0));
         if deep.len() != deep_metas.len() {
-            return Err(Error::Protocol(format!("ceremony: party {j} committed {} deep partial decryptions, expected {}", deep.len(), deep_metas.len())));
+            return Err(Error::Protocol(format!(
+                "ceremony: party {j} committed {} deep partial decryptions, expected {}",
+                deep.len(),
+                deep_metas.len()
+            )));
         }
         for (i, (hd, meta)) in deep.iter().zip(&deep_metas).enumerate() {
             let ct = codec
@@ -965,10 +1142,16 @@ fn run_inner(
         })
         .count();
     if bad > 0 {
-        return Err(Error::Protocol(format!("ceremony: joint key check failed in {bad} of {row} slots (a contribution or a partial decryption is wrong)")));
+        return Err(Error::Protocol(format!(
+            "ceremony: joint key check failed in {bad} of {row} slots (a contribution or a partial decryption is wrong)"
+        )));
     }
     for (i, ps) in deep_partials.iter().enumerate().skip(1) {
-        crate::vdec::check_flooding(&ctx, &ps.iter().collect::<Vec<_>>(), &format!("ceremony: deep key check (protocol decryption point {i})"))?;
+        crate::vdec::check_flooding(
+            &ctx,
+            &ps.iter().collect::<Vec<_>>(),
+            &format!("ceremony: deep key check (protocol decryption point {i})"),
+        )?;
     }
     let deep_refs: Vec<&PartialDecryption> = deep_partials[0].iter().collect();
     crate::vdec::check_flooding(&ctx, &deep_refs, "ceremony: deep key check")?;
@@ -992,7 +1175,9 @@ fn run_inner(
         })
         .count();
     if bad > 0 {
-        return Err(Error::Protocol(format!("ceremony: deep key check failed in {bad} of {row} slots (the keys do not evaluate correctly at depth)")));
+        return Err(Error::Protocol(format!(
+            "ceremony: deep key check failed in {bad} of {row} slots (the keys do not evaluate correctly at depth)"
+        )));
     }
 
     // Round 9: everyone signs the same transcript and attests the material.
@@ -1002,10 +1187,25 @@ fn run_inner(
     let signed = if dev == Deviation::WrongTranscript { h(&[b"other"]) } else { transcript };
     let attestation = attest::attest(cfg, &material, index, identity);
     let vk_check = verify_key_check(&session, &verify_key);
-    let confirms = me.exchange(t, Round::Confirm, Payload::Confirm { transcript: signed, attestation, verify_key_check: vk_check })?;
+    let confirms = me.exchange(
+        t,
+        Round::Confirm,
+        Payload::Confirm {
+            transcript: signed,
+            attestation,
+            verify_key_check: vk_check,
+        },
+    )?;
     let mut material = material;
     for (j, c) in confirms.into_iter().enumerate() {
-        let Payload::Confirm { transcript: d, attestation, verify_key_check: v } = c else { unreachable!("kinds checked") };
+        let Payload::Confirm {
+            transcript: d,
+            attestation,
+            verify_key_check: v,
+        } = c
+        else {
+            unreachable!("kinds checked")
+        };
         if d != transcript {
             return Err(Error::Protocol(format!("ceremony: party {j} saw another transcript or computed other keys")));
         }
@@ -1017,7 +1217,11 @@ fn run_inner(
         material.attestations.push(attestation);
     }
     attest::verify_material(cfg, &material, pinned)?;
-    let secret = AggregatorSecret { verify_key, share: share.serialize()? }.encode();
+    let secret = AggregatorSecret {
+        verify_key,
+        share: share.serialize()?,
+    }
+    .encode();
     Ok(CeremonyOutput { material, secret, transcript })
 }
 
@@ -1044,7 +1248,11 @@ pub struct MemoryTransport {
 
 impl MemoryNetwork {
     pub fn party(&self, index: usize) -> MemoryTransport {
-        MemoryTransport { net: self.clone(), index, timeout: std::time::Duration::from_secs(600) }
+        MemoryTransport {
+            net: self.clone(),
+            index,
+            timeout: std::time::Duration::from_secs(600),
+        }
     }
 
     /// Everything the transport carried: every published message (encoded)
@@ -1054,7 +1262,12 @@ impl MemoryNetwork {
         let (lock, _) = &*self.inner;
         let st = lock.lock().unwrap_or_else(|e| e.into_inner());
         let mut out: Vec<Vec<u8>> = st.messages.values().map(|m| encode(m).expect("message encodes")).collect();
-        out.extend(st.staged.iter().filter(|((r, i, _), _)| st.released.contains(&(*r, *i))).map(|(_, b)| b.clone()));
+        out.extend(
+            st.staged
+                .iter()
+                .filter(|((r, i, _), _)| st.released.contains(&(*r, *i)))
+                .map(|(_, b)| b.clone()),
+        );
         out
     }
 }
@@ -1083,7 +1296,10 @@ impl MemoryTransport {
 impl Transport for MemoryTransport {
     fn stage_blob(&mut self, round: Round, name: &str, bytes: Vec<u8>) -> Result<()> {
         let (lock, _) = &*self.net.inner;
-        lock.lock().unwrap_or_else(|e| e.into_inner()).staged.insert((round, self.index, name.to_string()), bytes);
+        lock.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .staged
+            .insert((round, self.index, name.to_string()), bytes);
         Ok(())
     }
     fn publish(&mut self, msg: &Message) -> Result<()> {
@@ -1095,12 +1311,16 @@ impl Transport for MemoryTransport {
         Ok(())
     }
     fn fetch(&mut self, round: Round, from: usize) -> Result<Message> {
-        self.wait(&format!("party {from}'s round {round:?} message"), |st| st.messages.get(&(round, from)).cloned())
+        self.wait(&format!("party {from}'s round {round:?} message"), |st| {
+            st.messages.get(&(round, from)).cloned()
+        })
     }
     fn fetch_blob(&mut self, round: Round, from: usize, name: &str) -> Result<Vec<u8>> {
         let key = (round, from, name.to_string());
         // readable only once its owner has published the round's message
-        let blob = self.wait(&format!("party {from}'s {name}"), |st| st.released.contains(&(round, from)).then(|| st.staged.get(&key).cloned()))?;
+        let blob = self.wait(&format!("party {from}'s {name}"), |st| {
+            st.released.contains(&(round, from)).then(|| st.staged.get(&key).cloned())
+        })?;
         blob.ok_or_else(|| Error::Protocol(format!("ceremony: party {from} released no {name}")))
     }
     fn abort(&mut self, reason: &str) {

@@ -41,10 +41,14 @@ pub struct ClientIdentity {
 
 impl ClientIdentity {
     pub fn generate() -> Self {
-        Self { key: SigningKey::generate(&mut rand_core::OsRng) }
+        Self {
+            key: SigningKey::generate(&mut rand_core::OsRng),
+        }
     }
     pub fn from_secret_bytes(bytes: &[u8; 32]) -> Self {
-        Self { key: SigningKey::from_bytes(bytes) }
+        Self {
+            key: SigningKey::from_bytes(bytes),
+        }
     }
     pub fn secret_bytes(&self) -> [u8; 32] {
         self.key.to_bytes()
@@ -54,7 +58,10 @@ impl ClientIdentity {
     }
     pub fn sign(&self, task_id: &[u8; 32], report_id: &ReportId) -> ReportAuth {
         let sig = self.key.sign(&signing_message(task_id, report_id));
-        ReportAuth { client_key: self.public_key(), signature: sig.to_bytes().to_vec() }
+        ReportAuth {
+            client_key: self.public_key(),
+            signature: sig.to_bytes().to_vec(),
+        }
     }
 }
 
@@ -62,9 +69,14 @@ impl ClientIdentity {
 /// ciphertext is parsed.
 pub fn verify(auth: &ReportAuth, task_id: &[u8; 32], report_id: &ReportId) -> Result<()> {
     let vk = VerifyingKey::from_bytes(&auth.client_key).map_err(|_| Error::Protocol("invalid client public key".into()))?;
-    let sig_bytes: [u8; 64] = auth.signature.as_slice().try_into().map_err(|_| Error::Protocol("signature must be 64 bytes".into()))?;
+    let sig_bytes: [u8; 64] = auth
+        .signature
+        .as_slice()
+        .try_into()
+        .map_err(|_| Error::Protocol("signature must be 64 bytes".into()))?;
     let sig = Signature::from_bytes(&sig_bytes);
-    vk.verify_strict(&signing_message(task_id, report_id), &sig).map_err(|_| Error::Protocol("bad signature".into()))
+    vk.verify_strict(&signing_message(task_id, report_id), &sig)
+        .map_err(|_| Error::Protocol("bad signature".into()))
 }
 
 /// The set of client keys an aggregator accepts. Production deployments
@@ -80,7 +92,9 @@ pub struct StaticRegistry {
 
 impl StaticRegistry {
     pub fn new(keys: impl IntoIterator<Item = [u8; 32]>) -> Arc<Self> {
-        Arc::new(Self { keys: keys.into_iter().collect() })
+        Arc::new(Self {
+            keys: keys.into_iter().collect(),
+        })
     }
 }
 

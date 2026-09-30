@@ -1,8 +1,11 @@
 // tbgv.cpp — implementation of tbgv.h over OpenFHE (BGV-RNS, MULTIPARTY).
 #include "tbgv.h"
 
+#include <algorithm>
 #include <cstring>
 #include <climits>
+#include <cmath>
+#include <limits>
 #include <cstdlib>
 #include <link.h>
 #include <random>
@@ -48,7 +51,7 @@ int serialize_to(const T& obj, uint8_t** out, size_t* out_len) {
     const std::string s = ss.str();
     uint8_t* buf = static_cast<uint8_t*>(std::malloc(s.size() ? s.size() : 1));
     if (!buf) { set_error("malloc failed"); return 0; }
-    std::memcpy(buf, s.data(), s.size());
+    std::copy_n(s.data(), s.size(), reinterpret_cast<char*>(buf));  // binary bytes, not a C string
     *out = buf;
     *out_len = s.size();
     return 1;
@@ -115,17 +118,23 @@ TbgvContext tbgv_context_new(uint64_t plain_mod, uint32_t mult_depth, uint32_t s
 void tbgv_context_free(TbgvContext ctx) { delete static_cast<CC*>(ctx); }
 
 uint64_t tbgv_context_plain_mod(TbgvContext ctx) {
-    return cc_of(ctx)->GetCryptoParameters()->GetPlaintextModulus();
+    TBGV_TRY return cc_of(ctx)->GetCryptoParameters()->GetPlaintextModulus(); TBGV_CATCH(0)
 }
-uint32_t tbgv_context_ring_dim(TbgvContext ctx) { return cc_of(ctx)->GetRingDimension(); }
+uint32_t tbgv_context_ring_dim(TbgvContext ctx) {
+    TBGV_TRY return cc_of(ctx)->GetRingDimension(); TBGV_CATCH(0)
+}
 uint32_t tbgv_context_mult_depth(TbgvContext ctx) {
+    TBGV_TRY
     // Towers minus two: an upper bound on the configured depth (OpenFHE 1.3.1
     // gives a depth-d NOISE_FLOODING_MULTIPARTY / FLEXIBLEAUTOEXT context d + 4
     // towers). See Context::mult_depth.
-    return static_cast<uint32_t>(cc_of(ctx)->GetCryptoParameters()->GetElementParams()->GetParams().size()) - 2;
+    const size_t towers = cc_of(ctx)->GetCryptoParameters()->GetElementParams()->GetParams().size();
+    if (towers < 2) { set_error("context has fewer than two towers"); return 0; }
+    return static_cast<uint32_t>(towers - 2);
+    TBGV_CATCH(0)
 }
 double tbgv_context_log2_q(TbgvContext ctx) {
-    return std::log2(cc_of(ctx)->GetCryptoParameters()->GetElementParams()->GetModulus().ConvertToDouble());
+    TBGV_TRY return std::log2(cc_of(ctx)->GetCryptoParameters()->GetElementParams()->GetModulus().ConvertToDouble()); TBGV_CATCH(-1.0)
 }
 int tbgv_context_serialize(TbgvContext ctx, uint8_t** out, size_t* out_len) {
     TBGV_TRY return serialize_to(cc_of(ctx), out, out_len); TBGV_CATCH(0)
@@ -165,7 +174,9 @@ int tbgv_keygen_next(TbgvContext ctx, TbgvPublicKey prev_joint_pk, TbgvPublicKey
     TBGV_CATCH(0)
 }
 
-char* tbgv_pubkey_tag(TbgvPublicKey pk) { return dup_string(pk_of(pk)->GetKeyTag()); }
+char* tbgv_pubkey_tag(TbgvPublicKey pk) {
+    TBGV_TRY return dup_string(pk_of(pk)->GetKeyTag()); TBGV_CATCH(nullptr)
+}
 void tbgv_pubkey_free(TbgvPublicKey pk) { delete static_cast<PK*>(pk); }
 void tbgv_seckey_free(TbgvSecretKey sk) { delete static_cast<SK*>(sk); }
 
@@ -315,6 +326,8 @@ TbgvRotKeys tbgv_rotkeys_deserialize(TbgvContext ctx, const uint8_t* buf, size_t
     TBGV_CATCH(nullptr)
 }
 
+}  // extern "C"
+
 /* ---- distributed key ceremony ------------------------------------------ */
 
 namespace {
@@ -388,6 +401,8 @@ std::vector<DCRTPoly> polys_from(const ParamsPtr& params, const uint64_t* v, siz
 }
 
 }  // namespace
+
+extern "C" {
 
 uint32_t tbgv_key_basis_towers(TbgvContext ctx, uint32_t basis) {
     TBGV_TRY return static_cast<uint32_t>(basis_params(ctx, basis)->GetParams().size()); TBGV_CATCH(0)
@@ -559,9 +574,11 @@ int tbgv_ciphertext_info(TbgvCiphertext h, uint32_t* level, uint32_t* num_elemen
     return 1;
     TBGV_CATCH(0)
 }
-char* tbgv_ciphertext_key_tag(TbgvCiphertext ct) { return dup_string(ct_of(ct)->GetKeyTag()); }
+char* tbgv_ciphertext_key_tag(TbgvCiphertext ct) {
+    TBGV_TRY return dup_string(ct_of(ct)->GetKeyTag()); TBGV_CATCH(nullptr)
+}
 int tbgv_ciphertext_same_context(TbgvContext ctx, TbgvCiphertext ct) {
-    return ct_of(ct)->GetCryptoContext().get() == cc_of(ctx).get() ? 1 : 0;
+    TBGV_TRY return ct_of(ct)->GetCryptoContext().get() == cc_of(ctx).get() ? 1 : 0; TBGV_CATCH(0)
 }
 int tbgv_ciphertext_serialize(TbgvCiphertext ct, uint8_t** out, size_t* out_len) {
     TBGV_TRY return serialize_to(ct_of(ct), out, out_len); TBGV_CATCH(0)
@@ -606,6 +623,8 @@ TbgvCiphertext tbgv_eval_negate(TbgvContext ctx, TbgvCiphertext a) {
     TBGV_TRY return new CT(cc_of(ctx)->EvalNegate(ct_of(a))); TBGV_CATCH(nullptr)
 }
 
+}  // extern "C"
+
 /* ---- verifiable decryption --------------------------------------------- */
 
 namespace {
@@ -613,7 +632,7 @@ namespace {
 // Negacyclic shift of a coefficient-form tower by k in [0, 2N): X^k * p.
 NativePoly monomial_times(const NativePoly& p, uint32_t k) {
     const size_t n = p.GetRingDimension();
-    const NativeInteger q = p.GetModulus();
+    const NativeInteger& q = p.GetModulus();
     const auto& v = p.GetValues();
     NativeVector out(n, q);
     const bool flip_all = k >= n;
@@ -641,7 +660,8 @@ DCRTPoly small_poly(const std::shared_ptr<DCRTPoly::Params>& params, const int8_
         const NativeInteger q = tower.GetModulus();
         NativeVector vec(n, q);
         for (size_t i = 0; i < n; ++i) {
-            const int64_t a = c[i];
+            // int8_t coefficients are signed integers here, not character data
+            const int64_t a = static_cast<int64_t>(c[i]);  // NOLINT(bugprone-signed-char-misuse,cert-str34-c)
             vec[i] = a >= 0 ? NativeInteger(static_cast<uint64_t>(a)) : q - NativeInteger(static_cast<uint64_t>(-a));
         }
         tower.SetValues(std::move(vec), Format::COEFFICIENT);
@@ -652,6 +672,8 @@ DCRTPoly small_poly(const std::shared_ptr<DCRTPoly::Params>& params, const int8_
 }
 
 }  // namespace
+
+extern "C" {
 
 TbgvCiphertext tbgv_ciphertext_mult_monomial(TbgvContext ctx, TbgvCiphertext h, uint32_t k) {
     TBGV_TRY
@@ -749,6 +771,7 @@ int tbgv_fuse_magnitude(TbgvContext ctx, const TbgvCiphertext* partials, size_t 
     for (size_t i = 1; i < n; ++i) b += ct_of(partials[i])->GetElements().at(0);
     b.SetFormat(Format::COEFFICIENT);
     const size_t sizeQl = b.GetNumOfElements();
+    if (sizeQl == 0) { set_error("partial decryption has no towers"); return 0; }
     for (size_t i = sizeQl - 1; i > 0; --i) {
         b.ModReduce(cp->GetPlaintextModulus(), cp->GettModqPrecon(), cp->GetNegtInvModq(i), cp->GetNegtInvModqPrecon(i),
                     cp->GetqlInvModq(i), cp->GetqlInvModqPrecon(i));
@@ -759,7 +782,7 @@ int tbgv_fuse_magnitude(TbgvContext ctx, const TbgvCiphertext* partials, size_t 
     uint64_t mx = 0;
     const auto& v = p0.GetValues();
     for (size_t i = 0; i < v.GetLength(); ++i) {
-        const NativeInteger x = v[i];
+        const NativeInteger& x = v[i];
         const uint64_t a = (x > half ? q - x : x).ConvertToInt<uint64_t>();
         if (a > mx) mx = a;
     }
@@ -805,6 +828,8 @@ TbgvCiphertext tbgv_ciphertext_add_noise_for_tests(TbgvContext ctx, TbgvCipherte
     TBGV_CATCH(nullptr)
 }
 
+}  // extern "C"
+
 /* ---- full-precision decryption values --------------------------------------
  * Every partial decryption is revealed at the ciphertext's full modulus Q_l,
  * so whoever fuses them can form sum_i partial_i = m + t (noise + flooding)
@@ -815,7 +840,7 @@ TbgvCiphertext tbgv_ciphertext_add_noise_for_tests(TbgvContext ctx, TbgvCipherte
 /* log2 of a BigInteger of any size (a double overflows above 2^1024). */
 static double big_log2(const BigInteger& x) {
     const usint msb = x.GetMSB();
-    if (msb == 0) return -INFINITY;
+    if (msb == 0) return -std::numeric_limits<double>::infinity();
     if (msb <= 900) return std::log2(x.ConvertToDouble());
     const usint shift = msb - 64;
     return std::log2((x >> shift).ConvertToDouble()) + static_cast<double>(shift);
@@ -841,6 +866,8 @@ static double centered_stats(DCRTPoly x, uint64_t t, double* out_over_t, size_t 
     if (log2_q != nullptr) *log2_q = big_log2(Q);
     return mx > BigInteger(0) ? big_log2(mx) : 0.0;
 }
+
+extern "C" {
 
 double tbgv_flooding_sigma(TbgvContext ctx) {
     TBGV_TRY
@@ -921,6 +948,8 @@ TbgvPublicKey tbgv_pubkey_inflate_for_tests(TbgvContext ctx, TbgvPublicKey h, ui
     TBGV_CATCH(nullptr)
 }
 
+}  // extern "C"
+
 /* Q' = Q_l / q0: the range of OpenFHE's flooding in NOISE_FLOODING_MULTIPARTY
  * (MultipartyRNS::MultipartyDecryptMain/Lead sample it uniformly modulo the
  * product of every tower but the first and add t times it). */
@@ -948,6 +977,8 @@ static DCRTPoly dcrt_from_signed(const DCRTPoly& like, const std::vector<BigInte
     out.SetFormat(Format::EVALUATION);
     return out;
 }
+
+extern "C" {
 
 int tbgv_fuse_flooding_check(TbgvContext ctx, const TbgvCiphertext* partials, size_t n, uint32_t slack_bits, int* within,
                              double* ratio) {
@@ -1000,7 +1031,7 @@ TbgvCiphertext tbgv_partial_decrypt_shaped_for_tests(TbgvContext ctx, TbgvCipher
         DiscreteUniformGeneratorImpl<BigVector> dug;
         const BigVector r = dug.GenerateVector(N, w * BigInteger(2) + BigInteger(1));
         for (uint32_t i = 0; i < N; ++i) {
-            const BigInteger ri = r[i];
+            const BigInteger& ri = r[i];
             if (ri >= w) mag[i] = ri - w; else { mag[i] = w - ri; neg[i] = true; }
         }
     }
@@ -1042,7 +1073,7 @@ TbgvPublicKey tbgv_pubkey_inflate_ratio_for_tests(TbgvContext ctx, TbgvPublicKey
 /* ---- raw residue transport ----------------------------------------------- */
 
 uint32_t tbgv_context_num_towers(TbgvContext ctx) {
-    return static_cast<uint32_t>(cc_of(ctx)->GetCryptoParameters()->GetElementParams()->GetParams().size());
+    TBGV_TRY return static_cast<uint32_t>(cc_of(ctx)->GetCryptoParameters()->GetElementParams()->GetParams().size()); TBGV_CATCH(0)
 }
 
 int tbgv_context_moduli(TbgvContext ctx, uint64_t* out, size_t out_len) {

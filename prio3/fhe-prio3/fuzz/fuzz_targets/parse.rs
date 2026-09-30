@@ -35,7 +35,11 @@ fuzz_target!(|data: &[u8]| {
         for (j, &v) in residues.iter().enumerate() {
             assert!(v < f.moduli()[(j / n) % k], "residue above its modulus accepted");
         }
-        assert_eq!(f.encode_raw(meta, residues).expect("accepted input must re-encode"), bytes, "non-canonical input accepted");
+        assert_eq!(
+            f.encode_raw(meta, residues).expect("accepted input must re-encode"),
+            bytes,
+            "non-canonical input accepted"
+        );
         assert_eq!(f.parse(&bytes, Expect::Exactly(*meta)).as_ref(), parsed.as_ref().map_err(|e| e));
         assert_eq!(f.parse(&bytes, Expect::Partial).is_ok(), meta.num_elements == 1);
     } else {

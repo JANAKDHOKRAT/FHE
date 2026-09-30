@@ -64,14 +64,12 @@ fn legacy_mutants(base: &[u8], wanted: &[usize]) -> Vec<(usize, Vec<u8>)> {
     out
 }
 
-/// Rewrites residue `(element, tower, index)` of a packed ciphertext in
-/// place, for crafting out-of-range values the encoder would never emit.
-fn set_residue(bytes: &mut [u8], widths: &[u32], towers: usize, ring: usize, e: usize, t: usize, i: usize, v: u64) {
+/// Rewrites the residue at `(element, tower, index)` of a packed ciphertext
+/// in place, for crafting out-of-range values the encoder would never emit.
+fn set_residue(bytes: &mut [u8], widths: &[u32], towers: usize, ring: usize, (e, t, i): (usize, usize, usize), v: u64) {
     let per_coeff: usize = widths[..towers].iter().map(|&w| w as usize).sum();
     let mut bit = HEADER_LEN * 8 + e * ring * per_coeff;
-    for tt in 0..t {
-        bit += ring * widths[tt] as usize;
-    }
+    bit += widths[..t].iter().map(|&w| ring * w as usize).sum::<usize>();
     bit += i * widths[t] as usize;
     for b in 0..widths[t] as usize {
         let (byte, off) = ((bit + b) / 8, (bit + b) % 8);
@@ -110,7 +108,12 @@ fn every_exchanged_object_is_canonical_and_the_sizes_are_as_measured() {
     assert_eq!(codec.encode(&back).unwrap(), report.chunks[0], "decode then encode must reproduce the bytes");
     // the report's own OpenFHE form, for the size comparison
     let openfhe_len = back.serialize().unwrap().len();
-    println!("WIRE verdict chunk: packed {} bytes, OpenFHE {} bytes ({:.1}% smaller)", report.chunks[0].len(), openfhe_len, 100.0 * (1.0 - report.chunks[0].len() as f64 / openfhe_len as f64));
+    println!(
+        "WIRE verdict chunk: packed {} bytes, OpenFHE {} bytes ({:.1}% smaller)",
+        report.chunks[0].len(),
+        openfhe_len,
+        100.0 * (1.0 - report.chunks[0].len() as f64 / openfhe_len as f64)
+    );
 
     // masks and verifier partials from a real verdict round
     let mask_commits: Vec<MaskCommit> = net.aggs.iter_mut().map(|a| a.prepare_init(&report).unwrap()).collect();
@@ -201,10 +204,16 @@ fn every_header_field_is_checked() {
     for v in [0u8, 3, 255] {
         assert!(matches!(refuse(&mutate(&|b| b[5] = v), "num_elements"), WireError::BadShape(_)));
     }
-    assert!(matches!(refuse(&mutate(&|b| b[5] = 1), "num_elements 1 for a chunk"), WireError::UnexpectedShape { .. }));
+    assert!(matches!(
+        refuse(&mutate(&|b| b[5] = 1), "num_elements 1 for a chunk"),
+        WireError::UnexpectedShape { .. }
+    ));
     let l = fresh.num_towers as u16;
     for v in [0u16, l + 1, u16::MAX] {
-        assert!(matches!(refuse(&mutate(&|b| b[6..8].copy_from_slice(&v.to_le_bytes())), "num_towers"), WireError::BadShape(_)));
+        assert!(matches!(
+            refuse(&mutate(&|b| b[6..8].copy_from_slice(&v.to_le_bytes())), "num_towers"),
+            WireError::BadShape(_)
+        ));
     }
     // one tower fewer with a consistent level is a valid shape, but not a fresh one
     let fewer = mutate(&|b| {
@@ -213,18 +222,30 @@ fn every_header_field_is_checked() {
     });
     assert!(matches!(refuse(&fewer, "one tower fewer"), WireError::UnexpectedShape { .. }));
     for v in [1u32, 7, u32::MAX] {
-        assert!(matches!(refuse(&mutate(&|b| b[8..12].copy_from_slice(&v.to_le_bytes())), "level"), WireError::BadShape(_)));
+        assert!(matches!(
+            refuse(&mutate(&|b| b[8..12].copy_from_slice(&v.to_le_bytes())), "level"),
+            WireError::BadShape(_)
+        ));
     }
     for v in [0u8, 3, 255] {
         assert!(matches!(refuse(&mutate(&|b| b[12] = v), "noise_scale_deg"), WireError::BadShape(_)));
     }
-    assert!(matches!(refuse(&mutate(&|b| b[12] = 1), "noise_scale_deg 1"), WireError::UnexpectedShape { .. }));
+    assert!(matches!(
+        refuse(&mutate(&|b| b[12] = 1), "noise_scale_deg 1"),
+        WireError::UnexpectedShape { .. }
+    ));
     let p = net.cfg.plain_mod;
     for v in [0u64, p, p + 1, u64::MAX] {
-        assert!(matches!(refuse(&mutate(&|b| b[16..24].copy_from_slice(&v.to_le_bytes())), "scaling factor"), WireError::BadShape(_)));
+        assert!(matches!(
+            refuse(&mutate(&|b| b[16..24].copy_from_slice(&v.to_le_bytes())), "scaling factor"),
+            WireError::BadShape(_)
+        ));
     }
     let other_sf = if fresh.scaling_factor_int + 1 < p { fresh.scaling_factor_int + 1 } else { 1 };
-    assert!(matches!(refuse(&mutate(&|b| b[16..24].copy_from_slice(&other_sf.to_le_bytes())), "another valid scaling factor"), WireError::UnexpectedShape { .. }));
+    assert!(matches!(
+        refuse(&mutate(&|b| b[16..24].copy_from_slice(&other_sf.to_le_bytes())), "another valid scaling factor"),
+        WireError::UnexpectedShape { .. }
+    ));
     // lengths
     assert!(matches!(refuse(&chunk[..HEADER_LEN - 1], "short header"), WireError::Truncated { .. }));
     assert!(matches!(refuse(&[], "empty"), WireError::Truncated { .. }));
@@ -242,12 +263,19 @@ fn every_header_field_is_checked() {
         for t in 0..towers {
             for (i, v) in [(0usize, moduli[t]), (ring - 1, (1u64 << w[t]) - 1)] {
                 let mut b = chunk.clone();
-                set_residue(&mut b, &w, towers, ring, e, t, i, v);
-                assert_eq!(refuse(&b, "residue >= modulus"), WireError::ResidueOutOfRange { element: e, tower: t, index: i });
+                set_residue(&mut b, &w, towers, ring, (e, t, i), v);
+                assert_eq!(
+                    refuse(&b, "residue >= modulus"),
+                    WireError::ResidueOutOfRange {
+                        element: e,
+                        tower: t,
+                        index: i
+                    }
+                );
             }
             // modulus - 1 is legal
             let mut b = chunk.clone();
-            set_residue(&mut b, &w, towers, ring, e, t, 7, moduli[t] - 1);
+            set_residue(&mut b, &w, towers, ring, (e, t, 7), moduli[t] - 1);
             net.aggs[0].codec().parse(&b, Expect::Exactly(fresh)).unwrap();
         }
     }
@@ -258,7 +286,7 @@ fn every_header_field_is_checked() {
     reid(&mut wrong_fp);
     net.expect_reject(&wrong_fp, RejectReason::WrongParameters);
     let mut high = good.clone();
-    set_residue(&mut high.chunks[0], &w, towers, ring, 1, towers - 1, 5, moduli[towers - 1]);
+    set_residue(&mut high.chunks[0], &w, towers, ring, (1, towers - 1, 5), moduli[towers - 1]);
     reid(&mut high);
     match &net.run_report(&high)[0] {
         Verdict::Rejected(RejectReason::MalformedCiphertext(m)) => assert!(m.contains("ResidueOutOfRange"), "{m}"),
@@ -382,7 +410,9 @@ fn legacy_openfhe_bytes_and_the_crash_recipes_are_refused() {
         r.chunks[0] = bytes.clone();
         reid(&mut r);
         let verdicts = net.run_report(&r);
-        let ok = verdicts.iter().all(|v| matches!(v, Verdict::Rejected(RejectReason::TooLarge { limit, .. }) if *limit == cap));
+        let ok = verdicts
+            .iter()
+            .all(|v| matches!(v, Verdict::Rejected(RejectReason::TooLarge { limit, .. }) if *limit == cap));
         assert!(ok, "recipe {i}: {verdicts:?}");
         // cut to exactly the packed length, so the size bound passes and
         // the parser itself must refuse it (OpenFHE's encoding does not
@@ -391,7 +421,9 @@ fn legacy_openfhe_bytes_and_the_crash_recipes_are_refused() {
         r.chunks[0] = bytes[..cap.min(bytes.len())].to_vec();
         reid(&mut r);
         let verdicts = net.run_report(&r);
-        let ok = verdicts.iter().all(|v| matches!(v, Verdict::Rejected(RejectReason::MalformedCiphertext(m)) if m.contains("BadMagic")));
+        let ok = verdicts
+            .iter()
+            .all(|v| matches!(v, Verdict::Rejected(RejectReason::MalformedCiphertext(m)) if m.contains("BadMagic")));
         assert!(ok, "recipe {i} cut to the packed length: {verdicts:?}");
     }
     // the same with the packed magic, version and this task's fingerprint
@@ -403,7 +435,10 @@ fn legacy_openfhe_bytes_and_the_crash_recipes_are_refused() {
     r.chunks[0] = forged;
     reid(&mut r);
     let parsed = net.aggs[0].codec().parse(&r.chunks[0], Expect::Exactly(net.aggs[0].codec().fresh_meta()));
-    println!("LEGACY bytes under a forged packed header: {:?}", parsed.as_ref().map(|_| "well-formed").map_err(|e| e.clone()));
+    println!(
+        "LEGACY bytes under a forged packed header: {:?}",
+        parsed.as_ref().map(|_| "well-formed").map_err(|e| e.clone())
+    );
     let v = net.run_report(&r);
     match parsed {
         // arbitrary residues below their moduli are a well-formed ciphertext
@@ -427,7 +462,8 @@ fn hostile_partial_decryptions_are_refused_at_every_receiver() {
     // or two elements: refused, never a crash. Bytes other than the
     // committed ones stop at the commitment; to reach the parser, the
     // malicious aggregator 0 commits to the hostile bytes themselves.
-    let variants: Vec<(&str, fn(&[u8], u64) -> Vec<u8>)> = vec![
+    type Variant = (&'static str, fn(&[u8], u64) -> Vec<u8>);
+    let variants: Vec<Variant> = vec![
         ("other scaling factor", |b, p| {
             let mut v = b.to_vec();
             let sf = u64::from_le_bytes(b[16..24].try_into().unwrap());
@@ -451,7 +487,10 @@ fn hostile_partial_decryptions_are_refused_at_every_receiver() {
     for (what, make) in variants {
         let report = net.client.shard(&Measurement::Count(true)).unwrap();
         let mc: Vec<MaskCommit> = net.aggs.iter_mut().map(|a| a.prepare_init(&report).unwrap()).collect();
-        let masks = [net.aggs[0].prepare_mask_reveal(&report.report_id, &mc[1..]).unwrap(), net.aggs[1].prepare_mask_reveal(&report.report_id, &mc[..1]).unwrap()];
+        let masks = [
+            net.aggs[0].prepare_mask_reveal(&report.report_id, &mc[1..]).unwrap(),
+            net.aggs[1].prepare_mask_reveal(&report.report_id, &mc[..1]).unwrap(),
+        ];
         let c0 = net.aggs[0].prepare_masks(&report.report_id, &masks[1..]).unwrap();
         let c1 = net.aggs[1].prepare_masks(&report.report_id, &masks[..1]).unwrap();
         let v0 = net.aggs[0].prepare_reveal(&report.report_id, &[c1]).unwrap();
@@ -463,9 +502,15 @@ fn hostile_partial_decryptions_are_refused_at_every_receiver() {
         // (bytes other than the committed ones: tests/malicious_aggregator.rs)
         let mut msg = v0.clone();
         msg.partial = bad.clone();
-        let forged = VerifierCommit { digest: fhe_prio3::vdec::commit(&context, &bad), ..c0 };
+        let forged = VerifierCommit {
+            digest: fhe_prio3::vdec::commit(&context, &bad),
+            ..c0
+        };
         net.aggs[1].prepare_reveal(&report.report_id, &[forged]).unwrap();
-        let e = net.aggs[1].prepare_finish(&report.report_id, &[msg]).err().unwrap_or_else(|| panic!("{what} accepted"));
+        let e = net.aggs[1]
+            .prepare_finish(&report.report_id, &[msg])
+            .err()
+            .unwrap_or_else(|| panic!("{what} accepted"));
         assert!(e.to_string().contains("packed ciphertext refused"), "{what}: {e}");
         println!("REFUSED verifier partial, {what}: {e}");
     }
@@ -481,7 +526,10 @@ fn hostile_partial_decryptions_are_refused_at_every_receiver() {
     let sf = u64::from_le_bytes(disagree[1].partials[0][16..24].try_into().unwrap());
     disagree[1].partials[0][16..24].copy_from_slice(&(if sf + 1 < p { sf + 1 } else { 1 }).to_le_bytes());
     let e = net.collector.release_challenge(0, disagree).err().expect("refused");
-    assert!(e.to_string().contains("partial decryption of accumulator 0") && e.to_string().contains("UnexpectedShape"), "{e}");
+    assert!(
+        e.to_string().contains("partial decryption of accumulator 0") && e.to_string().contains("UnexpectedShape"),
+        "{e}"
+    );
     let mut oob = rt.clone();
     oob[0].partials[0][16..24].copy_from_slice(&0u64.to_le_bytes());
     oob[1].partials[0][16..24].copy_from_slice(&0u64.to_le_bytes());
@@ -489,7 +537,14 @@ fn hostile_partial_decryptions_are_refused_at_every_receiver() {
     assert!(e.to_string().contains("scaling_factor_int"), "{e}");
     let mut legacy = rt.clone();
     legacy[0].partials[0] = b"not a packed ciphertext at all, long enough to pass the header length check".to_vec();
-    assert!(net.collector.release_challenge(0, legacy).err().expect("refused").to_string().contains("BadMagic"));
+    assert!(
+        net.collector
+            .release_challenge(0, legacy)
+            .err()
+            .expect("refused")
+            .to_string()
+            .contains("BadMagic")
+    );
     assert_eq!(net.finish_release(0, rt).unwrap().aggregate, AggregateResult::Count(1));
 }
 
@@ -530,7 +585,10 @@ fn silent_mode_low_level_partials() {
 #[test]
 fn packed_against_openfhe_size_and_time() {
     let _g = serial();
-    for cfg in [TaskConfig::new(task_id(97), MeasurementType::Count, 2), TaskConfig::new_silent(task_id(98), MeasurementType::Count, 2)] {
+    for cfg in [
+        TaskConfig::new(task_id(97), MeasurementType::Count, 2),
+        TaskConfig::new_silent(task_id(98), MeasurementType::Count, 2),
+    ] {
         let mode = format!("{:?}", cfg.mode);
         let ctx = keys::make_context(&cfg).unwrap();
         let report = openfhe_tbgv_rs::verify_rebuild_once(&ctx, cfg.mult_depth()).unwrap();

@@ -5,18 +5,18 @@
 //! never sees a ciphertext.
 
 use crate::wire::*;
+use axum::Router;
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
-use axum::Router;
 use fhe_prio3::sharding::combine_results;
 use fhe_prio3::*;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Assignment {
@@ -71,9 +71,20 @@ impl RouterNode {
             anyhow::bail!("router needs at least one shard");
         }
         let task_bytes = cfg.shards.iter().map(|s| fhe_prio3::messages::encode(&s.task)).collect::<Result<Vec<_>>>()?;
-        let material_bytes = cfg.shards.iter().map(|s| fhe_prio3::messages::encode(&s.client_material)).collect::<Result<Vec<_>>>()?;
+        let material_bytes = cfg
+            .shards
+            .iter()
+            .map(|s| fhe_prio3::messages::encode(&s.client_material))
+            .collect::<Result<Vec<_>>>()?;
         Ok(Self {
-            inner: Arc::new(Inner { shards: cfg.shards, task_bytes, material_bytes, token: cfg.token, http: https_client(&cfg.ca_pem)?, next: AtomicU64::new(0) }),
+            inner: Arc::new(Inner {
+                shards: cfg.shards,
+                task_bytes,
+                material_bytes,
+                token: cfg.token,
+                http: https_client(&cfg.ca_pem)?,
+                next: AtomicU64::new(0),
+            }),
         })
     }
 
@@ -88,7 +99,13 @@ impl RouterNode {
                 match http_get::<StatusReply>(&self.inner.http, &format!("{}/v1/status", s.leader), None).await {
                     Ok(st) => {
                         if st.task_id != hex::encode(s.task.task_id) {
-                            anyhow::bail!("leader {} serves task {} but is listed for shard {} (task {})", s.leader, st.task_id, i, hex::encode(s.task.task_id));
+                            anyhow::bail!(
+                                "leader {} serves task {} but is listed for shard {} (task {})",
+                                s.leader,
+                                st.task_id,
+                                i,
+                                hex::encode(s.task.task_id)
+                            );
                         }
                         if st.index != 0 {
                             anyhow::bail!("{} is aggregator {}, not the leader of shard {}", s.leader, st.index, i);
@@ -122,7 +139,7 @@ impl RouterNode {
         Ok(axum_server::tls_rustls::RustlsConfig::from_pem_file(cert, key).await?)
     }
 
-    pub async fn serve(&self, addr: SocketAddr, tls: Option<axum_server::tls_rustls::RustlsConfig>, handle: axum_server::Handle) -> anyhow::Result<()> {
+    pub async fn serve(&self, addr: SocketAddr, tls: Option<axum_server::tls_rustls::RustlsConfig>, handle: ServerHandle) -> anyhow::Result<()> {
         init_crypto();
         let app = self.router();
         match tls {
@@ -136,11 +153,23 @@ impl RouterNode {
 async fn assign(State(node): State<RouterNode>) -> std::result::Result<axum::response::Response, HttpError> {
     let n = node.inner.shards.len() as u64;
     let i = (node.inner.next.fetch_add(1, Ordering::Relaxed) % n) as usize;
-    reply(&Assignment { shard: i as u32, leader: node.inner.shards[i].leader.clone() })
+    reply(&Assignment {
+        shard: i as u32,
+        leader: node.inner.shards[i].leader.clone(),
+    })
 }
 
 async fn shards(State(node): State<RouterNode>) -> std::result::Result<axum::response::Response, HttpError> {
-    let list: Vec<Assignment> = node.inner.shards.iter().enumerate().map(|(i, s)| Assignment { shard: i as u32, leader: s.leader.clone() }).collect();
+    let list: Vec<Assignment> = node
+        .inner
+        .shards
+        .iter()
+        .enumerate()
+        .map(|(i, s)| Assignment {
+            shard: i as u32,
+            leader: s.leader.clone(),
+        })
+        .collect();
     reply(&list)
 }
 
@@ -154,12 +183,18 @@ fn shard_index(node: &RouterNode, i: u32) -> std::result::Result<usize, HttpErro
 
 async fn shard_task(State(node): State<RouterNode>, Path(i): Path<u32>) -> std::result::Result<axum::response::Response, HttpError> {
     let i = shard_index(&node, i)?;
-    Ok(axum::response::IntoResponse::into_response(([(axum::http::header::CONTENT_TYPE, CONTENT_TYPE)], node.inner.task_bytes[i].clone())))
+    Ok(axum::response::IntoResponse::into_response((
+        [(axum::http::header::CONTENT_TYPE, CONTENT_TYPE)],
+        node.inner.task_bytes[i].clone(),
+    )))
 }
 
 async fn shard_material(State(node): State<RouterNode>, Path(i): Path<u32>) -> std::result::Result<axum::response::Response, HttpError> {
     let i = shard_index(&node, i)?;
-    Ok(axum::response::IntoResponse::into_response(([(axum::http::header::CONTENT_TYPE, CONTENT_TYPE)], node.inner.material_bytes[i].clone())))
+    Ok(axum::response::IntoResponse::into_response((
+        [(axum::http::header::CONTENT_TYPE, CONTENT_TYPE)],
+        node.inner.material_bytes[i].clone(),
+    )))
 }
 
 /// Closes every shard through its leader and returns the combined result.
@@ -170,7 +205,12 @@ async fn close_all(State(node): State<RouterNode>, headers: HeaderMap, _body: By
     let mut results = Vec::with_capacity(node.inner.shards.len());
     for s in &node.inner.shards {
         let r: CloseReply = http_post(&node.inner.http, &format!("{}/v1/close", s.leader), Some(&node.inner.token), &()).await?;
-        let r = r.result.ok_or_else(|| HttpError(StatusCode::BAD_REQUEST, "shards with release policies release to their collectors; combine per collector from the collectors' results".into()))?;
+        let r = r.result.ok_or_else(|| {
+            HttpError(
+                StatusCode::BAD_REQUEST,
+                "shards with release policies release to their collectors; combine per collector from the collectors' results".into(),
+            )
+        })?;
         results.push(r);
     }
     let combined = combine_results(&results)?;

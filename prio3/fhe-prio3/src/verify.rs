@@ -97,7 +97,12 @@ impl Challenge {
             bit_coeffs.push(bc_j);
             lin_coeffs.push(lc_j);
         }
-        Self { bit_coeffs, lin_coeffs, constants, group }
+        Self {
+            bit_coeffs,
+            lin_coeffs,
+            constants,
+            group,
+        }
     }
 
     /// Constant vector: repetition `j`'s constant at its position 0 (blocked:
@@ -138,7 +143,13 @@ impl Circuit {
             }
             LayoutKind::Interleaved | LayoutKind::Batched => None,
         };
-        Ok(Self { ctx: ctx.clone(), layout: layout.clone(), plain_mod: ctx.plain_mod(), ones, selector })
+        Ok(Self {
+            ctx: ctx.clone(),
+            layout: layout.clone(),
+            plain_mod: ctx.plain_mod(),
+            ones,
+            selector,
+        })
     }
 
     /// One report's contribution `T`: coefficient-multiplied bit and linear
@@ -305,7 +316,11 @@ impl Circuit {
         let terms = l.moment_terms();
         let mut out = Vec::with_capacity(terms.len());
         for t in terms {
-            let (x, y) = if t.shift >= 0 { (&values[t.a][0], &values[t.b][t.shift as usize]) } else { (&values[t.a][(-t.shift) as usize], &values[t.b][0]) };
+            let (x, y) = if t.shift >= 0 {
+                (&values[t.a][0], &values[t.b][t.shift as usize])
+            } else {
+                (&values[t.a][(-t.shift) as usize], &values[t.b][0])
+            };
             out.push(if t.a == t.b && t.shift == 0 { ctx.square(x)? } else { ctx.mult(x, y)? });
         }
         Ok(out)

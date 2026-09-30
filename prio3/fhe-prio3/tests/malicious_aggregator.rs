@@ -36,7 +36,11 @@ fn shifted(net: &Net, ctx: &openfhe_tbgv_rs::Context, bytes: &[u8], shift: &[u64
 
 fn fuse(net: &Net, parts: &[&Vec<u8>], slots: usize) -> Vec<u64> {
     let codec = net.aggs[0].codec();
-    let p: Vec<PartialDecryption> = parts.iter().enumerate().map(|(i, b)| PartialDecryption::from_ciphertext(codec.decode(b, Expect::Partial).unwrap(), i == 0)).collect();
+    let p: Vec<PartialDecryption> = parts
+        .iter()
+        .enumerate()
+        .map(|(i, b)| PartialDecryption::from_ciphertext(codec.decode(b, Expect::Partial).unwrap(), i == 0))
+        .collect();
     let refs: Vec<&PartialDecryption> = p.iter().collect();
     keys::make_context(&net.cfg).unwrap().fuse(&refs, slots).unwrap()
 }
@@ -59,7 +63,11 @@ fn silent_count_forgery_is_caught_before_any_release() {
     let mut forged = honest.clone();
     forged[1].partial = shifted(&net, &ctx, &honest[1].partial, &[2]);
     // unverified, the fused count now meets the minimum
-    assert_eq!(fuse(&net, &[&forged[0].partial, &forged[1].partial], 1)[0], 3, "the attack works on an unverified fusion");
+    assert_eq!(
+        fuse(&net, &[&forged[0].partial, &forged[1].partial], 1)[0],
+        3,
+        "the attack works on an unverified fusion"
+    );
 
     let forged: Vec<CountShare> = forged.iter().map(|s| decode(&encode(s).unwrap()).unwrap()).collect();
     let commits: Vec<CountCommit> = vec![net.aggs[0].count_commit(&forged).unwrap(), net.aggs[1].count_commit(&honest).unwrap()];
@@ -119,14 +127,20 @@ fn verdict_forced_acceptance_needs_an_adapted_partial_and_is_refused() {
     }
     let forged = shifted(&net, &ctx, &reveal1.partial, &shift);
     let refused = fuse(&net, &[&reveal0.partial, &forged], span);
-    assert!((0..layout.repetitions).all(|j| refused[layout.result_slot(j)] == 0), "the adapted partial would force acceptance");
+    assert!(
+        (0..layout.repetitions).all(|j| refused[layout.result_slot(j)] == 0),
+        "the adapted partial would force acceptance"
+    );
     // ... but it is not the partial aggregator 1 committed to
     let mut msg = reveal1.clone();
     msg.partial = forged;
-    let e = net.aggs[0].prepare_finish(&bad.report_id, &[msg]).err().expect("refused").to_string();
+    let e = net.aggs[0].prepare_finish(&bad.report_id, &[msg]).expect_err("refused").to_string();
     assert!(e.contains("not the one it committed to"), "{e}");
     // with its committed partial the report is rejected
-    assert_eq!(net.aggs[0].prepare_finish(&bad.report_id, &[reveal1]).unwrap(), Verdict::Rejected(RejectReason::ValidityCheckFailed));
+    assert_eq!(
+        net.aggs[0].prepare_finish(&bad.report_id, &[reveal1]).unwrap(),
+        Verdict::Rejected(RejectReason::ValidityCheckFailed)
+    );
 }
 
 #[test]
@@ -162,9 +176,16 @@ fn verdict_mask_cancellation_needs_the_honest_mask_and_is_refused() {
         }
         let forged = ctx.sub(&ctx.encrypt(&pk, &ctx.plaintext(&v).unwrap()).unwrap(), &honest).unwrap();
         let combined = decrypt(&ctx.add(&honest, &forged).unwrap());
-        assert!((0..layout.repetitions).all(|j| combined[layout.result_slot(j)] == r), "the attack works without mask commitments");
+        assert!(
+            (0..layout.repetitions).all(|j| combined[layout.result_slot(j)] == r),
+            "the attack works without mask commitments"
+        );
         // ... but aggregator 1 committed to its mask before seeing aggregator 0's
-        let msg = MaskMessage { report_id: bad.report_id, aggregator: 1, mask: codec.encode(&forged).unwrap() };
+        let msg = MaskMessage {
+            report_id: bad.report_id,
+            aggregator: 1,
+            mask: codec.encode(&forged).unwrap(),
+        };
         let e = net.aggs[0].prepare_masks(&bad.report_id, &[msg]).err().expect("refused").to_string();
         assert!(e.contains("mask is not the one it committed to"), "{e}");
     }
@@ -179,8 +200,14 @@ fn verdict_mask_cancellation_needs_the_honest_mask_and_is_refused() {
     let c1 = net.aggs[1].prepare_masks(&bad.report_id, &[m0]).unwrap();
     let v0 = net.aggs[0].prepare_reveal(&bad.report_id, &[c1]).unwrap();
     let v1 = net.aggs[1].prepare_reveal(&bad.report_id, &[c0]).unwrap();
-    assert_eq!(net.aggs[0].prepare_finish(&bad.report_id, &[v1]).unwrap(), Verdict::Rejected(RejectReason::ValidityCheckFailed));
-    assert_eq!(net.aggs[1].prepare_finish(&bad.report_id, &[v0]).unwrap(), Verdict::Rejected(RejectReason::ValidityCheckFailed));
+    assert_eq!(
+        net.aggs[0].prepare_finish(&bad.report_id, &[v1]).unwrap(),
+        Verdict::Rejected(RejectReason::ValidityCheckFailed)
+    );
+    assert_eq!(
+        net.aggs[1].prepare_finish(&bad.report_id, &[v0]).unwrap(),
+        Verdict::Rejected(RejectReason::ValidityCheckFailed)
+    );
 }
 
 #[test]
@@ -193,11 +220,10 @@ fn a_shifted_release_partial_is_caught_by_the_collector() {
         net.expect_accept(&net.client.shard(&Measurement::Sum(v)).unwrap());
     }
     let mut shares: Vec<AggregateShare> = net.aggs.iter_mut().map(|a| a.aggregate_share().unwrap()).collect();
-    // aggregator 1 adds 1000 to the sum's lowest bit slot... the consistency
-    // check would catch that; adding 1 to a bit and 2 to the offset is caught
-    // by nothing but the checks
+    // aggregator 1 shifts its partial of the sum's lowest slot by 40; the
+    // known-answer checks must refuse it before any plausibility check does
     shares[1].partials[0] = shifted(&net, &ctx, &shares[1].partials[0], &[40]);
-    let e = net.finish_release(0, shares).err().expect("refused").to_string();
+    let e = net.finish_release(0, shares).expect_err("refused").to_string();
     assert!(e.contains("fails in slot") || e.contains("aggregate inconsistent"), "{e}");
     assert!(e.contains("vdec"), "the checks, not a plausibility check, must refuse it: {e}");
 }

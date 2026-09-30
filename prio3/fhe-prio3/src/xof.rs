@@ -59,10 +59,22 @@ mod tests {
     #[test]
     fn deterministic_and_separated() {
         let f = Field::new(4_293_918_721).unwrap();
-        let a: Vec<u64> = { let mut x = Xof::new(b"t", &[b"a", b"b"]); (0..8).map(|_| x.next_field_elem(&f)).collect() };
-        let b: Vec<u64> = { let mut x = Xof::new(b"t", &[b"a", b"b"]); (0..8).map(|_| x.next_field_elem(&f)).collect() };
-        let c: Vec<u64> = { let mut x = Xof::new(b"t", &[b"ab", b""]); (0..8).map(|_| x.next_field_elem(&f)).collect() };
-        let d: Vec<u64> = { let mut x = Xof::new(b"u", &[b"a", b"b"]); (0..8).map(|_| x.next_field_elem(&f)).collect() };
+        let a: Vec<u64> = {
+            let mut x = Xof::new(b"t", &[b"a", b"b"]);
+            (0..8).map(|_| x.next_field_elem(&f)).collect()
+        };
+        let b: Vec<u64> = {
+            let mut x = Xof::new(b"t", &[b"a", b"b"]);
+            (0..8).map(|_| x.next_field_elem(&f)).collect()
+        };
+        let c: Vec<u64> = {
+            let mut x = Xof::new(b"t", &[b"ab", b""]);
+            (0..8).map(|_| x.next_field_elem(&f)).collect()
+        };
+        let d: Vec<u64> = {
+            let mut x = Xof::new(b"u", &[b"a", b"b"]);
+            (0..8).map(|_| x.next_field_elem(&f)).collect()
+        };
         assert_eq!(a, b);
         assert_ne!(a, c, "length-prefixing must separate (a,b) from (ab,)");
         assert_ne!(a, d);

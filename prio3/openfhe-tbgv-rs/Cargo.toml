@@ -2,6 +2,7 @@
 name = "openfhe-tbgv-rs"
 version = "0.1.0"
 edition = "2024"
+publish = false
 description = "Safe Rust bindings to OpenFHE threshold (n-of-n multiparty) BGV"
 license = "MIT"
 

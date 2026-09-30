@@ -16,7 +16,7 @@ use crate::config::{TaskConfig, VerificationMode};
 use crate::error::{Error, Result};
 use crate::layout::Layout;
 use crate::messages::{AggregateShare, PublicMaterial, ReleaseChallenge, ReleaseCommit, ReleaseOpening, ReleaseReveal};
-use crate::packed::{check_stored, Codec, Expect};
+use crate::packed::{Codec, Expect, check_stored};
 use crate::types::{AggregateResult, BatchResult, RegressionResult};
 use crate::vdec;
 use openfhe_tbgv_rs::{Ciphertext, CiphertextMeta, Context, PartialDecryption, PublicKey};
@@ -89,7 +89,10 @@ impl Collector {
                 return Err(Error::Protocol("aggregate share for a different task".into()));
             }
             if s.collector != collector as u32 {
-                return Err(Error::Protocol(format!("aggregate share released to collector {}, not {collector}", s.collector)));
+                return Err(Error::Protocol(format!(
+                    "aggregate share released to collector {}, not {collector}",
+                    s.collector
+                )));
             }
             if s.aggregator >= n || std::mem::replace(&mut seen[s.aggregator], true) {
                 return Err(Error::Protocol("duplicate or out-of-range aggregator in shares".into()));
@@ -107,10 +110,16 @@ impl Collector {
                 return Err(Error::Protocol("valid-count partial present in the wrong mode".into()));
             }
             if s.accumulators.len() != expect_accs {
-                return Err(Error::Protocol(format!("share carries {} accumulators, expected {expect_accs}", s.accumulators.len())));
+                return Err(Error::Protocol(format!(
+                    "share carries {} accumulators, expected {expect_accs}",
+                    s.accumulators.len()
+                )));
             }
             if s.accumulators != shares[0].accumulators {
-                return Err(Error::Protocol(format!("aggregator {} computed other accumulators than aggregator {}", s.aggregator, shares[0].aggregator)));
+                return Err(Error::Protocol(format!(
+                    "aggregator {} computed other accumulators than aggregator {}",
+                    s.aggregator, shares[0].aggregator
+                )));
             }
         }
         if shares[0].report_count > self.cfg.max_batch_size {
@@ -123,16 +132,32 @@ impl Collector {
 
     fn collector_terms(&self, collector: usize) -> Result<Vec<crate::layout::MomentTerm>> {
         let pairs = self.cfg.collector_moment_pairs(collector)?;
-        Ok(if pairs.is_empty() { Vec::new() } else { self.layout.moment_terms().into_iter().filter(|t| pairs.contains(&(t.a, t.b))).collect() })
+        Ok(if pairs.is_empty() {
+            Vec::new()
+        } else {
+            // terms are over pieces; a collector's pairs are over elements
+            let el = |i: usize| self.layout.moment_pieces[i].0;
+            self.layout.moment_terms().into_iter().filter(|t| pairs.contains(&(el(t.a), el(t.b)))).collect()
+        })
     }
 
     fn accumulators(&self, share: &AggregateShare) -> Result<Vec<Ciphertext>> {
-        share.accumulators.iter().enumerate().map(|(i, b)| self.codec.decode(b, Expect::Any).map_err(|e| Error::Protocol(format!("accumulator {i}: {e}")))).collect()
+        share
+            .accumulators
+            .iter()
+            .enumerate()
+            .map(|(i, b)| self.codec.decode(b, Expect::Any).map_err(|e| Error::Protocol(format!("accumulator {i}: {e}"))))
+            .collect()
     }
 
     /// Every share's partials in accumulator order (chunks, count, moments).
     fn share_partials(s: &AggregateShare) -> Vec<&[u8]> {
-        s.partials.iter().chain(s.valid_count_partial.as_ref()).chain(&s.moment_partials).map(|v| v.as_slice()).collect()
+        s.partials
+            .iter()
+            .chain(s.valid_count_partial.as_ref())
+            .chain(&s.moment_partials)
+            .map(|v| v.as_slice())
+            .collect()
     }
 
     /// Release step 1: checks the shares and draws blinded checks of the
@@ -144,26 +169,55 @@ impl Collector {
         // every partial must be of exactly its accumulator's shape
         for s in &shares {
             for (i, (p, acc)) in Self::share_partials(s).into_iter().zip(&accs).enumerate() {
-                let meta = CiphertextMeta { num_elements: 1, ..acc.meta()? };
-                self.codec.decode(p, Expect::Exactly(meta)).map_err(|e| Error::Protocol(format!("aggregator {}'s partial decryption of accumulator {i}: {e}", s.aggregator)))?;
+                let meta = CiphertextMeta {
+                    num_elements: 1,
+                    ..acc.meta()?
+                };
+                self.codec
+                    .decode(p, Expect::Exactly(meta))
+                    .map_err(|e| Error::Protocol(format!("aggregator {}'s partial decryption of accumulator {i}: {e}", s.aggregator)))?;
             }
         }
         let refs: Vec<&Ciphertext> = accs.iter().collect();
         let opening = vdec::draw(&self.ctx, &refs, &mut rand::rngs::OsRng)?;
-        let checks = vdec::build(&self.ctx, &self.pk, &refs, &opening)?.iter().map(|c| self.codec.encode(c)).collect::<Result<Vec<_>>>()?;
-        let challenge = ReleaseChallenge { task_id: self.cfg.task_id, collector: collector as u32, batch_digest: shares[0].batch_digest, checks };
-        Ok(PendingRelease { collector: collector as u32, shares, challenge, opening, commits: Vec::new() })
+        let checks = vdec::build(&self.ctx, &self.pk, &refs, &opening)?
+            .iter()
+            .map(|c| self.codec.encode(c))
+            .collect::<Result<Vec<_>>>()?;
+        let challenge = ReleaseChallenge {
+            task_id: self.cfg.task_id,
+            collector: collector as u32,
+            batch_digest: shares[0].batch_digest,
+            checks,
+        };
+        Ok(PendingRelease {
+            collector: collector as u32,
+            shares,
+            challenge,
+            opening,
+            commits: Vec::new(),
+        })
     }
 
     /// [`Self::release_challenge`] for sealed shares (tasks with policies).
-    pub fn release_challenge_sealed(&self, collector: usize, key: &crate::seal::CollectorSealKey, sealed: &[crate::seal::SealedShare]) -> Result<PendingRelease> {
+    pub fn release_challenge_sealed(
+        &self,
+        collector: usize,
+        key: &crate::seal::CollectorSealKey,
+        sealed: &[crate::seal::SealedShare],
+    ) -> Result<PendingRelease> {
         self.check_seal_key(collector, key)?;
         let shares = sealed.iter().map(|s| crate::seal::open(s, key)).collect::<Result<Vec<_>>>()?;
         self.release_challenge(collector, shares)
     }
 
     fn check_seal_key(&self, collector: usize, key: &crate::seal::CollectorSealKey) -> Result<()> {
-        let expected = self.cfg.collectors.get(collector).map(|p| p.seal_key).ok_or_else(|| Error::Config(format!("no collector {collector} in the task")))?;
+        let expected = self
+            .cfg
+            .collectors
+            .get(collector)
+            .map(|p| p.seal_key)
+            .ok_or_else(|| Error::Config(format!("no collector {collector} in the task")))?;
         if key.public_key() != expected {
             return Err(Error::Config(format!("sealing key is not the one the task declares for collector {collector}")));
         }
@@ -187,14 +241,28 @@ impl Collector {
                 return Err(Error::Protocol("duplicate or out-of-range aggregator in commitments".into()));
             }
             if c.digests.len() != p.challenge.checks.len() {
-                return Err(Error::Protocol(format!("aggregator {} committed to {} checks, expected {}", c.aggregator, c.digests.len(), p.challenge.checks.len())));
+                return Err(Error::Protocol(format!(
+                    "aggregator {} committed to {} checks, expected {}",
+                    c.aggregator,
+                    c.digests.len(),
+                    p.challenge.checks.len()
+                )));
             }
         }
-        if !p.commits.is_empty() && p.commits.iter().any(|old| commits.iter().find(|c| c.aggregator == old.aggregator).map(|c| &c.digests) != Some(&old.digests)) {
+        if !p.commits.is_empty()
+            && p.commits
+                .iter()
+                .any(|old| commits.iter().find(|c| c.aggregator == old.aggregator).map(|c| &c.digests) != Some(&old.digests))
+        {
             return Err(Error::Protocol("an aggregator changed its commitments".into()));
         }
         p.commits = commits;
-        Ok(ReleaseOpening { task_id: self.cfg.task_id, collector: p.collector, challenge: digest, opening: p.opening.clone() })
+        Ok(ReleaseOpening {
+            task_id: self.cfg.task_id,
+            collector: p.collector,
+            challenge: digest,
+            opening: p.opening.clone(),
+        })
     }
 
     fn release_context(&self, p: &PendingRelease, check: usize, aggregator: usize) -> Vec<u8> {
@@ -227,10 +295,18 @@ impl Collector {
         shares.sort_by_key(|s| s.aggregator);
         let mut fused_accs = Vec::with_capacity(accs.len());
         for (i, acc) in accs.iter().enumerate() {
-            let meta = CiphertextMeta { num_elements: 1, ..acc.meta()? };
+            let meta = CiphertextMeta {
+                num_elements: 1,
+                ..acc.meta()?
+            };
             let parts = shares
                 .iter()
-                .map(|s| Ok(PartialDecryption::from_ciphertext(self.codec.decode(Self::share_partials(s)[i], Expect::Exactly(meta))?, s.aggregator == 0)))
+                .map(|s| {
+                    Ok(PartialDecryption::from_ciphertext(
+                        self.codec.decode(Self::share_partials(s)[i], Expect::Exactly(meta))?,
+                        s.aggregator == 0,
+                    ))
+                })
                 .collect::<Result<Vec<_>>>()?;
             fused_accs.push(vdec::fuse_checked(&self.ctx, &parts.iter().collect::<Vec<_>>(), &format!("accumulator {i}"))?);
         }
@@ -239,7 +315,10 @@ impl Collector {
             let meta = CiphertextMeta { num_elements: 1, ..c.meta()? };
             let mut parts = Vec::with_capacity(n);
             for j in 0..n {
-                let r = reveals.iter().find(|r| r.aggregator == j).ok_or_else(|| Error::Protocol(format!("no reveal from aggregator {j}")))?;
+                let r = reveals
+                    .iter()
+                    .find(|r| r.aggregator == j)
+                    .ok_or_else(|| Error::Protocol(format!("no reveal from aggregator {j}")))?;
                 if r.task_id != self.cfg.task_id || r.collector != p.collector || r.challenge != digest || r.partials.len() != checks.len() {
                     return Err(Error::Protocol(format!("aggregator {j}'s reveal is for another challenge")));
                 }
@@ -247,7 +326,10 @@ impl Collector {
                 if vdec::commit(&self.release_context(p, l, j), &r.partials[l]) != committed[l] {
                     return Err(Error::Protocol(format!("aggregator {j}'s partial of check {l} is not the one it committed to")));
                 }
-                parts.push(PartialDecryption::from_ciphertext(self.codec.decode(&r.partials[l], Expect::Exactly(meta))?, j == 0));
+                parts.push(PartialDecryption::from_ciphertext(
+                    self.codec.decode(&r.partials[l], Expect::Exactly(meta))?,
+                    j == 0,
+                ));
             }
             fused_checks.push(vdec::fuse_checked(&self.ctx, &parts.iter().collect::<Vec<_>>(), &format!("check {l}"))?);
         }
@@ -293,12 +375,18 @@ impl Collector {
             }
         }
         let full = elements.len() == self.cfg.measurement_type.num_elements();
-        self.cfg.measurement_type.check_aggregate_consistency_visible(&slot_sums, valid, if full { None } else { Some(&visible) })?;
+        self.cfg
+            .measurement_type
+            .check_aggregate_consistency_visible(&slot_sums, valid, if full { None } else { Some(&visible) })?;
         let aggregate = self.cfg.measurement_type.decode_aggregate(&slot_sums)?;
         let regression = if pairs.is_empty() {
             None
         } else {
-            let map = self.layout.moments.as_ref().ok_or_else(|| Error::Protocol("moments released but not laid out".into()))?;
+            let map = self
+                .layout
+                .moments
+                .as_ref()
+                .ok_or_else(|| Error::Protocol("moments released but not laid out".into()))?;
             let all: Vec<u128> = match &aggregate {
                 AggregateResult::SumVec(v) => v.clone(),
                 _ => return Err(Error::Protocol("moments require a vector aggregate".into())),
@@ -309,18 +397,31 @@ impl Collector {
             let pos = |e: usize| values.iter().position(|&x| x == e).expect("pair within elements");
             let mut second = vec![vec![0u128; l]; l];
             let base = chunks.len() + (self.cfg.mode == VerificationMode::Silent) as usize;
+            let bounds = self.cfg.measurement_type.value_bounds().expect("vector type");
+            let pieces = &self.layout.moment_pieces;
+            if pieces.len() != map.len() {
+                return Err(Error::Protocol("moment pieces not laid out".into()));
+            }
+            // v_a v_b = sum over piece pairs (i in a, j in b) of m_i m_j S(i, j);
+            // within one element the pair {i, j}, i < j, is one accumulator
+            // but occurs twice in v^2.
             for (idx, &t) in terms.iter().enumerate() {
                 let span = self.layout.moment_term_span(t);
-                let acc = self.layout.moment_term_sum(t, &fused[base + idx][..span], valid).map_err(|e| Error::Protocol(format!("aggregate inconsistent: {e}")))?;
-                let (pa, pb) = (pos(t.a), pos(t.b));
-                second[pa][pb] += acc;
+                let acc = self
+                    .layout
+                    .moment_term_sum(t, &fused[base + idx][..span], valid)
+                    .map_err(|e| Error::Protocol(format!("aggregate inconsistent: {e}")))?;
+                let ((ea, ma), (eb, mb)) = (pieces[t.a], pieces[t.b]);
+                let (pa, pb) = (pos(ea), pos(eb));
+                let twice = if ea == eb && t.a != t.b { 2u128 } else { 1 };
+                second[pa][pb] += twice * acc * ma as u128 * mb as u128;
                 if pa != pb {
                     second[pb][pa] = second[pa][pb];
                 }
             }
             for &(a, b) in &pairs {
-                // the recombined sum of `valid` products of a b_a-bit and a b_b-bit value
-                let cap = (valid as u128) * ((1u128 << map[a].1) - 1) * ((1u128 << map[b].1) - 1);
+                // the recombined sum of `valid` products of values bounded by B_a and B_b
+                let cap = (valid as u128) * (bounds[a] as u128) * (bounds[b] as u128);
                 if second[pos(a)][pos(b)] > cap {
                     return Err(Error::Protocol(format!("aggregate inconsistent: second moment ({a},{b}) exceeds its bound")));
                 }
@@ -328,6 +429,13 @@ impl Collector {
             let first: Vec<u128> = values.iter().map(|&e| all[e]).collect();
             Some(RegressionResult::from_moments(valid, first, second))
         };
-        Ok(BatchResult { collector: collector as u32, elements, aggregate, report_count: count, valid_count: valid, regression })
+        Ok(BatchResult {
+            collector: collector as u32,
+            elements,
+            aggregate,
+            report_count: count,
+            valid_count: valid,
+            regression,
+        })
     }
 }

@@ -11,7 +11,11 @@ use fhe_prio3::types::regression_plain;
 use fhe_prio3::*;
 
 fn policy(elements: &[usize], moments: bool, key: &CollectorSealKey) -> CollectorPolicy {
-    CollectorPolicy { elements: elements.to_vec(), moments, seal_key: key.public_key() }
+    CollectorPolicy {
+        elements: elements.to_vec(),
+        moments,
+        seal_key: key.public_key(),
+    }
 }
 
 #[test]
@@ -26,7 +30,7 @@ fn verdict_two_collectors_disjoint_elements_and_moments() {
     cfg.collectors = vec![policy(&[0, 1], false, &k0), policy(&[2, 3], true, &k1)];
     cfg.validate().unwrap();
     // chunks are cut between element 1 and element 2: two chunks
-    assert_eq!(cfg.chunk_cuts(), vec![2 * 7 + 2 * 3]);
+    assert_eq!(cfg.chunk_cuts(), vec![7 + 3]);
     let mut net = Net::new(cfg.clone());
     assert_eq!(net.aggs[0].layout().num_chunks, 2);
     assert_eq!(cfg.collector_chunks(net.aggs[0].layout(), 0), vec![0]);
@@ -34,18 +38,27 @@ fn verdict_two_collectors_disjoint_elements_and_moments() {
     assert_eq!(cfg.collector_moment_pairs(1).unwrap(), vec![(2, 2), (2, 3), (3, 3)]);
     assert!(cfg.collector_moment_pairs(0).unwrap().is_empty());
 
-    let rows = vec![vec![10u64, 1, 8, 8], vec![20, 5, 7, 6], vec![100, 3, 15, 15], vec![40, 1, 11, 12], vec![0, 0, 8, 9], vec![55, 5, 15, 14]];
+    let rows = vec![
+        vec![10u64, 1, 8, 8],
+        vec![20, 5, 7, 6],
+        vec![100, 3, 15, 15],
+        vec![40, 1, 11, 12],
+        vec![0, 0, 8, 9],
+        vec![55, 5, 15, 14],
+    ];
     for r in &rows {
         net.expect_accept(&net.client.shard(&Measurement::SumVec(r.clone())).unwrap());
     }
-    // an out-of-range element 3 is rejected as before (the check spans both chunks)
+    // a non-bit in element 3 is rejected as before (the check spans both chunks)
     let mut bad = t.encode(&Measurement::SumVec(vec![1, 1, 1, 15])).unwrap();
-    bad[t.input_len() - 1] = 0; // offset half of element 3 wrong (offset 0 -> value != offset value)
+    bad[t.input_len() - 1] = 2; // element 3's last slot (weight 8): claims 16 > 15
     let l = net.aggs[0].layout().clone();
     let chunks: Vec<Vec<u64>> = (0..l.num_chunks).map(|c| bad[l.chunk_range(c)].to_vec()).collect();
     net.expect_reject(&net.client.shard_raw(&chunks).unwrap(), RejectReason::ValidityCheckFailed);
 
-    let plain_all = t.aggregate_plain(&rows.iter().map(|r| Measurement::SumVec(r.clone())).collect::<Vec<_>>()).unwrap();
+    let plain_all = t
+        .aggregate_plain(&rows.iter().map(|r| Measurement::SumVec(r.clone())).collect::<Vec<_>>())
+        .unwrap();
     let AggregateResult::SumVec(all) = &plain_all else { panic!() };
 
     // collector 0, sealed path: exactly elements 0 and 1, no regression
@@ -134,8 +147,11 @@ fn overlapping_and_full_view_policies() {
     assert_eq!(cfg.collector_chunks(&l, 1), vec![0, 1]); // + elements 2,3 + weight bits
     net.expect_accept(&net.client.shard(&Measurement::MultihotCountVec(vec![true, false, true, false])).unwrap());
     net.expect_accept(&net.client.shard(&Measurement::MultihotCountVec(vec![true, true, false, false])).unwrap());
-    // weight 3 claimed as 2 is still caught by the check (weight bits: 2 + offset 1 = 3 -> [1, 1])
-    net.expect_reject(&net.client.shard_raw(&[vec![1, 1], vec![1, 0, 1, 1]]).unwrap(), RejectReason::ValidityCheckFailed);
+    // weight 3 claimed as 2 is still caught by the check (weight slots for max_weight 2: weights 1, 1 -> [1, 1])
+    net.expect_reject(
+        &net.client.shard_raw(&[vec![1, 1], vec![1, 0, 1, 1]]).unwrap(),
+        RejectReason::ValidityCheckFailed,
+    );
     assert_eq!(net.collect_for(0).unwrap().aggregate, AggregateResult::MultihotCountVec(vec![2, 1, 0, 0]));
     assert_eq!(net.collect_for(1).unwrap().aggregate, AggregateResult::MultihotCountVec(vec![2, 1, 1, 0]));
 }
@@ -143,7 +159,7 @@ fn overlapping_and_full_view_policies() {
 #[test]
 fn policy_validation() {
     let k = CollectorSealKey::generate();
-    let t = MeasurementType::SumVec { length: 4, bits: 3 };
+    let t = MeasurementType::SumVec { length: 4, max_measurement: 7 };
     let ok = |ps: Vec<CollectorPolicy>| {
         let mut cfg = TaskConfig::new(task_id(73), t.clone(), 2);
         cfg.collectors = ps;
@@ -201,11 +217,10 @@ fn silent_batched_policies_with_invalid_report() {
     assert_eq!(net.aggs[0].layout().num_chunks, 2);
     net.expect_accept(&net.client.shard_in_group(&Measurement::SumVec(vec![100, 5]), 0).unwrap());
     net.expect_accept(&net.client.shard_in_group(&Measurement::SumVec(vec![7, 2]), 1).unwrap());
-    // element 1 = 6 > 5: admitted, contributes nothing to either collector
+    // element 1 = 6 > 5 needs a non-bit (weights 1, 2, 2: [0, 1, 2]): admitted, contributes nothing to either collector
     let mut raw = t.encode(&Measurement::SumVec(vec![3, 5])).unwrap();
-    raw[14..17].copy_from_slice(&[0, 1, 1]); // value 6
-    raw[17..20].copy_from_slice(&[1, 1, 1]); // offset half saturated
-    net.expect_accept(&net.client.shard_raw_in_group(&[raw[..14].to_vec(), raw[14..].to_vec()], 2).unwrap());
+    raw[7..10].copy_from_slice(&[0, 1, 2]);
+    net.expect_accept(&net.client.shard_raw_elements_in_group(&[raw[..7].to_vec(), raw[7..].to_vec()], 2).unwrap());
     let r0 = net.collect_sealed_for(0, &k0).unwrap();
     assert_eq!((r0.aggregate, r0.report_count, r0.valid_count), (AggregateResult::SumVec(vec![107, 0]), 3, 2));
     let r1 = net.collect_sealed_for(1, &k1).unwrap();

@@ -9,7 +9,12 @@ const P: u64 = 4_293_918_721;
 
 #[test]
 fn loader_accepts_a_residue_at_or_above_its_modulus() {
-    let ctx = Context::new(Params { plain_mod: P, mult_depth: 3, security_bits: 128 }).unwrap();
+    let ctx = Context::new(Params {
+        plain_mod: P,
+        mult_depth: 3,
+        security_bits: 128,
+    })
+    .unwrap();
     let (pk, sk) = keygen_first(&ctx).unwrap();
     let q0 = ctx.moduli().unwrap()[0];
     let values = [7u64, 1, 0, 5];

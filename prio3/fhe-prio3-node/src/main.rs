@@ -9,13 +9,14 @@
 //! share) and exists for tests and trials.
 
 use clap::{Parser, Subcommand};
+use fhe_prio3::attest;
 use fhe_prio3::messages::{decode, encode};
 use fhe_prio3::*;
-use fhe_prio3::attest;
 use fhe_prio3_node::aggregator_node::{AggregatorNode, AggregatorNodeConfig};
 use fhe_prio3_node::client::NetworkClient;
 use fhe_prio3_node::collector_node::{CollectorNode, CollectorNodeConfig};
 use fhe_prio3_node::secret;
+use fhe_prio3_node::wire::ServerHandle;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -77,7 +78,7 @@ enum Cmd {
     /// Single-machine ceremony for tests and trials: one process generates
     /// every aggregator's share (a dealer). Use `ceremony` for deployments.
     Keygen {
-        /// Task configuration file (bincode, from `task-config`).
+        /// Task configuration file (postcard, from `task-config`).
         #[arg(long)]
         task: PathBuf,
         #[arg(long)]
@@ -92,7 +93,7 @@ enum Cmd {
     TaskConfig {
         #[arg(long)]
         out: PathBuf,
-        /// count | sum:<max> | sumvec:<len>:<bits> | bounded:<b1,b2,...> | histogram:<len> | multihot:<len>:<maxw>
+        /// count | sum:<max> | sumvec:<len>:<max> | bounded:<b1,b2,...> | histogram:<len> | multihot:<len>:<maxw>
         #[arg(long)]
         r#type: String,
         #[arg(long, default_value_t = 2)]
@@ -288,10 +289,18 @@ fn parse_type(s: &str) -> anyhow::Result<MeasurementType> {
     Ok(match parts.as_slice() {
         ["count"] => MeasurementType::Count,
         ["sum", m] => MeasurementType::Sum { max_measurement: m.parse()? },
-        ["sumvec", l, b] => MeasurementType::SumVec { length: l.parse()?, bits: b.parse()? },
-        ["bounded", bs] => MeasurementType::BoundedSumVec { bounds: bs.split(',').map(|x| x.parse::<u64>()).collect::<std::result::Result<Vec<u64>, _>>()? },
+        ["sumvec", l, m] => MeasurementType::SumVec {
+            length: l.parse()?,
+            max_measurement: m.parse()?,
+        },
+        ["bounded", bs] => MeasurementType::BoundedSumVec {
+            bounds: bs.split(',').map(|x| x.parse::<u64>()).collect::<std::result::Result<Vec<u64>, _>>()?,
+        },
         ["histogram", l] => MeasurementType::Histogram { length: l.parse()? },
-        ["multihot", l, w] => MeasurementType::MultihotCountVec { length: l.parse()?, max_weight: w.parse()? },
+        ["multihot", l, w] => MeasurementType::MultihotCountVec {
+            length: l.parse()?,
+            max_weight: w.parse()?,
+        },
         _ => anyhow::bail!("unknown type {s}"),
     })
 }
@@ -326,7 +335,7 @@ fn share_label(i: usize, cfg: &TaskConfig) -> String {
 
 /// Writes `aggregator-keys.txt`: the public identity keys, one per line,
 /// line `i` for aggregator `i`. This file is what clients pin.
-fn write_aggregator_keys(out_dir: &PathBuf, ids: &[AggregatorIdentity]) -> anyhow::Result<()> {
+fn write_aggregator_keys(out_dir: &std::path::Path, ids: &[AggregatorIdentity]) -> anyhow::Result<()> {
     let mut text = String::from("# fhe-prio3 aggregator identity keys, line i = aggregator i\n");
     for id in ids {
         text.push_str(&hex::encode(id.public_key()));
@@ -342,14 +351,24 @@ fn parse_policy(spec: &str) -> anyhow::Result<CollectorPolicy> {
     if parts.len() < 2 || parts.len() > 3 {
         anyhow::bail!("collector policy must be <hex key>:<elements>[:moments], got {spec}");
     }
-    let key: [u8; 32] = hex::decode(parts[0])?.as_slice().try_into().map_err(|_| anyhow::anyhow!("sealing key must be 32 bytes"))?;
-    let elements = parts[1].split(',').map(|x| x.trim().parse::<usize>()).collect::<std::result::Result<Vec<_>, _>>()?;
+    let key: [u8; 32] = hex::decode(parts[0])?
+        .as_slice()
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("sealing key must be 32 bytes"))?;
+    let elements = parts[1]
+        .split(',')
+        .map(|x| x.trim().parse::<usize>())
+        .collect::<std::result::Result<Vec<_>, _>>()?;
     let moments = match parts.get(2) {
         None => false,
         Some(&"moments") => true,
         Some(other) => anyhow::bail!("unknown policy flag {other}"),
     };
-    Ok(CollectorPolicy { elements, moments, seal_key: key })
+    Ok(CollectorPolicy {
+        elements,
+        moments,
+        seal_key: key,
+    })
 }
 
 fn parse_measurement(s: &str) -> anyhow::Result<Measurement> {
@@ -378,15 +397,35 @@ async fn main() -> anyhow::Result<()> {
             let path = out_dir.join(identity_file(index));
             let id = load_or_create_identity(&path, index)?;
             println!("{}", hex::encode(id.public_key()));
-            eprintln!("identity of aggregator {index} in {} (public key above, line {index} of aggregator-keys.txt)", path.display());
+            eprintln!(
+                "identity of aggregator {index} in {} (public key above, line {index} of aggregator-keys.txt)",
+                path.display()
+            );
         }
-        Cmd::Ceremony { task, index, identity, aggregator_keys, session, listen, aggregators, token, tls_cert, tls_key, ca, out_dir, timeout_secs } => {
+        Cmd::Ceremony {
+            task,
+            index,
+            identity,
+            aggregator_keys,
+            session,
+            listen,
+            aggregators,
+            token,
+            tls_cert,
+            tls_key,
+            ca,
+            out_dir,
+            timeout_secs,
+        } => {
             let cfg: TaskConfig = read(&task)?;
             let label = format!("aggregator-identity:{index}");
             let secret_bytes = secret::unseal(label.as_bytes(), &std::fs::read(&identity)?)?;
             let identity = AggregatorIdentity::from_secret_bytes(secret_bytes.as_slice().try_into().map_err(|_| anyhow::anyhow!("identity must be 32 bytes"))?);
             let pinned = fhe_prio3_node::client::parse_aggregator_keys(&std::fs::read_to_string(&aggregator_keys)?)?;
-            let session: [u8; 32] = hex::decode(session.trim())?.as_slice().try_into().map_err(|_| anyhow::anyhow!("session must be 32 bytes of hex"))?;
+            let session: [u8; 32] = hex::decode(session.trim())?
+                .as_slice()
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("session must be 32 bytes of hex"))?;
             std::fs::create_dir_all(&out_dir)?;
             let started = std::time::Instant::now();
             let out = fhe_prio3_node::ceremony_node::run(fhe_prio3_node::ceremony_node::CeremonyNodeConfig {
@@ -408,10 +447,13 @@ async fn main() -> anyhow::Result<()> {
             // streamed: an in-memory encoding would double the gigabytes of
             // rotation keys at the process's peak (silent mode)
             let mut w = std::io::BufWriter::new(std::fs::File::create(out_dir.join("material.bin"))?);
-            bincode::serialize_into(&mut w, &out.material)?;
+            postcard::to_io(&out.material, &mut w)?;
             std::io::Write::flush(&mut w)?;
             drop(w);
-            std::fs::write(out_dir.join(format!("share-{index}.sealed")), secret::seal(share_label(index, &cfg).as_bytes(), &out.secret)?)?;
+            std::fs::write(
+                out_dir.join(format!("share-{index}.sealed")),
+                secret::seal(share_label(index, &cfg).as_bytes(), &out.secret)?,
+            )?;
             std::fs::write(out_dir.join("transcript.txt"), format!("{}\n", hex::encode(out.transcript)))?;
             println!(
                 "ceremony complete in {:.1} s: material.bin (attested by all {} aggregators), share-{index}.sealed, transcript {}",
@@ -420,7 +462,18 @@ async fn main() -> anyhow::Result<()> {
                 hex::encode(out.transcript)
             );
         }
-        Cmd::TaskConfig { out, r#type, aggregators, mode, min_batch, auth_quota, task_id, moments, max_batch, collectors } => {
+        Cmd::TaskConfig {
+            out,
+            r#type,
+            aggregators,
+            mode,
+            min_batch,
+            auth_quota,
+            task_id,
+            moments,
+            max_batch,
+            collectors,
+        } => {
             let ty = parse_type(&r#type)?;
             let id: [u8; 32] = match task_id {
                 Some(h) => hex::decode(h)?.as_slice().try_into().map_err(|_| anyhow::anyhow!("task id must be 32 bytes"))?,
@@ -436,7 +489,9 @@ async fn main() -> anyhow::Result<()> {
             };
             cfg.min_batch_size = min_batch;
             if auth_quota > 0 {
-                cfg.auth = AuthPolicy::Required { max_reports_per_client_per_batch: auth_quota };
+                cfg.auth = AuthPolicy::Required {
+                    max_reports_per_client_per_batch: auth_quota,
+                };
             }
             if moments {
                 cfg.moments = true;
@@ -478,7 +533,21 @@ async fn main() -> anyhow::Result<()> {
             std::fs::write(&out, secret::seal(b"collector-identity", &k.secret_bytes())?)?;
             println!("{}", hex::encode(k.public_key()));
         }
-        Cmd::Aggregator { index, task, material, share, db, listen, aggregators, collectors, token, tls_cert, tls_key, ca, clients } => {
+        Cmd::Aggregator {
+            index,
+            task,
+            material,
+            share,
+            db,
+            listen,
+            aggregators,
+            collectors,
+            token,
+            tls_cert,
+            tls_key,
+            ca,
+            clients,
+        } => {
             let cfg: TaskConfig = read(&task)?;
             let material: PublicMaterial = read(&material)?;
             let sealed = std::fs::read(&share)?;
@@ -488,7 +557,12 @@ async fn main() -> anyhow::Result<()> {
                     let keys: Vec<[u8; 32]> = std::fs::read_to_string(p)?
                         .lines()
                         .filter(|l| !l.trim().is_empty())
-                        .map(|l| hex::decode(l.trim()).ok().and_then(|b| b.as_slice().try_into().ok()).ok_or_else(|| anyhow::anyhow!("bad client key line")))
+                        .map(|l| {
+                            hex::decode(l.trim())
+                                .ok()
+                                .and_then(|b| b.as_slice().try_into().ok())
+                                .ok_or_else(|| anyhow::anyhow!("bad client key line"))
+                        })
                         .collect::<anyhow::Result<Vec<[u8; 32]>>>()?;
                     Some(StaticRegistry::new(keys))
                 }
@@ -506,7 +580,7 @@ async fn main() -> anyhow::Result<()> {
                 registry,
                 ca_pem: std::fs::read(&ca)?,
             })?;
-            let handle = axum_server::Handle::new();
+            let handle = ServerHandle::new();
             let h2 = handle.clone();
             tokio::spawn(async move {
                 let _ = tokio::signal::ctrl_c().await;
@@ -516,29 +590,58 @@ async fn main() -> anyhow::Result<()> {
             let tls = AggregatorNode::tls_config(tls_cert, tls_key).await?;
             node.serve(listen, Some(tls), handle).await?;
         }
-        Cmd::Collector { task, material, id, seal_secret, db, listen, token, tls_cert, tls_key } => {
+        Cmd::Collector {
+            task,
+            material,
+            id,
+            seal_secret,
+            db,
+            listen,
+            token,
+            tls_cert,
+            tls_key,
+        } => {
             let cfg: TaskConfig = read(&task)?;
             let material: PublicMaterial = read(&material)?;
             let seal_key = match seal_secret {
                 Some(p) => {
-                    let b = secret::unseal(format!("collector-identity").as_bytes(), &std::fs::read(&p)?)?;
-                    Some(CollectorSealKey::from_secret_bytes(b.as_slice().try_into().map_err(|_| anyhow::anyhow!("sealing secret must be 32 bytes"))?))
+                    let b = secret::unseal(b"collector-identity", &std::fs::read(&p)?)?;
+                    Some(CollectorSealKey::from_secret_bytes(
+                        b.as_slice().try_into().map_err(|_| anyhow::anyhow!("sealing secret must be 32 bytes"))?,
+                    ))
                 }
                 None => None,
             };
-            let node = CollectorNode::new(CollectorNodeConfig { task: cfg, material, collector_id: id, seal_key, token, db })?;
-            let handle = axum_server::Handle::new();
+            let node = CollectorNode::new(CollectorNodeConfig {
+                task: cfg,
+                material,
+                collector_id: id,
+                seal_key,
+                token,
+                db,
+            })?;
+            let handle = ServerHandle::new();
             tracing::info!(%listen, "collector listening");
             let tls = CollectorNode::tls_config(tls_cert, tls_key).await?;
             node.serve(listen, Some(tls), handle).await?;
         }
-        Cmd::Submit { task, material, leader, ca, value, identity, aggregator_keys } => {
+        Cmd::Submit {
+            task,
+            material,
+            leader,
+            ca,
+            value,
+            identity,
+            aggregator_keys,
+        } => {
             let cfg: TaskConfig = read(&task)?;
             let material: PublicMaterial = read(&material)?;
             let id = match identity {
                 Some(p) => {
                     let b = hex::decode(std::fs::read_to_string(p)?.trim())?;
-                    Some(ClientIdentity::from_secret_bytes(b.as_slice().try_into().map_err(|_| anyhow::anyhow!("identity must be 32 bytes"))?))
+                    Some(ClientIdentity::from_secret_bytes(
+                        b.as_slice().try_into().map_err(|_| anyhow::anyhow!("identity must be 32 bytes"))?,
+                    ))
                 }
                 None => None,
             };
@@ -558,7 +661,12 @@ async fn main() -> anyhow::Result<()> {
                 None => println!("released to collectors {:?}; each reads its result from its own collector", r.released_to),
             }
         }
-        Cmd::KeygenShards { task, shards, out_dir, identities_dir } => {
+        Cmd::KeygenShards {
+            task,
+            shards,
+            out_dir,
+            identities_dir,
+        } => {
             let base: TaskConfig = read(&task)?;
             let cfgs = fhe_prio3::sharding::shard_configs(&base, shards)?;
             std::fs::create_dir_all(&out_dir)?;
@@ -587,27 +695,51 @@ async fn main() -> anyhow::Result<()> {
                 println!("shard {i}: task {} written to {}", hex::encode(cfg.task_id), dir.display());
             }
         }
-        Cmd::Router { shards_dir, leaders, listen, token, tls_cert, tls_key, ca } => {
+        Cmd::Router {
+            shards_dir,
+            leaders,
+            listen,
+            token,
+            tls_cert,
+            tls_key,
+            ca,
+        } => {
             let leaders: Vec<String> = leaders.split(',').map(|s| s.trim().to_string()).collect();
             let mut shards = Vec::with_capacity(leaders.len());
             for (i, leader) in leaders.iter().enumerate() {
                 let dir = shards_dir.join(format!("shard-{i}"));
                 let task: TaskConfig = read(&dir.join("task.bin"))?;
                 let material: PublicMaterial = read(&dir.join("material.bin"))?;
-                shards.push(fhe_prio3_node::router::ShardInfo { task, client_material: fhe_prio3_node::router::client_material(&material), leader: leader.clone() });
+                shards.push(fhe_prio3_node::router::ShardInfo {
+                    task,
+                    client_material: fhe_prio3_node::router::client_material(&material),
+                    leader: leader.clone(),
+                });
             }
-            let node = fhe_prio3_node::router::RouterNode::new(fhe_prio3_node::router::RouterNodeConfig { shards, token, ca_pem: std::fs::read(&ca)? })?;
+            let node = fhe_prio3_node::router::RouterNode::new(fhe_prio3_node::router::RouterNodeConfig {
+                shards,
+                token,
+                ca_pem: std::fs::read(&ca)?,
+            })?;
             node.verify_leaders(std::time::Duration::from_secs(120)).await?;
-            let handle = axum_server::Handle::new();
+            let handle = ServerHandle::new();
             tracing::info!(%listen, "router listening");
             let tls = fhe_prio3_node::router::RouterNode::tls_config(tls_cert, tls_key).await?;
             node.serve(listen, Some(tls), handle).await?;
         }
-        Cmd::SubmitSharded { router, ca, value, identity, aggregator_keys } => {
+        Cmd::SubmitSharded {
+            router,
+            ca,
+            value,
+            identity,
+            aggregator_keys,
+        } => {
             let id = match identity {
                 Some(p) => {
                     let b = hex::decode(std::fs::read_to_string(p)?.trim())?;
-                    Some(ClientIdentity::from_secret_bytes(b.as_slice().try_into().map_err(|_| anyhow::anyhow!("identity must be 32 bytes"))?))
+                    Some(ClientIdentity::from_secret_bytes(
+                        b.as_slice().try_into().map_err(|_| anyhow::anyhow!("identity must be 32 bytes"))?,
+                    ))
                 }
                 None => None,
             };

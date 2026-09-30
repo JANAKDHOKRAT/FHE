@@ -84,13 +84,19 @@ impl AggregatorSecret {
         }
         let version = bytes[Self::MAGIC.len()];
         if version != Self::VERSION {
-            return Err(Error::Config(format!("aggregator secret version {version}, this build reads version {}", Self::VERSION)));
+            return Err(Error::Config(format!(
+                "aggregator secret version {version}, this build reads version {}",
+                Self::VERSION
+            )));
         }
         let key: [u8; 32] = bytes[Self::MAGIC.len() + 1..head].try_into().expect("32 bytes");
         if bytes.len() == head {
             return Err(Error::Config("aggregator secret carries no key share".into()));
         }
-        Ok(Self { verify_key: VerifyKey::from_bytes(key), share: bytes[head..].to_vec() })
+        Ok(Self {
+            verify_key: VerifyKey::from_bytes(key),
+            share: bytes[head..].to_vec(),
+        })
     }
 }
 
@@ -108,7 +114,11 @@ pub fn make_context(cfg: &TaskConfig) -> Result<Context> {
     // parties created on several threads (the ceremony tests) take turns.
     static CONTEXT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _g = CONTEXT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let ctx = Context::new(Params { plain_mod: cfg.plain_mod, mult_depth: cfg.mult_depth(), security_bits: cfg.security_bits })?;
+    let ctx = Context::new(Params {
+        plain_mod: cfg.plain_mod,
+        mult_depth: cfg.mult_depth(),
+        security_bits: cfg.security_bits,
+    })?;
     // Fails loudly if p is not compatible with the chosen ring dimension.
     ctx.plaintext(&[1])?;
     Ok(ctx)
@@ -209,7 +219,9 @@ pub fn install(ctx: &Context, material: &PublicMaterial) -> Result<KeyLease> {
     let mut leases = LEASES.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(n) = leases.get_mut(&material.joint_tag) {
         *n += 1;
-        return Ok(KeyLease { tag: material.joint_tag.clone() });
+        return Ok(KeyLease {
+            tag: material.joint_tag.clone(),
+        });
     }
     let mk = ctx.deserialize_eval_mult_key(&material.eval_mult_key)?;
     ctx.install_eval_mult_key(&mk, &material.joint_tag)?;
@@ -220,7 +232,9 @@ pub fn install(ctx: &Context, material: &PublicMaterial) -> Result<KeyLease> {
         ctx.merge_rotation_keys(&rk, &material.joint_tag)?;
     }
     leases.insert(material.joint_tag.clone(), 1);
-    Ok(KeyLease { tag: material.joint_tag.clone() })
+    Ok(KeyLease {
+        tag: material.joint_tag.clone(),
+    })
 }
 
 /// Runs the whole ceremony in-process. Every inter-party value crosses a
@@ -276,7 +290,13 @@ pub fn run_local_ceremony(cfg: &TaskConfig) -> Result<(PublicMaterial, Vec<Vec<u
     let verify_key = VerifyKey::random();
     let secrets = shares
         .iter()
-        .map(|s| Ok(AggregatorSecret { verify_key: verify_key.clone(), share: s.serialize()? }.encode()))
+        .map(|s| {
+            Ok(AggregatorSecret {
+                verify_key: verify_key.clone(),
+                share: s.serialize()?,
+            }
+            .encode())
+        })
         .collect::<Result<Vec<_>>>()?;
     Ok((material, secrets))
 }
@@ -287,12 +307,18 @@ mod tests {
 
     #[test]
     fn aggregator_secret_round_trips_and_refuses_bare_shares() {
-        let s = AggregatorSecret { verify_key: VerifyKey::from_bytes([9u8; 32]), share: vec![1, 2, 3] };
+        let s = AggregatorSecret {
+            verify_key: VerifyKey::from_bytes([9u8; 32]),
+            share: vec![1, 2, 3],
+        };
         let d = AggregatorSecret::decode(&s.encode()).unwrap();
         assert_eq!(d.verify_key, s.verify_key);
         assert_eq!(d.share, s.share);
         // a key share stored before the verify key existed: refused, with the remedy
-        let e = AggregatorSecret::decode(b"\x00\x01 an OpenFHE serialization of a secret key").err().unwrap().to_string();
+        let e = AggregatorSecret::decode(b"\x00\x01 an OpenFHE serialization of a secret key")
+            .err()
+            .unwrap()
+            .to_string();
         assert!(e.contains("Re-run the key ceremony"), "{e}");
         // another version, a missing share, truncation
         let mut v2 = s.encode();

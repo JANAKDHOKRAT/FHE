@@ -17,7 +17,10 @@ fn records() -> Vec<Vec<u64>> {
 #[test]
 fn verdict_mode_regression_matches_plaintext() {
     let _g = serial();
-    let t = MeasurementType::SumVec { length: 3, bits: 4 };
+    let t = MeasurementType::SumVec {
+        length: 3,
+        max_measurement: 15,
+    };
     let mut cfg = TaskConfig::new(task_id(50), t.clone(), 2);
     cfg.moments = true;
     let mut net = Net::new(cfg);
@@ -26,7 +29,10 @@ fn verdict_mode_regression_matches_plaintext() {
         net.expect_accept(&net.client.shard(&Measurement::SumVec(r.clone())).unwrap());
     }
     // an out-of-range row is rejected and does not enter the moments
-    net.expect_reject(&net.client.shard_raw_elements(&[vec![1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 2]]).unwrap(), RejectReason::ValidityCheckFailed);
+    net.expect_reject(
+        &net.client.shard_raw_elements(&[vec![1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 2]]).unwrap(),
+        RejectReason::ValidityCheckFailed,
+    );
     let res = net.collect_full().unwrap();
     let plain = regression_plain(&rows);
     let reg = res.regression.expect("moments enabled");
@@ -34,13 +40,20 @@ fn verdict_mode_regression_matches_plaintext() {
     for (a, b) in reg.beta.iter().zip(&plain.beta) {
         assert!((a - b).abs() < 1e-9, "{:?} vs {:?}", reg.beta, plain.beta);
     }
-    assert_eq!(res.aggregate, t.aggregate_plain(&rows.iter().map(|r| Measurement::SumVec(r.clone())).collect::<Vec<_>>()).unwrap());
+    assert_eq!(
+        res.aggregate,
+        t.aggregate_plain(&rows.iter().map(|r| Measurement::SumVec(r.clone())).collect::<Vec<_>>())
+            .unwrap()
+    );
 }
 
 #[test]
 fn silent_batched_regression_excludes_invalid_records() {
     let _g = serial();
-    let t = MeasurementType::SumVec { length: 3, bits: 4 };
+    let t = MeasurementType::SumVec {
+        length: 3,
+        max_measurement: 15,
+    };
     let mut cfg = TaskConfig::new_silent(task_id(51), t.clone(), 2);
     cfg.moments = true;
     cfg.silent_batch_groups = 4;
@@ -69,7 +82,10 @@ fn silent_batched_regression_excludes_invalid_records() {
 #[test]
 fn silent_eight_bit_regression_beyond_the_former_cap() {
     let _g = serial();
-    let t = MeasurementType::SumVec { length: 3, bits: 8 };
+    let t = MeasurementType::SumVec {
+        length: 3,
+        max_measurement: 255,
+    };
     let mut cfg = TaskConfig::new_silent(task_id(52), t.clone(), 2);
     cfg.moments = true;
     cfg.silent_batch_groups = 4;

@@ -4,7 +4,13 @@ name: prio3
 # prio3/openfhe-tbgv-rs/build.rs), runs every test suite of the threshold-BGV
 # shim, the protocol crate and the network node, and fuzzes the packed wire
 # format parser (5 minutes per target on each change, one hour per target
-# nightly).
+# nightly). Gates on every change: rustfmt (prio3/rustfmt.toml), clippy with
+# warnings denied on every target, cargo-deny (RustSec advisories, licenses,
+# duplicate and wildcard versions, sources; prio3/deny.toml), and line
+# coverage of the protocol crate's fast suites above a measured floor.
+# Nightly and on demand: the OpenFHE pin is checked against upstream (tag
+# still at the pinned commit, no advisory published after the pinned
+# release, pin is the latest release; .github/scripts/openfhe-pin-check.sh).
 
 on:
   push:
@@ -140,3 +146,133 @@ jobs:
         with:
           name: fuzz-artifacts-${{ matrix.target }}
           path: prio3/fhe-prio3/fuzz/artifacts
+
+  # rustfmt against prio3/rustfmt.toml and clippy with every warning denied,
+  # on every target (lib, bins, tests, examples) of the three crates. The
+  # fuzz crate is format-checked only: its targets build on nightly.
+  lint:
+    name: lint ${{ matrix.crate }}
+    needs: openfhe
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        crate: [openfhe-tbgv-rs, fhe-prio3, fhe-prio3-node]
+    env:
+      LD_LIBRARY_PATH: /home/runner/openfhe-install/lib
+    steps:
+      - uses: actions/checkout@v4
+      - name: restore OpenFHE
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.OPENFHE_DIR }}
+          key: openfhe-${{ env.OPENFHE_COMMIT }}-ubuntu-24.04-release-openmp-v1
+          fail-on-cache-miss: true
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_STABLE }}
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: prio3/${{ matrix.crate }}
+          key: lint-${{ matrix.crate }}
+      - name: rustfmt
+        working-directory: prio3/${{ matrix.crate }}
+        run: cargo fmt --check
+      - name: rustfmt (fuzz crate)
+        if: matrix.crate == 'fhe-prio3'
+        working-directory: prio3/fhe-prio3/fuzz
+        run: cargo fmt --check
+      - name: clippy
+        working-directory: prio3/${{ matrix.crate }}
+        run: cargo clippy --release --locked --all-targets -- -D warnings
+
+  # RustSec advisories, licenses, duplicate and wildcard versions, sources,
+  # against prio3/deny.toml, for each crate's own lockfile.
+  deny:
+    name: cargo-deny ${{ matrix.crate }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        crate: [openfhe-tbgv-rs, fhe-prio3, fhe-prio3-node]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          rust-version: ${{ env.RUST_STABLE }}
+          manifest-path: prio3/${{ matrix.crate }}/Cargo.toml
+          arguments: --config prio3/deny.toml
+          command: check
+
+  # Line coverage of the protocol crate over its fast suites (unit tests,
+  # wire, protocol, policy, bounds, upgrade), with cargo-llvm-cov. The
+  # floor is the measured value at the time it was set, rounded down; a
+  # change that drops below it fails. The lcov report is kept as an
+  # artifact for review.
+  coverage:
+    name: coverage fhe-prio3
+    needs: openfhe
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      LD_LIBRARY_PATH: /home/runner/openfhe-install/lib
+      # Measured 72.09% of lines (6008 lines, 1677 uncovered) on 2026-09-30
+      # over these suites; the floor leaves two points for platform noise.
+      COVERAGE_FLOOR_LINES: "70"
+    steps:
+      - uses: actions/checkout@v4
+      - name: restore OpenFHE
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.OPENFHE_DIR }}
+          key: openfhe-${{ env.OPENFHE_COMMIT }}-ubuntu-24.04-release-openmp-v1
+          fail-on-cache-miss: true
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_STABLE }}
+          components: llvm-tools-preview
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov@0.9.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: prio3/fhe-prio3
+          key: coverage
+      - name: measure
+        working-directory: prio3/fhe-prio3
+        run: |
+          cargo llvm-cov --manifest-path Cargo.toml --release --locked \
+            --lib --bins --test wire --test protocol --test policy --test bounds --test upgrade \
+            --lcov --output-path lcov.info -- --test-threads=1
+          cargo llvm-cov report --manifest-path Cargo.toml --release --summary-only | tee coverage-summary.txt
+      - name: enforce floor
+        working-directory: prio3/fhe-prio3
+        run: cargo llvm-cov report --manifest-path Cargo.toml --release --fail-under-lines "$COVERAGE_FLOOR_LINES"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-fhe-prio3
+          path: |
+            prio3/fhe-prio3/lcov.info
+            prio3/fhe-prio3/coverage-summary.txt
+
+  # The OpenFHE pin against upstream: the tag still at the pinned commit, no
+  # security advisory published after the pinned release, and the pin is the
+  # latest release. Nightly and on demand it fails the workflow, which
+  # notifies the repository's owner. On a pull request it only annotates,
+  # so an upstream release does not block unrelated changes; moving the pin
+  # is its own change (AUDIT.md §8).
+  openfhe-pin:
+    name: OpenFHE pin against upstream
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    continue-on-error: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: check
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: .github/scripts/openfhe-pin-check.sh "$OPENFHE_TAG" "$OPENFHE_COMMIT"

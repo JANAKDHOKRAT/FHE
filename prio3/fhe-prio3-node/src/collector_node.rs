@@ -8,11 +8,11 @@
 
 use crate::store::Store;
 use crate::wire::*;
+use axum::Router;
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
-use axum::Router;
 use fhe_prio3::messages::{decode, encode};
 use fhe_prio3::*;
 use std::collections::BTreeMap;
@@ -58,8 +58,16 @@ impl CollectorNode {
                 anyhow::bail!("task has a single collector, id 0");
             }
         } else {
-            let declared = cfg.task.collectors.get(c).map(|p| p.seal_key).ok_or_else(|| anyhow::anyhow!("no collector {c} in the task"))?;
-            let key = cfg.seal_key.as_ref().ok_or_else(|| anyhow::anyhow!("task has release policies: this collector needs its sealing key"))?;
+            let declared = cfg
+                .task
+                .collectors
+                .get(c)
+                .map(|p| p.seal_key)
+                .ok_or_else(|| anyhow::anyhow!("no collector {c} in the task"))?;
+            let key = cfg
+                .seal_key
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("task has release policies: this collector needs its sealing key"))?;
             if key.public_key() != declared {
                 anyhow::bail!("sealing key is not the one the task declares for collector {c}");
             }
@@ -117,7 +125,7 @@ impl CollectorNode {
         Ok(axum_server::tls_rustls::RustlsConfig::from_pem_file(cert, key).await?)
     }
 
-    pub async fn serve(&self, addr: SocketAddr, tls: Option<axum_server::tls_rustls::RustlsConfig>, handle: axum_server::Handle) -> anyhow::Result<()> {
+    pub async fn serve(&self, addr: SocketAddr, tls: Option<axum_server::tls_rustls::RustlsConfig>, handle: ServerHandle) -> anyhow::Result<()> {
         init_crypto();
         let app = self.router();
         match tls {
@@ -141,9 +149,19 @@ async fn receive_share(State(node): State<CollectorNode>, headers: HeaderMap, bo
         env.share
     } else {
         let env: SealedEnvelope = parse_body(&body)?;
-        let key = inner.seal_key.as_ref().expect("checked at construction");
+        // `new` refuses to build a policy collector without its key; if the
+        // invariant is ever broken the request fails, the process does not.
+        let key = inner.seal_key.as_ref().ok_or_else(|| {
+            HttpError(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "task has release policies but this collector holds no sealing key".into(),
+            )
+        })?;
         if env.sealed.collector != inner.collector_id {
-            return Err(HttpError(StatusCode::BAD_REQUEST, format!("share sealed for collector {}, this is collector {}", env.sealed.collector, inner.collector_id)));
+            return Err(HttpError(
+                StatusCode::BAD_REQUEST,
+                format!("share sealed for collector {}, this is collector {}", env.sealed.collector, inner.collector_id),
+            ));
         }
         fhe_prio3::seal::open(&env.sealed, key)?
     };
@@ -155,28 +173,68 @@ async fn receive_share(State(node): State<CollectorNode>, headers: HeaderMap, bo
         if share.aggregator >= n {
             return Err(HttpError(StatusCode::BAD_REQUEST, "aggregator index out of range".into()));
         }
-        let mut shares = inner.shares.lock().unwrap();
-        let mut store = inner.store.lock().unwrap();
-        let mut pending = inner.pending.lock().unwrap();
+        // Lock order everywhere in this node: pending, shares, collector,
+        // store, result. `release_commits` and `release_reveals` take
+        // pending then collector then store; taking store before pending
+        // here could deadlock against a concurrent release round.
+        let mut pending = guard(&inner.pending, "release")?;
+        let mut shares = guard(&inner.shares, "shares")?;
         if let Some(p) = pending.as_ref() {
             // a retried delivery of the same batch: the same checks again
-            if p.shares.iter().any(|s| s.aggregator == share.aggregator && encode(s).ok() == encode(&share).ok()) {
-                return Ok(ShareReceipt { complete: true, challenge: Some(p.challenge.clone()) });
+            if p.shares
+                .iter()
+                .any(|s| s.aggregator == share.aggregator && encode(s).ok() == encode(&share).ok())
+            {
+                return Ok(ShareReceipt {
+                    complete: true,
+                    challenge: Some(p.challenge.clone()),
+                });
             }
             return Err(HttpError(StatusCode::CONFLICT, "a release is already in progress with other shares".into()));
         }
-        store.put(&format!("share:{}", share.aggregator), &encode(&share)?)?;
-        shares.insert(share.aggregator, share);
-        if shares.len() < n {
-            return Ok(ShareReceipt { complete: false, challenge: None });
+        let idx = share.aggregator;
+        let share_bytes = encode(&share)?;
+        let share_key = format!("share:{idx}");
+        let complete = shares.len() + usize::from(!shares.contains_key(&idx)) >= n;
+        if !complete {
+            // persist first: a share the store does not hold is not held
+            guard(&inner.store, "store")?.put(&share_key, &share_bytes)?;
+            shares.insert(idx, share);
+            return Ok(ShareReceipt {
+                complete: false,
+                challenge: None,
+            });
         }
-        let all: Vec<AggregateShare> = shares.values().cloned().collect();
-        let collector = inner.collector.lock().unwrap();
-        let p = collector.release_challenge(inner.collector_id as usize, all)?;
-        store.put("pending", &encode(&p)?)?;
+        // Last share: build the release challenge over every share and
+        // persist share and challenge together. If any step fails the share
+        // is taken back out of memory, so memory and store agree and the
+        // leader's retry starts the same way.
+        let previous = shares.insert(idx, share);
+        let built = (|| -> std::result::Result<PendingRelease, HttpError> {
+            let all: Vec<AggregateShare> = shares.values().cloned().collect();
+            let collector = guard(&inner.collector, "collector")?;
+            let p = collector.release_challenge(inner.collector_id as usize, all)?;
+            let mut store = guard(&inner.store, "store")?;
+            store.put(&share_key, &share_bytes)?;
+            store.put("pending", &encode(&p)?)?;
+            Ok(p)
+        })();
+        let p = match built {
+            Ok(p) => p,
+            Err(e) => {
+                match previous {
+                    Some(earlier) => shares.insert(idx, earlier),
+                    None => shares.remove(&idx),
+                };
+                return Err(e);
+            }
+        };
         let challenge = p.challenge.clone();
         *pending = Some(p);
-        Ok(ShareReceipt { complete: true, challenge: Some(challenge) })
+        Ok(ShareReceipt {
+            complete: true,
+            challenge: Some(challenge),
+        })
     })
     .await
     .map_err(|e| HttpError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
@@ -189,11 +247,13 @@ async fn release_commits(State(node): State<CollectorNode>, headers: HeaderMap, 
     let req: ReleaseCommitsRequest = parse_body(&body)?;
     let inner = node.inner.clone();
     let out = tokio::task::spawn_blocking(move || -> std::result::Result<ReleaseOpening, HttpError> {
-        let mut pending = inner.pending.lock().unwrap();
-        let p = pending.as_mut().ok_or_else(|| HttpError(StatusCode::CONFLICT, "no release in progress".into()))?;
-        let collector = inner.collector.lock().unwrap();
+        let mut pending = guard(&inner.pending, "release")?;
+        let p = pending
+            .as_mut()
+            .ok_or_else(|| HttpError(StatusCode::CONFLICT, "no release in progress".into()))?;
+        let collector = guard(&inner.collector, "collector")?;
         let opening = collector.release_open(p, req.commits)?;
-        inner.store.lock().unwrap().put("pending", &encode(&*p)?)?;
+        guard(&inner.store, "store")?.put("pending", &encode(&*p)?)?;
         Ok(opening)
     })
     .await
@@ -209,8 +269,10 @@ async fn release_reveals(State(node): State<CollectorNode>, headers: HeaderMap, 
     let req: ReleaseRevealsRequest = parse_body(&body)?;
     let inner = node.inner.clone();
     let out = tokio::task::spawn_blocking(move || -> std::result::Result<FinishReceipt, HttpError> {
-        let pending = inner.pending.lock().unwrap();
-        let p = pending.as_ref().ok_or_else(|| HttpError(StatusCode::CONFLICT, "no release in progress".into()))?;
+        let pending = guard(&inner.pending, "release")?;
+        let p = pending
+            .as_ref()
+            .ok_or_else(|| HttpError(StatusCode::CONFLICT, "no release in progress".into()))?;
         let mut reveals = Vec::with_capacity(req.reveals.len());
         for r in req.reveals {
             reveals.push(match (r, inner.seal_key.as_ref()) {
@@ -221,14 +283,20 @@ async fn release_reveals(State(node): State<CollectorNode>, headers: HeaderMap, 
                     }
                     fhe_prio3::seal::open_reveal(&s, key)?
                 }
-                _ => return Err(HttpError(StatusCode::BAD_REQUEST, "reveal sealed where it should be plain, or the reverse".into())),
+                _ => {
+                    return Err(HttpError(
+                        StatusCode::BAD_REQUEST,
+                        "reveal sealed where it should be plain, or the reverse".into(),
+                    ));
+                }
             });
         }
-        let r = inner.collector.lock().unwrap().release_finish(p, &reveals)?;
-        let mut store = inner.store.lock().unwrap();
-        store.put("result", &encode(&r)?)?;
-        *inner.result.lock().unwrap() = Some(r.clone());
-        Ok(FinishReceipt { result: if inner.task.collectors.is_empty() { Some(r) } else { None } })
+        let r = guard(&inner.collector, "collector")?.release_finish(p, &reveals)?;
+        guard(&inner.store, "store")?.put("result", &encode(&r)?)?;
+        *guard(&inner.result, "result")? = Some(r.clone());
+        Ok(FinishReceipt {
+            result: if inner.task.collectors.is_empty() { Some(r) } else { None },
+        })
     })
     .await
     .map_err(|e| HttpError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
@@ -237,6 +305,6 @@ async fn release_reveals(State(node): State<CollectorNode>, headers: HeaderMap, 
 
 async fn result(State(node): State<CollectorNode>, headers: HeaderMap) -> std::result::Result<axum::response::Response, HttpError> {
     check_token(&headers, &node.inner.token)?;
-    let r = node.inner.result.lock().unwrap().clone();
+    let r = guard(&node.inner.result, "result")?.clone();
     reply(&r)
 }

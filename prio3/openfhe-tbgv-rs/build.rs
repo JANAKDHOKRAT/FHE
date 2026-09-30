@@ -20,8 +20,7 @@ const TESTED_OPENFHE_VERSIONS: &[&str] = &["1.3.1"];
 
 fn installed_version(lib_dir: &str) -> String {
     let file = format!("{lib_dir}/OpenFHE/OpenFHEConfigVersion.cmake");
-    let text = std::fs::read_to_string(&file)
-        .unwrap_or_else(|e| panic!("cannot read {file} to determine the OpenFHE version: {e}"));
+    let text = std::fs::read_to_string(&file).unwrap_or_else(|e| panic!("cannot read {file} to determine the OpenFHE version: {e}"));
     let line = text
         .lines()
         .find(|l| l.trim_start().starts_with("set(PACKAGE_VERSION"))
@@ -35,8 +34,7 @@ fn installed_version(lib_dir: &str) -> String {
 
 fn main() {
     let base = env::var("OPENFHE_DIR").unwrap_or_else(|_| "/usr/local".into());
-    let include_dir =
-        env::var("OPENFHE_INCLUDE_DIR").unwrap_or_else(|_| format!("{base}/include/openfhe"));
+    let include_dir = env::var("OPENFHE_INCLUDE_DIR").unwrap_or_else(|_| format!("{base}/include/openfhe"));
     let lib_dir = env::var("OPENFHE_LIB_DIR").unwrap_or_else(|_| format!("{base}/lib"));
 
     let version = installed_version(&lib_dir);

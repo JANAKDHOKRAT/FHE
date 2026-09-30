@@ -14,7 +14,7 @@
 //! work directory, not in memory. The secret share never leaves the
 //! process: it is returned to the caller, which seals it.
 
-use crate::wire::{TOKEN_HEADER, check_token, https_client, init_crypto};
+use crate::wire::{ServerHandle, TOKEN_HEADER, check_token, https_client, init_crypto};
 use axum::Router;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -96,10 +96,10 @@ async fn get_message(State(st): State<Arc<ServerState>>, Path((session, round)):
     }
     match s.messages.get(&round).cloned() {
         Some(bytes) => {
-            if round == Round::Confirm.number() {
-                if let Some(p) = requester(&headers) {
-                    s.confirm_read_by.insert(p);
-                }
+            if round == Round::Confirm.number()
+                && let Some(p) = requester(&headers)
+            {
+                s.confirm_read_by.insert(p);
             }
             bytes.into_response()
         }
@@ -158,7 +158,13 @@ impl HttpTransport {
         let mut wait = Duration::from_millis(100);
         loop {
             let r: Result<Outcome, reqwest::Error> = self.rt.block_on(async {
-                let mut resp = self.http.get(url).header(TOKEN_HEADER, &self.st.token).header(PARTY_HEADER, self.index.to_string()).send().await?;
+                let mut resp = self
+                    .http
+                    .get(url)
+                    .header(TOKEN_HEADER, &self.st.token)
+                    .header(PARTY_HEADER, self.index.to_string())
+                    .send()
+                    .await?;
                 Ok(match resp.status() {
                     StatusCode::OK => {
                         if resp.content_length().is_some_and(|n| n > limit as u64) {
@@ -200,7 +206,12 @@ impl Transport for HttpTransport {
         }
         let path = self.work_dir.join(format!("r{}-{name}.blob", round.number()));
         std::fs::write(&path, bytes).map_err(|e| fhe_prio3::Error::Protocol(format!("ceremony: staging {name}: {e}")))?;
-        self.st.served.lock().unwrap_or_else(|e| e.into_inner()).staged.insert((round.number(), name.to_string()), path);
+        self.st
+            .served
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .staged
+            .insert((round.number(), name.to_string()), path);
         Ok(())
     }
     fn publish(&mut self, msg: &Message) -> fhe_prio3::Result<()> {
@@ -220,7 +231,12 @@ impl Transport for HttpTransport {
         self.poll(&url, &format!("party {from}'s {name}"), MAX_BLOB_BYTES)
     }
     fn abort(&mut self, reason: &str) {
-        self.st.served.lock().unwrap_or_else(|e| e.into_inner()).aborted.get_or_insert(reason.to_string());
+        self.st
+            .served
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .aborted
+            .get_or_insert(reason.to_string());
     }
 }
 
@@ -231,15 +247,22 @@ impl Transport for HttpTransport {
 pub async fn run(cfg: CeremonyNodeConfig) -> anyhow::Result<CeremonyOutput> {
     init_crypto();
     let n = cfg.task.num_aggregators;
-    anyhow::ensure!(cfg.peers.len() == n && cfg.pinned.len() == n && cfg.index < n, "need one peer URL and one pinned key per aggregator, and index < {n}");
+    anyhow::ensure!(
+        cfg.peers.len() == n && cfg.pinned.len() == n && cfg.index < n,
+        "need one peer URL and one pinned key per aggregator, and index < {n}"
+    );
     std::fs::create_dir_all(&cfg.work_dir)?;
-    let st = Arc::new(ServerState { session_hex: hex::encode(cfg.session), token: cfg.token.clone(), served: Mutex::new(Served::default()) });
+    let st = Arc::new(ServerState {
+        session_hex: hex::encode(cfg.session),
+        token: cfg.token.clone(),
+        served: Mutex::new(Served::default()),
+    });
     let app = Router::new()
         .route("/v1/ceremony/:session/:round/message", get(get_message))
         .route("/v1/ceremony/:session/:round/blob/:name", get(get_blob))
         .with_state(st.clone());
     let tls = axum_server::tls_rustls::RustlsConfig::from_pem_file(&cfg.tls_cert, &cfg.tls_key).await?;
-    let handle = axum_server::Handle::new();
+    let handle = ServerHandle::new();
     let server = tokio::spawn(axum_server::bind_rustls(cfg.listen, tls).handle(handle.clone()).serve(app.into_make_service()));
 
     let mut transport = HttpTransport {

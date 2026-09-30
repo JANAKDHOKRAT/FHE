@@ -36,16 +36,16 @@ pub mod verify;
 pub mod xof;
 
 pub use aggregator::{Aggregator, AggregatorState, Verdict};
-pub use client::Client;
-pub use collector::Collector;
 pub use attest::{AggregatorIdentity, MaterialAttestation};
 pub use auth::{ClientIdentity, ClientRegistry, StaticRegistry};
-pub use config::{AuthPolicy, CollectorPolicy, TaskConfig, VerificationMode};
-pub use seal::{CollectorSealKey, SealedShare};
-pub use error::{Error, RejectReason, Result};
+pub use client::Client;
+pub use collector::Collector;
 pub use collector::PendingRelease;
+pub use config::{AuthPolicy, CollectorPolicy, TaskConfig, VerificationMode};
+pub use error::{Error, RejectReason, Result};
 pub use messages::{
-    AggregateShare, CountCommit, CountOpening, CountReveal, CountShare, MaskCommit, MaskMessage, PublicMaterial, ReleaseChallenge, ReleaseCommit, ReleaseOpening, ReleaseReveal, Report,
-    VerifierCommit, VerifierMessage,
+    AggregateShare, CountCommit, CountOpening, CountReveal, CountShare, MaskCommit, MaskMessage, PublicMaterial, ReleaseChallenge, ReleaseCommit,
+    ReleaseOpening, ReleaseReveal, Report, VerifierCommit, VerifierMessage,
 };
+pub use seal::{CollectorSealKey, SealedShare};
 pub use types::{AggregateResult, BatchResult, Measurement, MeasurementType, RegressionResult};

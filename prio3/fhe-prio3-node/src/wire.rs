@@ -2,12 +2,12 @@
 
 use axum::body::Bytes;
 use axum::http::{HeaderMap, StatusCode, header};
+use fhe_prio3::messages::ReportId;
 use fhe_prio3::messages::{decode, encode};
 use fhe_prio3::{
-    AggregateShare, BatchResult, CountCommit, CountOpening, CountReveal, CountShare, MaskCommit, MaskMessage, ReleaseCommit, ReleaseReveal, Report, SealedShare, VerifierCommit,
-    VerifierMessage,
+    AggregateShare, BatchResult, CountCommit, CountOpening, CountReveal, CountShare, MaskCommit, MaskMessage, ReleaseCommit, ReleaseReveal, Report,
+    SealedShare, VerifierCommit, VerifierMessage,
 };
-use fhe_prio3::messages::ReportId;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
@@ -159,6 +159,25 @@ pub struct CloseReply {
 /// A protocol error carried back to the caller as HTTP 4xx/5xx with a body.
 #[derive(Debug)]
 pub struct HttpError(pub StatusCode, pub String);
+
+/// The handle of a TCP server (axum-server 0.8 makes the handle generic
+/// over the listening address type; every node here listens on a socket
+/// address).
+pub type ServerHandle = axum_server::Handle<std::net::SocketAddr>;
+
+/// Locks `m` for a request handler. A poisoned lock means an earlier
+/// request panicked while holding this state: the process must not carry
+/// on as if nothing happened, and it must not crash either. The request is
+/// refused with 503 and a message that names the state and says to restart
+/// the node, whose persisted snapshot is the last committed step.
+pub fn guard<'a, T>(m: &'a std::sync::Mutex<T>, what: &str) -> Result<std::sync::MutexGuard<'a, T>, HttpError> {
+    m.lock().map_err(|_| {
+        HttpError(
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!("{what} state is poisoned by an earlier panic; restart this node to resume from its last committed step"),
+        )
+    })
+}
 
 impl axum::response::IntoResponse for HttpError {
     fn into_response(self) -> axum::response::Response {

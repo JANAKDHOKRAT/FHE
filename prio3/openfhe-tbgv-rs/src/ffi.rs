@@ -53,9 +53,26 @@ unsafe extern "C" {
     pub fn tbgv_context_clear_rotkeys(ctx: TbgvContext, tag: *const c_char) -> c_int;
     pub fn tbgv_context_num_towers(ctx: TbgvContext) -> u32;
     pub fn tbgv_context_moduli(ctx: TbgvContext, out: *mut u64, out_len: usize) -> c_int;
-    pub fn tbgv_ciphertext_meta(ct: TbgvCiphertext, num_elements: *mut u32, num_towers: *mut u32, level: *mut u32, noise_scale_deg: *mut u32, scaling_factor_int: *mut u64) -> c_int;
+    pub fn tbgv_ciphertext_meta(
+        ct: TbgvCiphertext,
+        num_elements: *mut u32,
+        num_towers: *mut u32,
+        level: *mut u32,
+        noise_scale_deg: *mut u32,
+        scaling_factor_int: *mut u64,
+    ) -> c_int;
     pub fn tbgv_ciphertext_export(ct: TbgvCiphertext, out: *mut u64, out_len: usize) -> c_int;
-    pub fn tbgv_ciphertext_build(ctx: TbgvContext, reference: TbgvCiphertext, num_elements: u32, num_towers: u32, level: u32, noise_scale_deg: u32, scaling_factor_int: u64, values: *const u64, len: usize) -> TbgvCiphertext;
+    pub fn tbgv_ciphertext_build(
+        ctx: TbgvContext,
+        reference: TbgvCiphertext,
+        num_elements: u32,
+        num_towers: u32,
+        level: u32,
+        noise_scale_deg: u32,
+        scaling_factor_int: u64,
+        values: *const u64,
+        len: usize,
+    ) -> TbgvCiphertext;
     pub fn tbgv_clear_keys_for_tag(tag: *const c_char) -> c_int;
     pub fn tbgv_rotkeys_free(keys: TbgvRotKeys);
     pub fn tbgv_rotkeys_serialize(keys: TbgvRotKeys, out: *mut *mut u8, out_len: *mut usize) -> c_int;
@@ -78,7 +95,15 @@ unsafe extern "C" {
     pub fn tbgv_rotkeys_get(ctx: TbgvContext, keys: TbgvRotKeys, index: i32) -> TbgvEvalKey;
 
     pub fn tbgv_ciphertext_mult_monomial(ctx: TbgvContext, ct: TbgvCiphertext, k: u32) -> TbgvCiphertext;
-    pub fn tbgv_zero_encryption(ctx: TbgvContext, pk: TbgvPublicKey, reference: TbgvCiphertext, u: *const i8, e0: *const i8, e1: *const i8, n: usize) -> TbgvCiphertext;
+    pub fn tbgv_zero_encryption(
+        ctx: TbgvContext,
+        pk: TbgvPublicKey,
+        reference: TbgvCiphertext,
+        u: *const i8,
+        e0: *const i8,
+        e1: *const i8,
+        n: usize,
+    ) -> TbgvCiphertext;
     pub fn tbgv_monomial_slots(ctx: TbgvContext, out: *mut u64, out_len: usize) -> c_int;
     pub fn tbgv_fuse_magnitude(ctx: TbgvContext, partials: *const TbgvCiphertext, n: usize, max_abs: *mut u64, q0: *mut u64) -> c_int;
 
@@ -87,7 +112,14 @@ unsafe extern "C" {
     pub fn tbgv_encrypt(ctx: TbgvContext, pk: TbgvPublicKey, pt: TbgvPlaintext) -> TbgvCiphertext;
     pub fn tbgv_ciphertext_clone(ct: TbgvCiphertext) -> TbgvCiphertext;
     pub fn tbgv_ciphertext_free(ct: TbgvCiphertext);
-    pub fn tbgv_ciphertext_info(ct: TbgvCiphertext, level: *mut u32, num_elements: *mut u32, noise_scale_deg: *mut u32, num_limbs: *mut u32, packed: *mut u32) -> c_int;
+    pub fn tbgv_ciphertext_info(
+        ct: TbgvCiphertext,
+        level: *mut u32,
+        num_elements: *mut u32,
+        noise_scale_deg: *mut u32,
+        num_limbs: *mut u32,
+        packed: *mut u32,
+    ) -> c_int;
     pub fn tbgv_ciphertext_key_tag(ct: TbgvCiphertext) -> *mut c_char;
     pub fn tbgv_ciphertext_same_context(ctx: TbgvContext, ct: TbgvCiphertext) -> c_int;
     pub fn tbgv_ciphertext_serialize(ct: TbgvCiphertext, out: *mut *mut u8, out_len: *mut usize) -> c_int;
@@ -105,12 +137,38 @@ unsafe extern "C" {
     pub fn tbgv_ciphertext_add_noise_for_tests(ctx: TbgvContext, ct: TbgvCiphertext, log2_magnitude: u32, seed: u64) -> TbgvCiphertext;
 
     pub fn tbgv_flooding_sigma(ctx: TbgvContext) -> f64;
-    pub fn tbgv_fuse_raw(ctx: TbgvContext, partials: *const TbgvCiphertext, n: usize, out_over_t: *mut f64, out_len: usize, log2_max: *mut f64, log2_q: *mut f64) -> c_int;
-    pub fn tbgv_raw_decrypt_for_tests(ctx: TbgvContext, ct: TbgvCiphertext, sks: *const TbgvSecretKey, n: usize, out_over_t: *mut f64, out_len: usize, log2_max: *mut f64, log2_q: *mut f64) -> c_int;
+    pub fn tbgv_fuse_raw(
+        ctx: TbgvContext,
+        partials: *const TbgvCiphertext,
+        n: usize,
+        out_over_t: *mut f64,
+        out_len: usize,
+        log2_max: *mut f64,
+        log2_q: *mut f64,
+    ) -> c_int;
+    pub fn tbgv_raw_decrypt_for_tests(
+        ctx: TbgvContext,
+        ct: TbgvCiphertext,
+        sks: *const TbgvSecretKey,
+        n: usize,
+        out_over_t: *mut f64,
+        out_len: usize,
+        log2_max: *mut f64,
+        log2_q: *mut f64,
+    ) -> c_int;
     pub fn tbgv_pubkey_inflate_for_tests(ctx: TbgvContext, pk: TbgvPublicKey, log2_k: u32, seed: u64, constant: c_int) -> TbgvPublicKey;
 
-    pub fn tbgv_fuse_flooding_check(ctx: TbgvContext, partials: *const TbgvCiphertext, n: usize, slack_bits: u32, within: *mut c_int, ratio: *mut f64) -> c_int;
-    pub fn tbgv_partial_decrypt_shaped_for_tests(ctx: TbgvContext, ct: TbgvCiphertext, sk: TbgvSecretKey, is_lead: c_int, num: u64, den: u64, seed: u64) -> TbgvCiphertext;
+    pub fn tbgv_fuse_flooding_check(ctx: TbgvContext, partials: *const TbgvCiphertext, n: usize, slack_bits: u32, within: *mut c_int, ratio: *mut f64)
+    -> c_int;
+    pub fn tbgv_partial_decrypt_shaped_for_tests(
+        ctx: TbgvContext,
+        ct: TbgvCiphertext,
+        sk: TbgvSecretKey,
+        is_lead: c_int,
+        num: u64,
+        den: u64,
+        seed: u64,
+    ) -> TbgvCiphertext;
     pub fn tbgv_pubkey_inflate_ratio_for_tests(ctx: TbgvContext, pk: TbgvPublicKey, num: u64, den: u64) -> TbgvPublicKey;
 
     pub fn tbgv_partial_decrypt(ctx: TbgvContext, ct: TbgvCiphertext, sk: TbgvSecretKey, is_lead: c_int) -> TbgvCiphertext;

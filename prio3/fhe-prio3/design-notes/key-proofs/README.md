@@ -218,7 +218,7 @@ relations through this crate's shim, before any proof code.
 `kyber1024-bench.c` is LaZer's `demos/kyber1024/kyber1024-demo.c` (MIT,
 IBM) with two additions: the proof length is read back from
 `lin_prover_prove`, and prover and verifier are timed separately over 20
-runs. `lazer-test-suite.log` is the unedited output of `run-tests`.
+runs. `lazer-test-suite.txt` is the unedited output of `run-tests`.
 
 ## 10. References
 

@@ -411,9 +411,14 @@ of the design were each found insufficient by measurement and replaced:
   (lattice NIZKs such as Lyubashevsky–Nguyen–Plançon 2022 or LaBRADOR) at
   ring dimension 65536 across the modulus chain. No implementation for
   OpenFHE's key formats exists. We do not implement it and do not claim
-  it. For deployments that need more than the measured bound: run the
-  ceremony in attested TEEs with reproducible builds and independent
-  operators.
+  it. `design-notes/key-proofs/README.md` records an assessment of
+  building it on IBM's LaZer library (2026-09-30): compatible with the
+  ceremony and invisible to clients, but our key moduli exceed LaZer's
+  proof-ring limit, so it needs a per-tower lifting with one shared
+  commitment that nobody has built; a partial-tower proof is shown there
+  to be an attack. Decision: not now. For deployments that need more
+  than the measured bound: run the ceremony in attested TEEs with
+  reproducible builds and independent operators.
 
 ### 6.3 Other residual risks
 

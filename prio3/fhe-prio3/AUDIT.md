@@ -174,13 +174,14 @@ detection off because OpenFHE's static tables are never freed): every
 suite of `openfhe-tbgv-rs` (unit, `crs_ceremony`, `key_noise_gap`,
 `openfhe_loader_facts`, `raw_residues`, `threshold`, `vdec_primitives`)
 passed with no report. The protocol crate's `wire` suite, which feeds the
-shim its hostile residues and the seeded mutation fuzz, has **not** been
-run under the sanitizers yet: two attempts to build it instrumented, made
-while the migration suites were using the same machine, stalled in the
-compiler and were killed. That run is still owed and is recorded here
-when it completes. OpenFHE itself is not instrumented in these runs, so
-an error inside OpenFHE's own code would be seen only where it touches
-memory the shim allocated.
+shim its hostile residues and the seeded mutation fuzz, passed the same
+way: 7 of 7, no report, 739 s. (Method note for whoever repeats this: the
+`libasan` preload must be applied to the test binary only, not to the
+`cargo` invocation; preloading it into `rustc` deadlocks the compiler.
+Build with `cargo test --no-run` and run the binary under `LD_PRELOAD`.)
+OpenFHE itself is not instrumented in these runs, so an error inside
+OpenFHE's own code would be seen only where it touches memory the shim
+allocated.
 
 *What this pass does not do:* prove memory safety, review OpenFHE, or
 replace an external audit. The trusted base is unchanged.

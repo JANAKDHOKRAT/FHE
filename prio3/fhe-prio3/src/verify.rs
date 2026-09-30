@@ -7,9 +7,12 @@
 //! E_j = sum_i r_{j,i} * x_i (x_i - 1)  +  sum_l r_{j,m+l} * L_l(x)
 //! ```
 //!
-//! with all `r` derived by an XOF from the task configuration and the report
-//! identifier (a hash of the ciphertexts), so they are fixed only after the
-//! client has committed to its ciphertexts. If the report is valid every
+//! with all `r` derived by an XOF from the task configuration, the task's
+//! secret verify key (`keys::VerifyKey`, held by the aggregators only) and
+//! the report identifier (a hash of the ciphertexts). They are fixed only
+//! after the client has committed to its ciphertexts, and the client cannot
+//! compute them at all: it cannot search offline for ciphertexts that pass.
+//! Each submitted report is one attempt. If the report is valid every
 //! term is zero. If it is not, the vector of terms is non-zero and each
 //! `E_j` is zero with probability exactly `1/p` over the choice of `r_j`.
 //!
@@ -23,6 +26,7 @@
 use crate::config::TaskConfig;
 use crate::error::Result;
 use crate::field::Field;
+use crate::keys::VerifyKey;
 use crate::layout::{Layout, LayoutKind};
 use crate::messages::ReportId;
 use crate::xof::Xof;
@@ -47,12 +51,14 @@ pub struct Challenge {
 impl Challenge {
     /// `group` is the report's group in a batched layout (0 otherwise). The
     /// coefficients are placed at that group's slots only, so a client that
-    /// packs values anywhere else has them ignored.
-    pub fn derive(cfg: &TaskConfig, field: &Field, layout: &Layout, report_id: &ReportId, group: usize) -> Self {
+    /// packs values anywhere else has them ignored. `verify_key` is the
+    /// task's secret verify key: without it the coefficients are
+    /// unpredictable (SHAKE128 keyed with 256 secret bits).
+    pub fn derive(cfg: &TaskConfig, field: &Field, layout: &Layout, verify_key: &VerifyKey, report_id: &ReportId, group: usize) -> Self {
         let m = layout.input_len;
         let k = layout.repetitions;
         let constraints = cfg.measurement_type.linear_constraints();
-        let mut xof = Xof::new(b"verify", &[&cfg.binding(), report_id]);
+        let mut xof = Xof::new(b"verify", &[verify_key.as_bytes(), &cfg.binding(), report_id]);
 
         let mut r: Vec<Vec<u64>> = Vec::with_capacity(k);
         for _ in 0..k {

@@ -32,7 +32,7 @@ fn ceremony_with(cfg: &TaskConfig, dev: Deviation, session: u8) -> Option<(Publi
         return None;
     }
     let outs: Vec<_> = out.into_iter().map(|r| r.unwrap()).collect();
-    Some((outs[0].material.clone(), outs.iter().map(|o| o.share.clone()).collect()))
+    Some((outs[0].material.clone(), outs.iter().map(|o| o.secret.clone()).collect()))
 }
 
 #[test]

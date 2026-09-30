@@ -27,7 +27,7 @@ assumption below says otherwise.
 
 | Goal | Statement |
 |---|---|
-| **R1** robustness against clients | An invalid measurement enters no aggregate, except with probability `≤ (2/p)^k` per report (`k` repetitions). |
+| **R1** robustness against clients | An invalid measurement enters no aggregate, except with probability `≤ (2/p)^k` per submitted report (`k` repetitions). The bound is online: the challenge is keyed with the aggregators' secret verify key, so a client cannot search offline for a passing report. A client colluding with an aggregator that gives it the key can search offline: about `(p/2)^k` encryptions per forgery (`2^124` verdict, `2^78` silent). |
 | **R2** robustness against aggregators | A malicious aggregator cannot make an invalid report accepted in verdict mode, except with probability `≤ 1/p` per repetition whose check value is nonzero (§4.1). It cannot change the decrypted valid count (silent mode) or a released aggregate without the verifier aborting, except with probability `≤ 2^-80` per verification (§4.2). It **can** make valid reports rejected and stop the protocol (n-of-n). |
 | **P1** input privacy | A coalition of up to `n − 1` aggregators, any collectors and any clients learns nothing about an honest client's input beyond the released aggregates of batches with at least `min_batch_size` **valid** reports, plus the leakage listed in §6. |
 | **K1** key secrecy | No coalition of fewer than `n` aggregators learns the joint secret key or an honest share. |
@@ -40,17 +40,22 @@ assumption below says otherwise.
 | A1 | Decision-RLWE is hard for OpenFHE 1.3.1's parameters at `HEStd_128_classic` (ring dimension and modulus chosen by OpenFHE from the depth). | semantic security of every ciphertext (P1), hiding of the check exponents (R2), security of key contributions (K1) |
 | A2 | OpenFHE's `NOISE_FLOODING_MULTIPARTY` partial decryptions are statistically simulatable from their fused plaintext for ciphertexts whose noise is within the bound OpenFHE's parameters assume, for the number of partial decryptions per ciphertext the protocol makes (§5). Measured: the flooding is uniform on `[-Q'/2, Q'/2]`, `Q' = Q_l/q0`, and honest noise is 119 bits or more below it at every decryption point (§6.2). | P1, K1 |
 | A3 | Every key contribution in the ceremony is well formed (small secret, noise from the specified distribution). **Not proven; bounded by the ceremony's deep key check** so that accepted keys leave every decryption point about 64 bits or more below the flooding (measured, verdict mode, §6.2). | A2's noise bound |
-| A4 | SHA-256 is collision resistant and, for commitments to high-entropy values, modeled as a random oracle (hiding). SHAKE128 is a random oracle for challenge and CRS expansion. | R1 (Fiat–Shamir), R2 (commitments), K1/K2 (CRS, commitments) |
-| A5 | Ed25519 is EUF-CMA; X25519 + HKDF-SHA256 + AES-256-GCM is IND-CCA as a KEM-DEM. | ceremony and attestation authenticity; sealing to collectors |
+| A4 | SHA-256 is collision resistant and, for commitments to high-entropy values, modeled as a random oracle (hiding). SHAKE128 keyed with the 256-bit verify key is a PRF (challenge expansion) and a random oracle for CRS expansion. | R1 (keyed challenge), R2 (commitments), K1/K2 (CRS, commitments) |
+| A5 | Ed25519 is EUF-CMA; X25519 + HKDF-SHA256 + AES-256-GCM is IND-CCA as a KEM-DEM. | ceremony and attestation authenticity; sealing to collectors; secrecy of the verify key in the ceremony |
 | A6 | OpenFHE 1.3.1 implements BGV-RNS as documented. The build is gated to that version, and a start-up self-test checks exact rebuild of every exchanged object at every level the task uses. | everything |
 | A7 | Honest parties run this code on hardware and operating systems that do not leak their shares; TLS authenticates peers. | everything |
 
 ## 3. Robustness against clients (R1)
 
-Unchanged from `FHE_PRIO3_SPEC.md` §4.1: for an invalid `x`, each
-repetition's `E_j = <r_j, v(x)>` is zero with probability `1/p` over the
-Fiat–Shamir challenge, and the revealed `E_j ρ_j` is zero with probability
-at most `2/p`. The range of every linear constraint over 0/1 slots is
+As in `FHE_PRIO3_SPEC.md` §4.1: for an invalid `x`, each repetition's
+`E_j = <r_j, v(x)>` is zero with probability `1/p` over the challenge, and
+the revealed `E_j ρ_j` is zero with probability at most `2/p`. The
+challenge is expanded from the task's verify key, which the ceremony
+generates jointly and only aggregators hold, so a client cannot evaluate
+it and each submitted report is one attempt (tests:
+`challenge_is_bound_to_report_task_and_verify_key`,
+`aggregators_with_different_verify_keys_accept_nothing`, and the ceremony's
+`SplitVerifyKey` deviation and no-cleartext check in `tests/ceremony.rs`). The range of every linear constraint over 0/1 slots is
 checked not to reach `±p` (`check_constraints_fit`), so arithmetic mod `p`
 equals arithmetic over the integers. Tests: `tests/protocol.rs`,
 `tests/bounds.rs`, `types.rs::constraint_fit_is_exact_on_every_assignment`.

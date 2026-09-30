@@ -90,6 +90,14 @@ Recommend that deployments that cannot trust aggregators during setup run
 the ceremony under stronger procedural controls (independent operators,
 recorded builds) until such proofs exist.
 
+**2026-09-30 assessment of building such proofs on LaZer** (IBM's lattice
+proof library): `design-notes/key-proofs/README.md`. Compatible with the
+ceremony and invisible to clients; blocked today by LaZer's proof-modulus
+limit (our key moduli are 350 and 1277 bits against a 2^225 statement
+limit), which forces a per-tower lifting with one shared commitment that
+does not exist yet. One reference proof was built and measured there
+(20,279 bytes, 105 ms prove, 53 ms verify). Decision unchanged: not built.
+
 ## 5. Invariants an auditor should check
 
 1. No honest party partially decrypts a received ciphertext except:

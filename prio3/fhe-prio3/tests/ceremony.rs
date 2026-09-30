@@ -10,7 +10,10 @@ use fhe_prio3::messages::encode;
 use fhe_prio3::*;
 
 fn run_all(cfg: &TaskConfig, ids: &[AggregatorIdentity], pinned: &[[u8; 32]], session: [u8; 32], devs: &[Deviation]) -> Vec<Result<ceremony::CeremonyOutput>> {
-    let net = MemoryNetwork::default();
+    run_on(&MemoryNetwork::default(), cfg, ids, pinned, session, devs)
+}
+
+fn run_on(net: &MemoryNetwork, cfg: &TaskConfig, ids: &[AggregatorIdentity], pinned: &[[u8; 32]], session: [u8; 32], devs: &[Deviation]) -> Vec<Result<ceremony::CeremonyOutput>> {
     std::thread::scope(|s| {
         let handles: Vec<_> = (0..ids.len())
             .map(|i| {
@@ -35,19 +38,28 @@ fn three_aggregators_generate_working_keys_without_a_dealer() {
     let t = MeasurementType::SumVec { length: 4, bits: 3 };
     let cfg = TaskConfig::new(task_id(90), t.clone(), 3);
     let (ids, pinned) = identities(3);
-    let out = run_all(&cfg, &ids, &pinned, [1u8; 32], &[Deviation::None; 3]);
+    let wire = MemoryNetwork::default();
+    let out = run_on(&wire, &cfg, &ids, &pinned, [1u8; 32], &[Deviation::None; 3]);
     let out: Vec<ceremony::CeremonyOutput> = out.into_iter().map(|r| r.expect("honest ceremony")).collect();
-    // every party holds the same attested material and transcript, and its own share
-    for o in &out[1..] {
+    // every party holds the same attested material and transcript, the same
+    // verify key, and its own share
+    let secrets: Vec<keys::AggregatorSecret> = out.iter().map(|o| keys::AggregatorSecret::decode(&o.secret).unwrap()).collect();
+    for (o, s) in out[1..].iter().zip(&secrets[1..]) {
         assert_eq!(encode(&o.material).unwrap(), encode(&out[0].material).unwrap());
         assert_eq!(o.transcript, out[0].transcript);
+        assert_eq!(s.verify_key, secrets[0].verify_key);
+        assert_ne!(s.share, secrets[0].share);
     }
-    assert_ne!(out[0].share, out[1].share);
+    // the verify key never crossed the transport in the clear
+    let vk = secrets[0].verify_key.as_bytes();
+    for bytes in wire.observed() {
+        assert!(!bytes.windows(32).any(|w| w == vk), "the verify key appears in a message or blob");
+    }
     attest::verify_material(&cfg, &out[0].material, &pinned).unwrap();
     assert_eq!(out[0].material.rotation_indices, cfg.layout(keys::make_context(&cfg).unwrap().row_slots()).unwrap().rotation_indices());
 
     // the keys run the protocol: accept, reject, aggregate
-    let shares: Vec<Vec<u8>> = out.iter().map(|o| o.share.clone()).collect();
+    let shares: Vec<Vec<u8>> = out.iter().map(|o| o.secret.clone()).collect();
     let material = out.into_iter().next().unwrap().material;
     let mut net = Net::with_keys(cfg, material, &shares, None);
     let rows = vec![vec![1u64, 7, 0, 3], vec![5, 2, 6, 7], vec![0, 0, 1, 4]];
@@ -74,6 +86,7 @@ fn every_deviation_is_caught_by_the_honest_parties() {
         (Deviation::WrongPartial, "joint key check"),
         (Deviation::MisshapedPartial, "partial decryption: UnexpectedShape"),
         (Deviation::WrongTranscript, "saw another transcript"),
+        (Deviation::SplitVerifyKey, "derived another verify key"),
     ];
     for (k, &(dev, why)) in cases.iter().enumerate() {
         let out = run_all(&cfg, &ids, &pinned, [10 + k as u8; 32], &[Deviation::None, dev, Deviation::None]);

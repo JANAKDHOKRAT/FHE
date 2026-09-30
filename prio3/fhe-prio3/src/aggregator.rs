@@ -26,8 +26,9 @@
 //! closes the batch.
 //!
 //! Privacy invariant: an aggregator only ever partially decrypts ciphertexts
-//! it computed itself from (a) the report bytes, (b) the deterministic
-//! challenge, and (c) in verdict mode the received masks, whose content
+//! it computed itself from (a) the report bytes, (b) the challenge (a
+//! deterministic function of the task, the report id and the verify key all
+//! aggregators share), and (c) in verdict mode the received masks, whose content
 //! cannot affect what the decryption reveals as long as this aggregator's own
 //! mask is uniform and the others were committed before it was revealed.
 
@@ -146,6 +147,9 @@ pub struct Aggregator {
     _keys: keys::KeyLease,
     index: usize,
     share: SecretShare,
+    /// The task's secret verify key: every report's challenge is expanded
+    /// from it (see `verify.rs`). Never leaves this aggregator.
+    verify_key: keys::VerifyKey,
     circuit: Circuit,
     /// Packed wire format bound to this task's parameters and joint key:
     /// every ciphertext received from another party is parsed and rebuilt
@@ -174,14 +178,17 @@ pub struct Aggregator {
 }
 
 impl Aggregator {
+    /// `secret` is this aggregator's encoded [`keys::AggregatorSecret`] (its
+    /// key share and the task's verify key) as the ceremony returned it.
     /// `registry` is required when the task's `AuthPolicy` is `Required`.
     pub fn new(
         cfg: TaskConfig,
         material: &PublicMaterial,
         index: usize,
-        share: &[u8],
+        secret: &[u8],
         registry: Option<Arc<dyn ClientRegistry>>,
     ) -> Result<Self> {
+        let secret = keys::AggregatorSecret::decode(secret)?;
         let field = cfg.validate()?;
         if index >= cfg.num_aggregators {
             return Err(Error::Config("aggregator index out of range".into()));
@@ -208,7 +215,8 @@ impl Aggregator {
         if need.iter().any(|i| !material.rotation_indices.contains(i)) {
             return Err(Error::Config("rotation keys do not cover the task layout".into()));
         }
-        let share = ctx.deserialize_secret_share(share)?;
+        let share = ctx.deserialize_secret_share(&secret.share)?;
+        let verify_key = secret.verify_key.clone();
         let circuit = Circuit::new(&ctx, &layout)?;
         let codec = Codec::new(&ctx, &pk, &material.public_key)?;
         Ok(Self {
@@ -220,6 +228,7 @@ impl Aggregator {
             _keys: key_lease,
             index,
             share,
+            verify_key,
             circuit,
             codec,
             registry,
@@ -387,7 +396,7 @@ impl Aggregator {
             return Err(Error::Protocol("prepare_init is only valid in verdict mode".into()));
         }
         let chunks = self.admit(report).map_err(Error::Reject)?;
-        let challenge = Challenge::derive(&self.cfg, &self.field, &self.layout, &report.report_id, 0);
+        let challenge = Challenge::derive(&self.cfg, &self.field, &self.layout, &self.verify_key, &report.report_id, 0);
         let s = self.circuit.check_sum(&chunks, &challenge)?;
         let mask = self.circuit.make_mask(&self.pk, &self.field, &mut self.rng)?;
         let mask_bytes = self.codec.encode(&mask)?;
@@ -596,7 +605,7 @@ impl Aggregator {
         if self.silent_batch.used_groups.contains(&group) {
             self.flush_silent_batch()?;
         }
-        let challenge = Challenge::derive(&self.cfg, &self.field, &self.layout, &report.report_id, group);
+        let challenge = Challenge::derive(&self.cfg, &self.field, &self.layout, &self.verify_key, &report.report_id, group);
         let terms = self.circuit.report_terms(&chunks, &challenge)?;
         self.silent_batch.terms = Some(match self.silent_batch.terms.take() {
             None => terms,

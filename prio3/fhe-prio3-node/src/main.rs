@@ -3,7 +3,8 @@
 //! Key material: in a deployment every aggregator runs `init-identity` once
 //! and then `ceremony` on its own machine, together: the distributed
 //! ceremony of `fhe_prio3::ceremony` over HTTPS, after which each machine
-//! holds the attested public material and only its own sealed share.
+//! holds the attested public material and only its own sealed secret (its
+//! key share and the task's verify key).
 //! `keygen` runs every party in one process (a dealer that sees every
 //! share) and exists for tests and trials.
 
@@ -37,8 +38,9 @@ enum Cmd {
     },
     /// Distributed key ceremony: run on every aggregator's own machine at
     /// the same time. Writes `material.bin` (attested by every aggregator),
-    /// this aggregator's `share-<i>.sealed` and `transcript.txt`. No machine
-    /// ever holds another aggregator's share.
+    /// this aggregator's `share-<i>.sealed` (its key share and the task's
+    /// verify key) and `transcript.txt`. No machine ever holds another
+    /// aggregator's share.
     Ceremony {
         #[arg(long)]
         task: PathBuf,
@@ -409,7 +411,7 @@ async fn main() -> anyhow::Result<()> {
             bincode::serialize_into(&mut w, &out.material)?;
             std::io::Write::flush(&mut w)?;
             drop(w);
-            std::fs::write(out_dir.join(format!("share-{index}.sealed")), secret::seal(share_label(index, &cfg).as_bytes(), &out.share)?)?;
+            std::fs::write(out_dir.join(format!("share-{index}.sealed")), secret::seal(share_label(index, &cfg).as_bytes(), &out.secret)?)?;
             std::fs::write(out_dir.join("transcript.txt"), format!("{}\n", hex::encode(out.transcript)))?;
             println!(
                 "ceremony complete in {:.1} s: material.bin (attested by all {} aggregators), share-{index}.sealed, transcript {}",

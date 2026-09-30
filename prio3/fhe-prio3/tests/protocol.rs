@@ -269,19 +269,29 @@ fn collector_needs_every_aggregator_and_agreement() {
 }
 
 #[test]
-fn challenge_is_bound_to_report_and_task() {
+fn challenge_is_bound_to_report_task_and_verify_key() {
     let c1 = cfg(15, MeasurementType::Histogram { length: 4 }, 2);
     let mut c2 = c1.clone();
     c2.task_id[0] ^= 1;
     let f = Field::new(c1.plain_mod).unwrap();
     let layout = c1.layout(16384).unwrap();
-    let a = Challenge::derive(&c1, &f, &layout, &[1u8; 32], 0);
-    let b = Challenge::derive(&c1, &f, &layout, &[1u8; 32], 0);
-    let c = Challenge::derive(&c1, &f, &layout, &[2u8; 32], 0);
-    let d = Challenge::derive(&c2, &f, &layout, &[1u8; 32], 0);
+    let k1 = keys::VerifyKey::from_bytes([7u8; 32]);
+    let mut other = [7u8; 32];
+    other[31] ^= 1;
+    let k2 = keys::VerifyKey::from_bytes(other);
+    let a = Challenge::derive(&c1, &f, &layout, &k1, &[1u8; 32], 0);
+    let b = Challenge::derive(&c1, &f, &layout, &k1, &[1u8; 32], 0);
+    let c = Challenge::derive(&c1, &f, &layout, &k1, &[2u8; 32], 0);
+    let d = Challenge::derive(&c2, &f, &layout, &k1, &[1u8; 32], 0);
+    // one bit of the secret key changes every coefficient: whoever lacks the
+    // key (every client) cannot compute the challenge of any report
+    let e = Challenge::derive(&c1, &f, &layout, &k2, &[1u8; 32], 0);
     assert_eq!(a.bit_coeffs, b.bit_coeffs);
     assert_ne!(a.bit_coeffs, c.bit_coeffs);
     assert_ne!(a.bit_coeffs, d.bit_coeffs);
+    for j in 0..layout.repetitions {
+        assert!((0..4).all(|i| a.bit_coeffs[0][j][i] != e.bit_coeffs[0][j][i]), "repetition {j}");
+    }
     // coefficients live only in the encoded input positions
     for j in 0..layout.repetitions {
         assert!(a.bit_coeffs[0][j][..4].iter().any(|&v| v != 0));
@@ -321,4 +331,26 @@ fn tail_slots_cannot_cancel_the_check() {
     // and an honest report still passes afterwards
     net.expect_accept(&net.client.shard(&Measurement::Count(true)).unwrap());
     assert_eq!(net.collect().unwrap(), (AggregateResult::Count(1), 1));
+}
+
+/// The verify key is part of what makes the aggregators agree: an
+/// aggregator holding another key computes another check for the same
+/// report, and the joint decryption of the check is then not zero, so even
+/// valid reports are refused. (The ceremony stops a party that splits the
+/// key; this shows the key is really in the computation.)
+#[test]
+fn aggregators_with_different_verify_keys_accept_nothing() {
+    let _g = serial();
+    let c = cfg(16, MeasurementType::Histogram { length: 4 }, 2);
+    let (material, secrets) = keys::run_local_ceremony(&c).unwrap();
+    let mut split = keys::AggregatorSecret::decode(&secrets[1]).unwrap();
+    split.verify_key = keys::VerifyKey::random();
+    let mut net = Net::with_keys(c.clone(), material, &[secrets[0].clone(), split.encode()], None);
+    let report = net.client.shard(&Measurement::Histogram(2)).unwrap();
+    for v in net.run_report(&report) {
+        assert_eq!(v, Verdict::Rejected(RejectReason::ValidityCheckFailed));
+    }
+    // the same report under agreeing keys is accepted
+    let mut net = Net::new(c);
+    net.expect_accept(&net.client.shard(&Measurement::Histogram(2)).unwrap());
 }

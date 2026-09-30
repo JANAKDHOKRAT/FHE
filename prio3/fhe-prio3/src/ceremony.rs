@@ -36,6 +36,19 @@
 //!   make a wrong result look right). The ceremony succeeds only if the
 //!   decryption equals the value computed from the revealed vectors in
 //!   every slot.
+//! * **Verify key.** The validity challenge of every report is expanded
+//!   from a key all aggregators hold and no client does (Prio3's
+//!   `verify_key`). Each party draws a 32-byte contribution and an
+//!   ephemeral X25519 key; the key's public half travels in the signed
+//!   round-1 message, and in round 2 each party sends its contribution to
+//!   every other party encrypted under their pairwise Diffie–Hellman secret
+//!   (HKDF-SHA256, AES-256-GCM, one key per direction). The verify key is
+//!   the hash of all contributions: unknown to anyone outside the
+//!   aggregators as long as one party keeps its contribution and ephemeral
+//!   key secret, whatever the transport reveals. In round 9 every party
+//!   signs a hash of the key it derived, so a party that sent different
+//!   contributions to different peers stops the ceremony instead of
+//!   splitting the aggregators into groups that reject every report.
 //! * **Equivocation and substitution.** Every message is signed by its
 //!   sender's pinned identity over the task digest, the session and the
 //!   round. In round 9 each party signs the digest of the whole transcript
@@ -52,7 +65,7 @@
 use crate::attest::{self, AggregatorIdentity, MaterialAttestation};
 use crate::config::TaskConfig;
 use crate::error::{Error, Result};
-use crate::keys::make_context;
+use crate::keys::{AggregatorSecret, VerifyKey, make_context};
 use crate::messages::{PublicMaterial, encode};
 use crate::packed::{Codec, Expect};
 use crate::xof::Xof;
@@ -102,8 +115,12 @@ impl Round {
 pub enum Payload {
     /// `commit = H(seed)`; `params` fingerprints the context and the key
     /// shapes, so parties on different parameters stop here.
-    SeedCommit { commit: [u8; 32], params: [u8; 32] },
-    SeedReveal { seed: [u8; 32] },
+    /// `vk_dh` is this party's ephemeral X25519 public key for the verify
+    /// key exchange of round 2.
+    SeedCommit { commit: [u8; 32], params: [u8; 32], vk_dh: [u8; 32] },
+    /// `vk_sealed[j]` is this party's verify-key contribution encrypted to
+    /// party `j` (empty at this party's own index).
+    SeedReveal { seed: [u8; 32], vk_sealed: Vec<Vec<u8>> },
     /// Hashes of the blobs released with round 4: the public-key share,
     /// the round-1 eval-mult contribution and one per rotation index.
     KeyCommit { pk: [u8; 32], relin1: [u8; 32], rot: Vec<[u8; 32]> },
@@ -114,8 +131,9 @@ pub enum Payload {
     Relin2Reveal,
     PartialCommit { partial: [u8; 32], deep: Vec<[u8; 32]> },
     PartialReveal { check_seed: [u8; 32] },
-    /// Digest of the transcript and the joint material, and the attestation.
-    Confirm { transcript: [u8; 32], attestation: MaterialAttestation },
+    /// Digest of the transcript and the joint material, the attestation, and
+    /// a hash of the verify key this party derived (equal for all parties).
+    Confirm { transcript: [u8; 32], attestation: MaterialAttestation, verify_key_check: [u8; 32] },
 }
 
 /// A signed ceremony message.
@@ -195,8 +213,9 @@ pub trait Transport {
 pub struct CeremonyOutput {
     /// Joint material with every aggregator's attestation.
     pub material: PublicMaterial,
-    /// This party's serialized secret share (keep it sealed).
-    pub share: Vec<u8>,
+    /// This party's encoded [`AggregatorSecret`]: its secret key share and
+    /// the task's verify key (keep it sealed; `Aggregator::new` takes it).
+    pub secret: Vec<u8>,
     /// The digest every party signed in round 9.
     pub transcript: [u8; 32],
 }
@@ -218,6 +237,44 @@ fn blob_hash(session: &[u8; 32], sender: usize, blob: &Blob, bytes: &[u8]) -> [u
 
 fn seed_commit(label: &[u8], session: &[u8; 32], sender: usize, seed: &[u8; 32]) -> [u8; 32] {
     h(&[label, session, &(sender as u64).to_le_bytes(), seed])
+}
+
+/// AES-256-GCM key for `from`'s verify-key contribution to `to`, from their
+/// X25519 shared secret. One key per session and direction, used for one
+/// message, so the nonce is fixed.
+fn vk_cipher(session: &[u8; 32], task_digest: &[u8; 32], from: usize, to: usize, shared: &x25519_dalek::SharedSecret) -> Result<aes_gcm::Aes256Gcm> {
+    use aes_gcm::KeyInit;
+    if !shared.was_contributory() {
+        return Err(Error::Protocol(format!("ceremony: the verify-key exchange between parties {from} and {to} produced a non-contributory secret (low-order public key)")));
+    }
+    let hk = hkdf::Hkdf::<Sha256>::new(Some(session), shared.as_bytes());
+    let mut key = [0u8; 32];
+    let info = [CEREMONY_DOMAIN, b" verify key", task_digest, &(from as u64).to_le_bytes(), &(to as u64).to_le_bytes()].concat();
+    hk.expand(&info, &mut key).map_err(|_| Error::Protocol("ceremony: HKDF expand failed".into()))?;
+    let c = aes_gcm::Aes256Gcm::new_from_slice(&key).map_err(|_| Error::Protocol("ceremony: bad AES key length".into()));
+    zeroize::Zeroize::zeroize(&mut key);
+    c
+}
+
+fn vk_seal(session: &[u8; 32], task_digest: &[u8; 32], from: usize, to: usize, shared: &x25519_dalek::SharedSecret, contribution: &[u8; 32]) -> Result<Vec<u8>> {
+    use aes_gcm::aead::{Aead, Payload};
+    vk_cipher(session, task_digest, from, to, shared)?
+        .encrypt(&aes_gcm::Nonce::default(), Payload { msg: contribution, aad: session })
+        .map_err(|_| Error::Protocol("ceremony: sealing the verify-key contribution failed".into()))
+}
+
+fn vk_open(session: &[u8; 32], task_digest: &[u8; 32], from: usize, to: usize, shared: &x25519_dalek::SharedSecret, sealed: &[u8]) -> Result<[u8; 32]> {
+    use aes_gcm::aead::{Aead, Payload};
+    let mut plain = vk_cipher(session, task_digest, from, to, shared)?
+        .decrypt(&aes_gcm::Nonce::default(), Payload { msg: sealed, aad: session })
+        .map_err(|_| Error::Protocol(format!("ceremony: party {from}'s verify-key contribution to party {to} does not open")))?;
+    let out: std::result::Result<[u8; 32], _> = plain.as_slice().try_into();
+    zeroize::Zeroize::zeroize(&mut plain);
+    out.map_err(|_| Error::Protocol(format!("ceremony: party {from}'s verify-key contribution is not 32 bytes")))
+}
+
+fn verify_key_check(session: &[u8; 32], key: &VerifyKey) -> [u8; 32] {
+    h(&[b"verify key check", session, key.as_bytes()])
 }
 
 fn to_bytes(v: &[u64]) -> Vec<u8> {
@@ -268,17 +325,29 @@ fn check_vector(session: &[u8; 32], seed: &[u8; 32], f: &crate::field::Field, ro
 /// a second-moment product if the task has moments. Silent mode: the
 /// validity-gated chunk and count at the bottom of the chain (and a gated
 /// moment product).
-fn protocol_decryption_points(cfg: &TaskConfig, ctx: &Context, field: &crate::field::Field, session: &[u8; 32], ct_hashes: &[u8], x: &Ciphertext, masks: &[Ciphertext]) -> Result<Vec<Ciphertext>> {
+fn protocol_decryption_points(
+    cfg: &TaskConfig,
+    ctx: &Context,
+    field: &crate::field::Field,
+    session: &[u8; 32],
+    ct_hashes: &[u8],
+    x: &Ciphertext,
+    masks: &[Ciphertext],
+) -> Result<Vec<Ciphertext>> {
     use crate::config::VerificationMode;
     use crate::verify::{Challenge, Circuit};
     let layout = cfg.layout(ctx.row_slots())?;
     let circuit = Circuit::new(ctx, &layout)?;
     let chunks: Vec<Ciphertext> = (0..layout.num_chunks).map(|_| x.try_clone()).collect::<std::result::Result<_, _>>()?;
     let report_id = h(&[b"ceremony circuit check", session, ct_hashes]);
+    // Coefficients with the distribution of the real challenge, from a
+    // public key: the decrypted points travel over the transport, and the
+    // task's secret verify key must never enter what is decrypted.
+    let verify_key = VerifyKey::from_bytes(h(&[b"ceremony circuit key", session, ct_hashes]));
     let mut out = Vec::new();
     match cfg.mode {
         VerificationMode::Verdict => {
-            let ch = Challenge::derive(cfg, field, &layout, &report_id, 0);
+            let ch = Challenge::derive(cfg, field, &layout, &verify_key, &report_id, 0);
             let s = circuit.check_sum(&chunks, &ch)?;
             out.push(circuit.apply_masks(&s, &masks.iter().collect::<Vec<_>>())?);
             if layout.moments.is_some() {
@@ -288,7 +357,7 @@ fn protocol_decryption_points(cfg: &TaskConfig, ctx: &Context, field: &crate::fi
             }
         }
         VerificationMode::Silent => {
-            let ch = Challenge::derive(cfg, field, &layout, &report_id, 0);
+            let ch = Challenge::derive(cfg, field, &layout, &verify_key, &report_id, 0);
             let g = circuit.silent_validity(&circuit.class_sums(&circuit.report_terms(&chunks, &ch)?)?)?;
             let masked: Vec<Ciphertext> = chunks.iter().enumerate().map(|(c, ct)| circuit.mask_to_group(ct, c, 0)).collect::<Result<_>>()?;
             out.push(circuit.fold_to_group0(&ctx.mult(&masked[0], &g)?, 0)?);
@@ -394,6 +463,9 @@ pub enum Deviation {
     WrongSeed,
     /// Signs round 9 over another transcript.
     WrongTranscript,
+    /// Sends the next party a verify-key contribution other than the one
+    /// it sends everyone else.
+    SplitVerifyKey,
     /// Signs its messages with another key.
     WrongIdentity,
 }
@@ -566,7 +638,12 @@ fn run_inner(
     let mut seed = [0u8; 32];
     rand_core::RngCore::fill_bytes(&mut rand_core::OsRng, &mut seed);
     let params = params_fingerprint(cfg, &ctx, &indices)?;
-    let commits = me.exchange(t, Round::SeedCommit, Payload::SeedCommit { commit: seed_commit(b"crs seed", &session, index, &seed), params })?;
+    // verify key: an ephemeral X25519 key and a secret contribution
+    let vk_secret = x25519_dalek::StaticSecret::random_from_rng(rand_core::OsRng);
+    let vk_dh = x25519_dalek::PublicKey::from(&vk_secret).to_bytes();
+    let mut vk_contribution = [0u8; 32];
+    rand_core::RngCore::fill_bytes(&mut rand_core::OsRng, &mut vk_contribution);
+    let commits = me.exchange(t, Round::SeedCommit, Payload::SeedCommit { commit: seed_commit(b"crs seed", &session, index, &seed), params, vk_dh })?;
     for (j, c) in commits.iter().enumerate() {
         if let Payload::SeedCommit { params: q, .. } = c {
             if *q != params {
@@ -575,10 +652,49 @@ fn run_inner(
         }
     }
     let revealed = if dev == Deviation::WrongSeed { [0u8; 32] } else { seed };
-    let reveals = me.exchange(t, Round::SeedReveal, Payload::SeedReveal { seed: revealed })?;
+    let peer_dh = |j: usize| -> x25519_dalek::PublicKey {
+        let Payload::SeedCommit { vk_dh, .. } = &commits[j] else { unreachable!("kinds checked") };
+        x25519_dalek::PublicKey::from(*vk_dh)
+    };
+    let mut vk_sealed = Vec::with_capacity(n);
+    for j in 0..n {
+        if j == index {
+            vk_sealed.push(Vec::new());
+            continue;
+        }
+        let mut c = vk_contribution;
+        if dev == Deviation::SplitVerifyKey && j == (index + 1) % n {
+            c[0] ^= 1;
+        }
+        vk_sealed.push(vk_seal(&session, &me.task_digest, index, j, &vk_secret.diffie_hellman(&peer_dh(j)), &c)?);
+        zeroize::Zeroize::zeroize(&mut c);
+    }
+    let reveals = me.exchange(t, Round::SeedReveal, Payload::SeedReveal { seed: revealed, vk_sealed })?;
+    let mut vk_parts: Vec<[u8; 32]> = Vec::with_capacity(n);
+    for (j, r) in reveals.iter().enumerate() {
+        let Payload::SeedReveal { vk_sealed, .. } = r else { unreachable!("kinds checked") };
+        if vk_sealed.len() != n {
+            return Err(Error::Protocol(format!("ceremony: party {j} sent {} verify-key contributions for {n} parties", vk_sealed.len())));
+        }
+        if j == index {
+            vk_parts.push(vk_contribution);
+        } else {
+            vk_parts.push(vk_open(&session, &me.task_digest, j, index, &vk_secret.diffie_hellman(&peer_dh(j)), &vk_sealed[index])?);
+        }
+    }
+    drop(vk_secret);
+    zeroize::Zeroize::zeroize(&mut vk_contribution);
+    let verify_key = {
+        let mut parts: Vec<&[u8]> = vec![b"verify key", &me.task_digest, &session];
+        parts.extend(vk_parts.iter().map(|p| p.as_slice()));
+        VerifyKey::from_bytes(h(&parts))
+    };
+    for p in vk_parts.iter_mut() {
+        zeroize::Zeroize::zeroize(p);
+    }
     let mut crs_parts: Vec<Vec<u8>> = vec![b"crs".to_vec(), me.task_digest.to_vec(), session.to_vec()];
     for (j, (c, r)) in commits.iter().zip(&reveals).enumerate() {
-        let (Payload::SeedCommit { commit, .. }, Payload::SeedReveal { seed: s }) = (c, r) else { unreachable!("kinds checked") };
+        let (Payload::SeedCommit { commit, .. }, Payload::SeedReveal { seed: s, .. }) = (c, r) else { unreachable!("kinds checked") };
         if seed_commit(b"crs seed", &session, j, s) != *commit {
             return Err(Error::Protocol(format!("ceremony: party {j} revealed a seed other than the one it committed to")));
         }
@@ -885,17 +1001,24 @@ fn run_inner(
     let transcript = h(&[b"transcript", &digest_parts]);
     let signed = if dev == Deviation::WrongTranscript { h(&[b"other"]) } else { transcript };
     let attestation = attest::attest(cfg, &material, index, identity);
-    let confirms = me.exchange(t, Round::Confirm, Payload::Confirm { transcript: signed, attestation })?;
+    let vk_check = verify_key_check(&session, &verify_key);
+    let confirms = me.exchange(t, Round::Confirm, Payload::Confirm { transcript: signed, attestation, verify_key_check: vk_check })?;
     let mut material = material;
     for (j, c) in confirms.into_iter().enumerate() {
-        let Payload::Confirm { transcript: d, attestation } = c else { unreachable!("kinds checked") };
+        let Payload::Confirm { transcript: d, attestation, verify_key_check: v } = c else { unreachable!("kinds checked") };
         if d != transcript {
             return Err(Error::Protocol(format!("ceremony: party {j} saw another transcript or computed other keys")));
+        }
+        if v != vk_check {
+            return Err(Error::Protocol(format!(
+                "ceremony: party {j} derived another verify key (some party sent different verify-key contributions to different peers)"
+            )));
         }
         material.attestations.push(attestation);
     }
     attest::verify_material(cfg, &material, pinned)?;
-    Ok(CeremonyOutput { material, share: share.serialize()?, transcript })
+    let secret = AggregatorSecret { verify_key, share: share.serialize()? }.encode();
+    Ok(CeremonyOutput { material, secret, transcript })
 }
 
 /// In-process transport over shared memory, for tests and simulations:
@@ -922,6 +1045,17 @@ pub struct MemoryTransport {
 impl MemoryNetwork {
     pub fn party(&self, index: usize) -> MemoryTransport {
         MemoryTransport { net: self.clone(), index, timeout: std::time::Duration::from_secs(600) }
+    }
+
+    /// Everything the transport carried: every published message (encoded)
+    /// and every released blob. What an observer of the exchange sees.
+    #[doc(hidden)]
+    pub fn observed(&self) -> Vec<Vec<u8>> {
+        let (lock, _) = &*self.inner;
+        let st = lock.lock().unwrap_or_else(|e| e.into_inner());
+        let mut out: Vec<Vec<u8>> = st.messages.values().map(|m| encode(m).expect("message encodes")).collect();
+        out.extend(st.staged.iter().filter(|((r, i, _), _)| st.released.contains(&(*r, *i))).map(|(_, b)| b.clone()));
+        out
     }
 }
 

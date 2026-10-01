@@ -223,46 +223,49 @@ The collector holds no key material.
 ### 3.6 Silent mode
 
 Configured with `TaskConfig::new_silent`: `p = 786433` (`p - 1 = 3 * 2^18`,
-the smallest prime `≡ 1 mod 2^17`), `k = 4` repetitions in `classes = 4`
-residue classes, multiplicative depth 25 (27 in the default batched
-layout, §6b), ring dimension 65536. Soundness
-is `p^-4 = 2^-78` per submitted report, lower than verdict mode's `2^-124`.
-Both are online bounds: the challenge is keyed with the aggregators'
-verify key, so every attempt costs a submitted report (§4.1). Five
-to seven repetitions give up to `2^-137` (depth 28 in the batched layout,
-which five key-switching digits keep at ring dimension 65536; depth 26
-for a single group), but for the single-group chain OpenFHE selects ring
-dimension 131072 (measured: 60 MiB ciphertexts, 228 MiB
-per key), roughly four times the cost of every number below; it is allowed
-by the configuration and not the default. The smaller prime also limits ranges:
+the smallest prime `≡ 1 mod 2^17`), `k = 7` repetitions in `classes = 8`
+residue classes (the next power of two), multiplicative depth 26 (28 in
+the default batched layout, §6b), ring dimension 65536 with five hybrid
+key-switching digits (`TaskConfig::key_switch_digits`; OpenFHE's default
+of three would double the ring from depth 26 on). Soundness is
+`p^-7 = 2^-137.1` per submitted report, above the 128-bit target and
+above verdict mode's `2^-124`. Both are online bounds: the challenge is
+keyed with the aggregators' verify key, so every attempt costs a
+submitted report (§4.1). `k = 4` (four classes, depth 25 single-group,
+27 batched) gives `2^-78` and was the default until 2026-10-01; it is
+still accepted by the configuration, and §5 measures both. The smaller
+prime also limits ranges:
 `Sum` and each `BoundedSumVec` bound can be at most `524287` in silent
 mode, because a wider range constraint could wrap modulo `p` (§4.1); the
 configuration refuses anything wider.
 
-*Layout.* Repetition `j` uses the residue class `j (mod 4)`: the client
-places element `i` of a chunk at slot `4i`, and the aggregator rotates the
-coefficient-multiplied copy by `-j` to move it onto class `j`. Summing a
-class with rotations by `4 * 2^t` (`t = 0..12`) wraps around the whole row,
+*Layout.* With `C = classes` (8 by default), repetition `j` uses the
+residue class `j (mod C)`: the client places element `i` of a chunk at
+slot `C·i`, and the aggregator rotates the coefficient-multiplied copy by
+`-j` to move it onto class `j`. Summing a class with rotations by
+`C · 2^t` wraps around the whole row,
 so *every* slot of class `j` ends up holding `E_j`. There are no junk slots
 and therefore no selector and no mask.
 
 *Circuit* (all on the aggregator, no messages; run once per batch of
 reports, see §6b):
 
-    X_c    = sum of the batch's report ciphertexts, chunk c   // one addition per report
+    X_c    = sum over the batch of mask_r(report_r), chunk c  // per report: one plaintext mult, one addition
     S      = check_sum(X)                         // depth 2, class j of group r holds E_{r,j}
     F      = S^(p-1)                              // Fermat: E^3, then 18 squarings; depth +20
     G      = 1 - F                                // 1 iff E_j = 0
-    for d in [1, 2]: G = G * rotate(G, d)         // product over the 4 classes; depth +2
-    y_c    = mask(X_c) * G                        // group r's slots of G hold `valid_r`; depth +1
+    for d in [1, 2, 4]: G = G * rotate(G, d)      // product over the 8 classes; depth +log2(C) = 3
+    y_c    = X_c * G                              // group r's slots of G hold `valid_r`; depth +1
     sums_c += y_c;  count += G * [slot 0 of each occupied group]
 
 Every report occupies its own group's slots and every operation above is
 slot-wise or a rotation by a multiple of the group stride, so each slot
 sees exactly what it would see with the report alone; the batch challenge
 is the disjoint union of the per-report challenges (`Challenge::derive_batch`).
-At the close the groups are folded into group 0 and the other slots
-masked to zero (depth +1 in the batched layout, §6b).
+`mask_r` keeps only report `r`'s own element slots (depth +1, §6b); with a
+single group the one report is masked as a whole instead. At the close
+the groups are folded into group 0 and the other slots masked to zero
+(depth +1 in the batched layout, §6b).
 
 `valid = prod_j (1 - E_j^(p-1))` is 1 iff every `E_j` is 0, so an invalid
 report adds exactly zero to every slot, and `count` is an encryption of the
@@ -367,7 +370,8 @@ which only the aggregators hold (SHAKE128 keyed with 256 secret bits, used
 as a PRF). A client cannot compute the challenge its ciphertexts will
 face, so it cannot re-encrypt until the check passes before submitting:
 every attempt is a submitted report, accepted with probability at most
-`(2/p)^k` (verdict, `2^-124`) or `p^-k` (silent, `2^-78`), and counted
+`(2/p)^k` (verdict, `2^-124`) or `p^-k` (silent, `2^-137` with the
+default seven repetitions), and counted
 against the client's quota when authentication is required (§3.7). This is
 the role of Prio3's `verify_key`. Before this change the challenge was a
 public function of the report (Fiat–Shamir), and a client could search
@@ -623,15 +627,23 @@ aggregators in one process, about 11 s each.
 
 **Batched silent mode** (`silent_batch_groups` groups, the per-report figure
 includes the batch close, i.e. the shared chain, the fold and the mask;
-`simulate --mode silent --groups G --reports R`, 2 aggregators; measured
-2026-10-01 with the per-report group mask, depth 27 and five digits):
+`simulate --mode silent --groups G --reports R [--repetitions 4]`, 2
+aggregators; measured 2026-10-01 with the per-report group mask and five
+digits; seven repetitions is depth 28, four is depth 27):
 
-| Type | groups | reports | `process_silent` per report per aggregator | per-report path before (2026-09) | before batching |
-| --- | --- | --- | --- | --- | --- |
-| Count | 64 | 64 | **712 ms** | 4.75 s | 16.8 s |
-| Sum(100) | 64 | 64 | **744 ms** | 4.66 s | 16.8 s |
-| Sum(100) | 256 | 256 | **428 ms** | — | — |
-| Count | 2048 | 256 | **425 ms** | — | — |
+| Type | groups | reports | repetitions | `process_silent` per report per aggregator | per-report path before (2026-09) | before batching |
+| --- | --- | --- | --- | --- | --- | --- |
+| Count | 64 | 64 | 7 (default) | **830 ms** | — | — |
+| Sum(100) | 64 | 64 | 7 (default) | **756 ms** | — | — |
+| Sum(100) | 256 | 256 | 7 (default) | **464 ms** | — | — |
+| Count | 64 | 64 | 4 | **712 ms** | 4.75 s | 16.8 s |
+| Sum(100) | 64 | 64 | 4 | **744 ms** | 4.66 s | 16.8 s |
+| Sum(100) | 256 | 256 | 4 | **428 ms** | — | — |
+| Count | 2048 | 256 | 4 | **425 ms** | — | — |
+
+A single group (`--groups 1`, seven repetitions, depth 26, ring dimension
+65536 with five digits) runs the whole circuit for every report: 27.2 s
+per report per aggregator for Count, which is why batching is the default.
 
 Per report the aggregator hashes the report for its id, parses and
 rebuilds the ciphertext, multiplies it by its group's 0/1 mask (one
@@ -640,11 +652,14 @@ it into the batch accumulator. The validity circuit, one full
 multiplication, eight plaintext multiplications, three rotations, the
 Fermat chain, the class product and the gating, runs once per batch, so
 its share per report is the batch cost divided by the reports in it.
-Fitting the two Sum(100) rows to a fixed cost per report plus a fixed cost
-per batch gives about 320 ms per report and about 27 s per batch: about
-420 ms of circuit per report with 64 reports, about 105 ms with 256. The
-per-report part includes the simulator's own encode and decode of each
-report. Every run's aggregate matched the plaintext reference. Primitive
+Fitting the Sum(100) rows to a fixed cost per report plus a fixed cost
+per batch gives, with seven repetitions, about 370 ms per report and about
+25 s per batch (about 390 ms of circuit per report with 64 reports, about
+100 ms with 256); with four, about 320 ms and about 27 s. The two batch
+costs are within run-to-run variance of each other: the three extra
+repetitions add plaintext multiplications and rotations at level 2 only,
+and the Fermat chain, which dominates, is the same. The per-report part
+includes the simulator's own encode and decode of each report. Every run's aggregate matched the plaintext reference. Primitive
 costs at the single-group parameters (depth 25, three digits), from
 `openfhe-tbgv-rs/examples/params_probe.rs`: ciphertext multiplication
 571 ms, rotation 364–410 ms, plaintext multiplication 94 ms, plaintext
@@ -657,11 +672,16 @@ take the auxiliary modulus past the 128-bit bound for ring dimension 65536
 and OpenFHE doubles the ring (measured at depth 26: 131072, 42 MiB
 reports, 1 s per client shard; `params_probe --tuned` reports 131072 at
 depth 27 too). Five digits keep it at 65536 with 31 towers
-(`TaskConfig::key_switch_digits`; four no longer fit at depth 27). Measured
-cost: rotation keys 185 MiB each (3.25 GiB for 18) against 111 MiB
-single-group, the eval-mult key 185 MiB, ceremony 188–197 s against
-70–76 s, aggregator setup about 38 s each, reports 21.33 MiB against
-19.95 MiB, client shard 483–502 ms against 473 ms, simulator peak 8.0 GiB.
+(`TaskConfig::key_switch_digits`; four no longer fit at depth 27; with
+seven repetitions the chain is depth 28, 32 towers). Measured cost with
+the default seven repetitions: rotation keys 190 MiB each (3.90 GiB for
+21), the eval-mult key 190 MiB, ceremony 273–306 s, aggregator setup
+41–48 s each, reports 22.02 MiB, client shard 468–516 ms, simulator peak
+9.46 GiB. With four repetitions: rotation keys 185 MiB each (3.25 GiB for
+18), ceremony 188–197 s, aggregator setup about 38 s each, reports
+21.33 MiB, client shard 483–502 ms, simulator peak 8.0 GiB. The first
+single-group design had 111 MiB keys, a 70–76 s ceremony and 19.95 MiB
+reports.
 Before the per-report mask (§6b) the batched layout ran at depth 26 with
 four digits and measured 402–411 ms per report with 64-report batches and
 216–235 ms with 256; that version was unsound, and the fix costs 1.8 to
@@ -714,16 +734,16 @@ encrypted inputs, which Prio3's linear aggregation cannot do.
   `FLEXIBLEAUTOEXT` fresh ciphertexts have noise degree 2, which a
   hand-written check missed). Since the packed format (§6b) this happens
   in the parser, before anything is rebuilt.
-* **Memory.** Rotation keys dominate: 11 MiB each in verdict mode, 111 MiB
-  each in silent mode (18 of them). The ceremony therefore runs one
+* **Memory.** Rotation keys dominate: 11 MiB each in verdict mode, 190 MiB
+  each in the default silent mode (21 of them, 3.9 GiB; 111 MiB and 18 in
+  the first single-group silent design). The ceremony therefore runs one
   rotation index at a time and `PublicMaterial` stores one serialized map
   per index, so a party never holds two copies of the whole set; a first
   version that did held over 12 GiB and was killed. With OpenFHE's default
   key-switching digits, depth 26 selects ring dimension 131072, which
   doubles every size and time above; the batched silent chain, which is
-  depth 27 (28 with seven repetitions), uses five digits to stay at
-  65536 (§5). A single-group task with seven repetitions (depth 26) still
-  gets the default digits and the larger ring.
+  depth 28 with the default seven repetitions, and the single-group chain
+  at depth 26 both use five digits to stay at 65536 (§5).
 * **OpenFHE global state.** OpenFHE stores evaluation keys in process-global
   tables keyed by key tag and caches contexts by parameters. One process
   should drive one context from one thread; parallelism comes from OpenMP
@@ -741,11 +761,11 @@ encrypted inputs, which Prio3's linear aggregation cannot do.
 Several reports share one verification ciphertext so that the whole
 validity circuit runs once per batch of `R` reports instead of once per
 report. Layout `Batched`: report `r` (its *group*), repetition `j`,
-element `i` at slot `j + 4r + 4R·i`. The client is told its group by the
+element `i` at slot `j + C·r + C·R·i` (`C = classes`). The client is told its group by the
 leader before encrypting (`GET /v1/group`) and packs at that group's slots;
 the group is bound by the report id and the signature. Class sums use
-rotations by `4R·2^t` and wrap the whole row, so every slot of class
-`(r, j)` holds `E_{r,j}`; the product over `j` (rotations by 1, 2) lands
+rotations by `C·R·2^t` and wrap the whole row, so every slot of class
+`(r, j)` holds `E_{r,j}`; the product over `j` (rotations by 1, 2, 4) lands
 `valid_r` on the class-0 slots of group `r`.
 
 *Per report* the aggregator multiplies each fresh chunk by the 0/1
@@ -759,7 +779,7 @@ circuit of §3.6 once on `X`:
   report's coefficients exactly as `derive` would for the report alone
   (keyed with the verify key and the report id) and writes them into that
   report's group slots; the constants of repetition `j` go to slot
-  `j + 4r`. The batch challenge is the disjoint union of the per-report
+  `j + C·r`. The batch challenge is the disjoint union of the per-report
   ones, and because every operation of the circuit is slot-wise or a
   rotation by a multiple of the group stride, each slot of `S`, `F` and `G`
   is the value it would have with the report alone. Soundness is therefore
@@ -799,7 +819,7 @@ circuit of §3.6 once on `X`:
   partial sums over subsets of the reports (for the count, prefix sums of
   the validity bits in group order), and a partial decryption reveals every
   slot. This plaintext multiplication is the second level the batched
-  chain has over the single-group one (depth 27; `TaskConfig::key_switch_digits`
+  chain has over the single-group one (depth 28 by default; `TaskConfig::key_switch_digits`
   keeps ring dimension 65536, §5). The ceremony's deep key check computes
   its silent-mode decryption points through the same group mask, fold and
   mask.
@@ -811,8 +831,8 @@ circuit of §3.6 once on `X`:
   itself coherently; the plaintext is chosen so the doubled value is
   exactly an honest report in each of 1024 groups, with one made invalid)
   and runs it through the verified count round and release: count 1023
-  and sum 1023, exact, at depth 27 with five digits (the parameters the
-  batched layout uses).
+  and sum 1023, exact, at depth 28 with five digits and seven
+  repetitions (the default parameters).
 
 A report that reuses a group already present in the current batch flushes
 the batch first, so group assignment only affects efficiency, never

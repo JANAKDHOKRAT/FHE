@@ -163,9 +163,9 @@ fn silent_mode_sum_with_invalid_report_contributing_zero() {
     let _g = serial();
     let t = MeasurementType::Sum { max_measurement: 100 };
     let cfg = TaskConfig::new_silent(task_id(34), t.clone(), 2);
-    assert_eq!(cfg.mult_depth(), 27); // batched default: 25 plus the group and fold masks
+    assert_eq!(cfg.mult_depth(), 28); // batched default, 7 repetitions in 8 classes: 26 plus the group and fold masks
     let mut net = Net::new(cfg.clone());
-    assert_eq!(net.aggs[0].layout().classes, 4);
+    assert_eq!(net.aggs[0].layout().classes, 8);
 
     let honest = [Measurement::Sum(51), Measurement::Sum(49)];
     for m in &honest {
@@ -269,7 +269,7 @@ fn batched_silent_sum_shares_one_chain() {
     cfg.silent_batch_groups = 4;
     let mut net = Net::new(cfg.clone());
     let l = net.aggs[0].layout().clone();
-    assert_eq!((l.groups, l.classes), (4, 4));
+    assert_eq!((l.groups, l.classes), (4, 8));
     let honest = [51u64, 49, 100, 0, 7];
     // groups 0,1,2,3 fill one sub-batch (flushed automatically); the fifth
     // report reuses group 0 and starts another.
@@ -316,7 +316,7 @@ fn batched_silent_cross_group_injection_is_ignored() {
     assert_eq!((r.report_count, r.valid_count), (3, 3));
 }
 
-/// Correctness gate for the depth-27 batched circuit on worst-case inputs:
+/// Correctness gate for the depth-28 batched circuit on worst-case inputs:
 /// invalid reports whose every slot is `p-1` (the largest magnitude the
 /// plaintext multiplications can see) mixed with valid ones, over several
 /// independent chains. Every decryption must be exact.

@@ -17,6 +17,12 @@ pub const DEFAULT_PLAIN_MOD: u64 = 4_293_918_721;
 /// costs 20 multiplicative levels.
 pub const SILENT_PLAIN_MOD: u64 = 786_433;
 
+/// Default repetitions of the silent-mode check: `7 * log2(786433) = 137.1`
+/// bits of soundness per submitted report, above the 128-bit target. Seven
+/// repetitions use eight residue classes (depth 28 batched, 26 single-group,
+/// both at ring dimension 65536 with five key-switching digits).
+pub const SILENT_REPETITIONS: usize = 7;
+
 /// Multiplicative depth of the verdict-mode verification circuit:
 /// `x(x-1)` (1), multiplication by the check coefficients (2), multiplication
 /// by the masked aggregator randomness (3).
@@ -252,16 +258,17 @@ impl TaskConfig {
         })
     }
 
-    /// Silent mode with 78-bit soundness (`4 * log2(786433)`), batched
-    /// with 64 groups: depth 27, ring dimension 65536 with five
-    /// key-switching digits (depth 25 for a single group). Five to seven
-    /// repetitions give up to 137 bits: depth 28 batched, still 65536; depth
-    /// 26 for a single group, for which OpenFHE selects ring dimension
-    /// 131072 (about four times the cost and memory).
+    /// Silent mode with 137-bit soundness (`7 * log2(786433)`, above the
+    /// 128-bit target), batched with 64 groups: depth 28, ring dimension
+    /// 65536 with five key-switching digits (depth 26 for a single group,
+    /// also 65536 with five digits). Seven repetitions occupy eight residue
+    /// classes, the same as eight would. `repetitions = 4` gives 78 bits at
+    /// depth 27 (25 single-group); measured with `simulate` (spec §5), it
+    /// saves 2 to 14% of aggregator time and 17% of rotation-key size.
     pub fn new_silent(task_id: [u8; 32], measurement_type: MeasurementType, num_aggregators: usize) -> Self {
         let mut c = Self::new(task_id, measurement_type, num_aggregators);
         c.mode = VerificationMode::Silent;
-        c.repetitions = 4;
+        c.repetitions = SILENT_REPETITIONS;
         c.plain_mod = SILENT_PLAIN_MOD;
         c.max_batch_size = 1 << 16;
         c.silent_batch_groups = 64;
@@ -443,16 +450,17 @@ impl TaskConfig {
     }
 
     /// OpenFHE's hybrid key-switching digit count for the task's context, 0
-    /// for OpenFHE's default (3). The batched silent chain is two levels
-    /// deeper than the single-group one; with the default digit count its
-    /// auxiliary modulus takes the security bound past what ring dimension
-    /// 65536 allows and OpenFHE doubles the ring (measured at depth 27:
-    /// 131072). Five digits keep it at 65536 (depth 27: 31 towers, 1336
-    /// bits; depth 28: 32 towers, 1379 bits; four digits no longer fit at
-    /// depth 27), at the cost of a larger key-switching modulus per switch.
-    /// Measured by `openfhe-tbgv-rs/examples/params_probe.rs --tuned`.
+    /// for OpenFHE's default (3). From depth 26 on, the default digit count
+    /// takes the auxiliary modulus past what the 128-bit bound allows for
+    /// ring dimension 65536 and OpenFHE doubles the ring (measured at depths
+    /// 26, 27 and 28: 131072). Five digits keep it at 65536 (depth 26: 30
+    /// towers, 1293 bits; depth 27: 31 towers, 1336 bits; depth 28: 32
+    /// towers, 1379 bits; four digits no longer fit at depth 27), at the
+    /// cost of a larger key-switching modulus per switch. Measured by
+    /// `openfhe-tbgv-rs/examples/params_probe.rs --tuned`. Only silent mode
+    /// reaches depth 26.
     pub fn key_switch_digits(&self) -> u32 {
-        if self.mode == VerificationMode::Silent && self.silent_batch_groups > 1 {
+        if self.mode == VerificationMode::Silent && self.mult_depth() >= 26 {
             5
         } else {
             0
@@ -531,18 +539,25 @@ mod tests {
         let v = TaskConfig::new([0; 32], MeasurementType::Count, 2);
         assert_eq!(v.mult_depth(), 3);
         let s = TaskConfig::new_silent([0; 32], MeasurementType::Count, 2);
+        assert_eq!(s.repetitions, 7);
         assert_eq!(s.fermat_depth(), 20); // 3 * 2^18: E^3 then 18 squarings
-        assert_eq!(s.mult_depth(), 27); // 2 + 20 + 2 + 1 + 2 (batched: group mask, fold mask)
+        assert_eq!(s.mult_depth(), 28); // 2 + 20 + 3 (8 classes) + 1 + 2 (batched: group mask, fold mask)
         assert_eq!(s.key_switch_digits(), 5);
         assert!(s.validate().is_ok());
-        assert!(s.soundness_bits() > 78.0);
+        assert!(s.soundness_bits() > 128.0); // 137.1
         let mut single = s.clone();
         single.silent_batch_groups = 1;
-        assert_eq!((single.mult_depth(), single.key_switch_digits()), (25, 0)); // no group mask, no fold
-        let mut seven = s.clone();
-        seven.repetitions = 7;
-        assert_eq!(seven.mult_depth(), 28);
-        assert!(seven.validate().is_ok());
+        assert_eq!((single.mult_depth(), single.key_switch_digits()), (26, 5)); // no group mask, no fold
+        let mut four = s.clone();
+        four.repetitions = 4;
+        assert_eq!((four.mult_depth(), four.key_switch_digits()), (27, 5));
+        assert!(four.soundness_bits() > 78.0 && four.soundness_bits() < 79.0);
+        four.silent_batch_groups = 1;
+        assert_eq!((four.mult_depth(), four.key_switch_digits()), (25, 0)); // default digits fit at 25
+        let mut eight = s.clone();
+        eight.repetitions = 8; // same 8 classes, same depth
+        assert_eq!(eight.mult_depth(), 28);
+        assert!(eight.validate().is_ok());
         let mut too_deep = s.clone();
         too_deep.repetitions = 9; // 16 classes -> depth 29
         assert!(too_deep.validate().is_err());

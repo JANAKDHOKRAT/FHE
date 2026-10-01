@@ -82,6 +82,7 @@ jobs:
           - { name: protocol-regression, dir: prio3/fhe-prio3, args: "--test regression" }
           - { name: protocol-upgrade, dir: prio3/fhe-prio3, args: "--test upgrade" }
           - { name: protocol-vdec, dir: prio3/fhe-prio3, args: "--test vdec" }
+          - { name: protocol-batch-noise, dir: prio3/fhe-prio3, args: "--test batch_noise" }
           - { name: protocol-malicious-aggregator, dir: prio3/fhe-prio3, args: "--test malicious_aggregator" }
           - { name: protocol-key-noise, dir: prio3/fhe-prio3, args: "--test key_noise_protocol" }
           - { name: node, dir: prio3/fhe-prio3-node, args: "" }

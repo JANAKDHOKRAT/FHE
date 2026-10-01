@@ -189,8 +189,13 @@ fn main() {
     let t0 = Instant::now();
     let (material, shares) = keys::run_local_ceremony(&cfg).expect("ceremony");
     let ceremony = t0.elapsed();
+    // Round-trip the material through the wire format as a deployment
+    // would, holding one copy of the gigabytes of keys at a time (the
+    // ceremony's copy, the bytes, the decoded copy would otherwise coexist).
     let material_bytes = encode(&material).unwrap();
+    drop(material);
     let material: PublicMaterial = decode(&material_bytes).unwrap();
+    drop(material_bytes);
     println!(
         "ceremony: {:.0} ms  | context {:.2} MiB, public key {:.2} MiB, eval-mult key {:.2} MiB, rotation keys {:.2} MiB ({} indices)",
         ms(ceremony),

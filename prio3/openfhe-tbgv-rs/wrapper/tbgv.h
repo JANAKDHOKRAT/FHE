@@ -34,6 +34,7 @@ void tbgv_string_free(char* s);
 
 /* ---- context ---------------------------------------------------------- */
 TbgvContext tbgv_context_new(uint64_t plain_mod, uint32_t mult_depth, uint32_t security_bits);
+TbgvContext tbgv_context_new_tuned(uint64_t plain_mod, uint32_t mult_depth, uint32_t security_bits, uint32_t num_large_digits, uint32_t scaling_mod_size);
 void tbgv_context_free(TbgvContext ctx);
 uint64_t tbgv_context_plain_mod(TbgvContext ctx);
 uint32_t tbgv_context_ring_dim(TbgvContext ctx);

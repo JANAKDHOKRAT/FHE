@@ -163,7 +163,7 @@ fn silent_mode_sum_with_invalid_report_contributing_zero() {
     let _g = serial();
     let t = MeasurementType::Sum { max_measurement: 100 };
     let cfg = TaskConfig::new_silent(task_id(34), t.clone(), 2);
-    assert_eq!(cfg.mult_depth(), 25);
+    assert_eq!(cfg.mult_depth(), 27); // batched default: 25 plus the group and fold masks
     let mut net = Net::new(cfg.clone());
     assert_eq!(net.aggs[0].layout().classes, 4);
 
@@ -316,7 +316,7 @@ fn batched_silent_cross_group_injection_is_ignored() {
     assert_eq!((r.report_count, r.valid_count), (3, 3));
 }
 
-/// Correctness gate for the depth-25 batched circuit on worst-case inputs:
+/// Correctness gate for the depth-27 batched circuit on worst-case inputs:
 /// invalid reports whose every slot is `p-1` (the largest magnitude the
 /// plaintext multiplications can see) mixed with valid ones, over several
 /// independent chains. Every decryption must be exact.

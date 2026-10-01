@@ -103,7 +103,10 @@ does not exist yet. One reference proof was built and measured there
 1. No honest party partially decrypts a received ciphertext except:
    (a) the verdict `u`, which it computed itself from masks that were all
    committed before its own was revealed;
-   (b) the batch accumulators, which it computed itself;
+   (b) the batch accumulators, which it computed itself, and in batched
+   silent mode only after `finalize_silent` has folded the groups into
+   group 0 and masked every other slot (the fold leaves partial sums over
+   subsets of the reports there; SECURITY.md §6.1);
    (c) checks, which it reveals only after rebuilding them from its own
    ciphertexts and an in-range opening.
    Everything else it decrypts (the others' checks, before the opening) it

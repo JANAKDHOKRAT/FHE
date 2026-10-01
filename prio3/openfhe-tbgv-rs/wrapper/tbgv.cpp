@@ -92,6 +92,10 @@ void tbgv_string_free(char* s) { std::free(s); }
 /* ---- context ---------------------------------------------------------- */
 
 TbgvContext tbgv_context_new(uint64_t plain_mod, uint32_t mult_depth, uint32_t security_bits) {
+    return tbgv_context_new_tuned(plain_mod, mult_depth, security_bits, 0, 0);
+}
+
+TbgvContext tbgv_context_new_tuned(uint64_t plain_mod, uint32_t mult_depth, uint32_t security_bits, uint32_t num_large_digits, uint32_t scaling_mod_size) {
     TBGV_TRY
     CCParams<CryptoContextBGVRNS> params;
     params.SetPlaintextModulus(plain_mod);
@@ -99,6 +103,12 @@ TbgvContext tbgv_context_new(uint64_t plain_mod, uint32_t mult_depth, uint32_t s
     params.SetMultipartyMode(NOISE_FLOODING_MULTIPARTY);
     params.SetScalingTechnique(FLEXIBLEAUTOEXT);
     params.SetSecretKeyDist(UNIFORM_TERNARY);
+    // 0 keeps OpenFHE's default; the key-switching digit count trades key
+    // size and switching cost against the auxiliary modulus P that counts
+    // toward the security bound, and the scaling modulus size trades noise
+    // headroom per level against chain length
+    if (num_large_digits != 0) params.SetNumLargeDigits(num_large_digits);
+    if (scaling_mod_size != 0) params.SetScalingModSize(scaling_mod_size);
     switch (security_bits) {
         case 128: params.SetSecurityLevel(HEStd_128_classic); break;
         case 192: params.SetSecurityLevel(HEStd_192_classic); break;
@@ -134,7 +144,14 @@ uint32_t tbgv_context_mult_depth(TbgvContext ctx) {
     TBGV_CATCH(0)
 }
 double tbgv_context_log2_q(TbgvContext ctx) {
-    TBGV_TRY return std::log2(cc_of(ctx)->GetCryptoParameters()->GetElementParams()->GetModulus().ConvertToDouble()); TBGV_CATCH(-1.0)
+    // summed per tower: the product overflows a double above 2^1024
+    TBGV_TRY {
+        double bits = 0.0;
+        for (const auto& t : cc_of(ctx)->GetCryptoParameters()->GetElementParams()->GetParams()) {
+            bits += std::log2(t->GetModulus().ConvertToDouble());
+        }
+        return bits;
+    } TBGV_CATCH(-1.0)
 }
 int tbgv_context_serialize(TbgvContext ctx, uint8_t** out, size_t* out_len) {
     TBGV_TRY return serialize_to(cc_of(ctx), out, out_len); TBGV_CATCH(0)

@@ -27,7 +27,7 @@ cmake -S openfhe-development -B openfhe-build -DCMAKE_BUILD_TYPE=Release \
 cmake --build openfhe-build -j && sudo cmake --install openfhe-build && sudo ldconfig
 
 cd prio3/fhe-prio3
-cargo test --release            # ~2 minutes; tests serialise themselves
+cargo test --release            # about 2.25 hours on 4 vCPUs; tests serialise themselves
 cargo +nightly fuzz run parse    # fuzz the wire-format parser (needs cargo-fuzz)
 cargo +nightly fuzz run roundtrip
 cargo run --release --bin simulate -- --type sum --max 100 --reports 4
@@ -65,13 +65,17 @@ cargo run --release --bin simulate -- --type count --auth --reports 4
 
 Measured on 4 vCPUs (see the spec for the full tables): verdict mode
 0.45–0.65 s per report per aggregator with 2.7 MiB reports; silent mode
-4.7 s per report per aggregator with 64-report batching (15–17 s
-unbatched), 20 MiB reports and 2.1 GiB of keys per aggregator. Report
+0.71–0.74 s per report per aggregator with 64-report batches and about
+0.43 s with 256-report batches (the validity circuit runs once per batch;
+per report the aggregator parses the report, masks it to its group's
+slots and adds it to the batch), 21.3 MiB reports and 3.5 GiB of keys
+per aggregator. Report
 sizes are those of the packed wire format (spec §6b), which also keeps
 every received byte away from OpenFHE's deserializer. The
 regression pilot adds about 0.4 s per report in verdict mode.
-`cargo test --release` takes about 30 minutes because of the silent-mode
-tests; evaluation keys are released when the last aggregator for a task
+`cargo test --release` takes about 2.25 hours on 4 vCPUs (measured
+2026-10-01, one suite at a time; CI runs each suite as its own job), almost
+all of it in the silent-mode tests; evaluation keys are released when the last aggregator for a task
 drops, so the peak is that of one three-aggregator silent test. Network deployment lives in
 `../fhe-prio3-node`, including sharding across independent aggregator
 sets (`src/sharding.rs` here, router and `keygen-shards` there).

@@ -155,6 +155,21 @@ impl Context {
         })
     }
 
+    /// As [`Self::new`] with OpenFHE's key-switching digit count and scaling
+    /// modulus size overridden (0 keeps the default). For parameter
+    /// exploration; a task's parameters are the defaults unless the
+    /// configuration says otherwise.
+    pub fn new_tuned(params: Params, num_large_digits: u32, scaling_mod_size: u32) -> Result<Self> {
+        check_loaded_openfhe()?;
+        let p = unsafe { ffi::tbgv_context_new_tuned(params.plain_mod, params.mult_depth, params.security_bits, num_large_digits, scaling_mod_size) };
+        if p.is_null() {
+            return Err(last_error());
+        }
+        Ok(Self {
+            inner: Arc::new(ContextInner(p)),
+        })
+    }
+
     fn raw(&self) -> ffi::TbgvContext {
         self.inner.0
     }

@@ -1,3 +1,11 @@
+> **Update 2026-10-01.** Superseded for silent mode by the batch-level
+> circuit (spec §6b, "Batched silent mode"): per report the aggregator now
+> masks the ciphertext to its group's slots, adds it into a batch
+> accumulator, and the circuit runs once per batch. Measured 712 ms
+> (Count) and 744 ms (Sum(100)) per report per aggregator with 64-report
+> batches, 425–428 ms with 256, against the 4.75 s and 4.66 s below. The figures below are kept as the record of the
+> earlier design and its measurements.
+
 # Cost reduction plan for silent mode
 
 Target: the slow path, silent mode, measured at **16.2–16.8 s per report per

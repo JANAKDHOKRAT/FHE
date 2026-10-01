@@ -300,6 +300,16 @@ deviations), `fhe-prio3-node/tests/ceremony_node.rs` (three processes).
   forged report. Silent mode reveals no per-report bit.
 * The aggregate of each batch of at least `min_batch_size` valid reports;
   the count of valid reports; to each collector, what its policy names.
+  In batched silent mode every accumulator carries each report's gated
+  contribution at its own group's slots until the close; there the
+  aggregator folds the groups into group 0 with a rotation tree and then
+  multiplies by the group-0 indicator, because the fold leaves partial
+  sums over subsets of the reports in the other slots and a partial
+  decryption reveals every slot. Nothing is decrypted before that mask
+  (`Aggregator::finalize_silent`, one level of the chain reserved for it,
+  spec §6b). Without it the count round would show each aggregator
+  prefix sums of the validity bits in group order, i.e. which reports
+  were invalid.
 * Sybil attacks (filling a batch with the adversary's own valid reports)
   are bounded only by authentication and enrolment, as in DAP.
 

@@ -33,90 +33,85 @@ use crate::xof::Xof;
 use openfhe_tbgv_rs::{Ciphertext, Context, Plaintext, PublicKey};
 use rand::RngCore;
 
-/// Plaintext coefficient vectors for one report.
+/// Plaintext coefficient vectors for one report, or for every report of a
+/// silent-mode batch at once.
 ///
 /// `bit_coeffs[c][j]` and `lin_coeffs[c][j]` are row-length vectors that are
-/// non-zero only at the client slots of chunk `c`. Multiplying a chunk by
-/// them *before* any rotation guarantees that slots outside the encoded
-/// measurement, which a malicious client controls freely, never enter the
-/// check.
+/// non-zero only at the client slots of chunk `c` of the reports they were
+/// derived for. Multiplying a chunk by them *before* any rotation
+/// guarantees that slots outside the encoded measurement, which a
+/// malicious client controls freely, never enter the check. In a batch,
+/// each report's coefficients occupy its own group's slots, so the batch
+/// challenge is the disjoint union of the per-report challenges and every
+/// slot sees exactly what it would have seen with the report alone.
 pub struct Challenge {
     pub bit_coeffs: Vec<Vec<Vec<u64>>>,
     pub lin_coeffs: Vec<Vec<Vec<u64>>>,
-    /// Constant term of each repetition.
+    /// Constant terms, already at their slots: repetition `j` of the report
+    /// in group `r` at `result_slot(j)` (blocked) or `j + classes*r`
+    /// (interleaved, batched).
     pub constants: Vec<u64>,
-    pub group: usize,
 }
 
 impl Challenge {
-    /// `group` is the report's group in a batched layout (0 otherwise). The
-    /// coefficients are placed at that group's slots only, so a client that
-    /// packs values anywhere else has them ignored. `verify_key` is the
-    /// task's secret verify key: without it the coefficients are
-    /// unpredictable (SHAKE128 keyed with 256 secret bits).
+    /// The challenge of one report. `group` is the report's group in a
+    /// batched layout (0 otherwise). The coefficients are placed at that
+    /// group's slots only, so a client that packs values anywhere else has
+    /// them ignored. `verify_key` is the task's secret verify key: without
+    /// it the coefficients are unpredictable (SHAKE128 keyed with 256
+    /// secret bits).
     pub fn derive(cfg: &TaskConfig, field: &Field, layout: &Layout, verify_key: &VerifyKey, report_id: &ReportId, group: usize) -> Self {
+        Self::derive_batch(cfg, field, layout, verify_key, &[(group, *report_id)])
+    }
+
+    /// The challenges of every `(group, report id)` of a batch, each derived
+    /// exactly as [`Self::derive`] would derive it alone and written into
+    /// its group's slots. Groups must be distinct.
+    pub fn derive_batch(cfg: &TaskConfig, field: &Field, layout: &Layout, verify_key: &VerifyKey, reports: &[(usize, ReportId)]) -> Self {
         let m = layout.input_len;
         let k = layout.repetitions;
         let constraints = cfg.measurement_type.linear_constraints();
-        let mut xof = Xof::new(b"verify", &[verify_key.as_bytes(), &cfg.binding(), report_id]);
-
-        let mut r: Vec<Vec<u64>> = Vec::with_capacity(k);
-        for _ in 0..k {
-            r.push((0..m + constraints.len()).map(|_| xof.next_field_elem(field)).collect());
-        }
-
-        let mut lin: Vec<Vec<u64>> = vec![vec![0u64; m]; k];
-        let mut constants = vec![0u64; k];
-        for (j, rj) in r.iter().enumerate() {
-            for (l, c) in constraints.iter().enumerate() {
-                let w = rj[m + l];
-                for (i, coef) in c.field_coeffs(field) {
-                    lin[j][i] = field.add(lin[j][i], field.mul(w, coef));
-                }
-                constants[j] = field.add(constants[j], field.mul(w, c.field_constant(field)));
+        let binding = cfg.binding();
+        let mut bit_coeffs: Vec<Vec<Vec<u64>>> = (0..layout.num_chunks).map(|_| vec![vec![0u64; layout.row]; k]).collect();
+        let mut lin_coeffs = bit_coeffs.clone();
+        let mut constants = vec![0u64; layout.row];
+        for (group, report_id) in reports {
+            let mut xof = Xof::new(b"verify", &[verify_key.as_bytes(), &binding, report_id]);
+            let mut r: Vec<Vec<u64>> = Vec::with_capacity(k);
+            for _ in 0..k {
+                r.push((0..m + constraints.len()).map(|_| xof.next_field_elem(field)).collect());
             }
-        }
-
-        let mut bit_coeffs = Vec::with_capacity(layout.num_chunks);
-        let mut lin_coeffs = Vec::with_capacity(layout.num_chunks);
-        for c in 0..layout.num_chunks {
-            let range = layout.chunk_range(c);
-            let mut bc_j = Vec::with_capacity(k);
-            let mut lc_j = Vec::with_capacity(k);
-            for j in 0..k {
-                let mut bc = vec![0u64; layout.row];
-                let mut lc = vec![0u64; layout.row];
-                for (local, global) in range.clone().enumerate() {
-                    let slot = layout.group_slot(group, local);
-                    bc[slot] = r[j][global];
-                    lc[slot] = lin[j][global];
+            let mut lin: Vec<Vec<u64>> = vec![vec![0u64; m]; k];
+            for (j, rj) in r.iter().enumerate() {
+                let mut constant = 0u64;
+                for (l, c) in constraints.iter().enumerate() {
+                    let w = rj[m + l];
+                    for (i, coef) in c.field_coeffs(field) {
+                        lin[j][i] = field.add(lin[j][i], field.mul(w, coef));
+                    }
+                    constant = field.add(constant, field.mul(w, c.field_constant(field)));
                 }
-                bc_j.push(bc);
-                lc_j.push(lc);
+                let slot = match layout.kind {
+                    LayoutKind::Blocked => layout.result_slot(j),
+                    LayoutKind::Interleaved | LayoutKind::Batched => j + layout.classes * group,
+                };
+                constants[slot] = constant;
             }
-            bit_coeffs.push(bc_j);
-            lin_coeffs.push(lc_j);
+            for c in 0..layout.num_chunks {
+                for (local, global) in layout.chunk_range(c).enumerate() {
+                    let slot = layout.group_slot(*group, local);
+                    for j in 0..k {
+                        bit_coeffs[c][j][slot] = r[j][global];
+                        lin_coeffs[c][j][slot] = lin[j][global];
+                    }
+                }
+            }
         }
         Self {
             bit_coeffs,
             lin_coeffs,
             constants,
-            group,
         }
-    }
-
-    /// Constant vector: repetition `j`'s constant at its position 0 (blocked:
-    /// slot `j*block`; interleaved/batched: slot `j + classes*group`).
-    fn constant_vector(&self, layout: &Layout) -> Vec<u64> {
-        let mut v = vec![0u64; layout.row];
-        for (j, &c) in self.constants.iter().enumerate() {
-            let slot = match layout.kind {
-                LayoutKind::Blocked => layout.result_slot(j),
-                LayoutKind::Interleaved | LayoutKind::Batched => j + layout.classes * self.group,
-            };
-            v[slot] = c;
-        }
-        v
     }
 }
 
@@ -128,6 +123,12 @@ pub struct Circuit {
     ones: Plaintext,
     /// Blocked only: 1 at result slots, 0 elsewhere.
     selector: Option<Plaintext>,
+    /// Per chunk: 1 at the element slots (class 0) of every group.
+    group_masks: Vec<Plaintext>,
+    /// Per chunk: 1 at the element slots of group 0 only.
+    group0_masks: Vec<Plaintext>,
+    /// 1 at slot `group_slot(0, 0)` only.
+    count0_mask: Plaintext,
 }
 
 impl Circuit {
@@ -143,13 +144,101 @@ impl Circuit {
             }
             LayoutKind::Interleaved | LayoutKind::Batched => None,
         };
+        let mut group_masks = Vec::with_capacity(layout.num_chunks);
+        let mut group0_masks = Vec::with_capacity(layout.num_chunks);
+        for c in 0..layout.num_chunks {
+            let mut all = vec![0u64; layout.row];
+            let mut g0 = vec![0u64; layout.row];
+            for i in 0..layout.chunk_len(c) {
+                for r in 0..layout.groups {
+                    all[layout.group_slot(r, i)] = 1;
+                }
+                g0[layout.group_slot(0, i)] = 1;
+            }
+            group_masks.push(ctx.plaintext(&all)?);
+            group0_masks.push(ctx.plaintext(&g0)?);
+        }
+        let mut count0 = vec![0u64; layout.row];
+        count0[layout.group_slot(0, 0)] = 1;
         Ok(Self {
             ctx: ctx.clone(),
             layout: layout.clone(),
             plain_mod: ctx.plain_mod(),
             ones,
             selector,
+            group_masks,
+            group0_masks,
+            count0_mask: ctx.plaintext(&count0)?,
         })
+    }
+
+    /// Silent mode: restricts an accumulated chunk ciphertext to the element
+    /// slots of every group (class 0). What a client put anywhere else is
+    /// zeroed, so it can neither enter a sum nor be multiplied by another
+    /// report's validity bit. One plaintext multiplication (level 1).
+    pub fn mask_all_groups(&self, ct: &Ciphertext, chunk: usize) -> Result<Ciphertext> {
+        Ok(self.ctx.mult_plain(ct, &self.group_masks[chunk])?)
+    }
+
+    /// Silent mode: `valid_r` at slot `group_slot(r, 0)` of every listed
+    /// group `r`, zero elsewhere, from `G`. Only the groups that hold a
+    /// report in this batch are listed: an empty group's check value is
+    /// zero and its validity bit is therefore 1, so it must not be counted.
+    /// One plaintext multiplication at the last level of the chain.
+    pub fn count_of_groups(&self, g: &Ciphertext, groups: &[usize]) -> Result<Ciphertext> {
+        let l = &self.layout;
+        let mut ind = vec![0u64; l.row];
+        for &r in groups {
+            ind[l.group_slot(r, 0)] = 1;
+        }
+        Ok(self.ctx.mult_plain(g, &self.ctx.plaintext(&ind)?)?)
+    }
+
+    /// Batched silent mode: sums every group's slots into group 0's by the
+    /// doubling tree over the group fold rotations. Rotations only, no
+    /// level. The other groups' slots then hold partial sums over subsets
+    /// of the reports and must never be decrypted: [`Self::finalize_chunk`]
+    /// and its siblings zero them.
+    pub fn fold_all_groups(&self, ct: &Ciphertext) -> Result<Ciphertext> {
+        let mut out = ct.try_clone()?;
+        for d in self.layout.group_fold_keys() {
+            out = self.ctx.add(&out, &self.ctx.rotate(&out, d)?)?;
+        }
+        Ok(out)
+    }
+
+    /// Batched silent mode: folds a per-group accumulator of chunk `chunk`
+    /// into group 0 and zeroes every other slot (one plaintext
+    /// multiplication, the last level of the batched chain). Identity for a
+    /// single-group layout, whose accumulators are already clean.
+    pub fn finalize_chunk(&self, ct: &Ciphertext, chunk: usize) -> Result<Ciphertext> {
+        if self.layout.groups == 1 {
+            return ct.try_clone().map_err(Into::into);
+        }
+        Ok(self.ctx.mult_plain(&self.fold_all_groups(ct)?, &self.group0_masks[chunk])?)
+    }
+
+    /// As [`Self::finalize_chunk`] for the valid-count accumulator.
+    pub fn finalize_count(&self, ct: &Ciphertext) -> Result<Ciphertext> {
+        if self.layout.groups == 1 {
+            return ct.try_clone().map_err(Into::into);
+        }
+        Ok(self.ctx.mult_plain(&self.fold_all_groups(ct)?, &self.count0_mask)?)
+    }
+
+    /// As [`Self::finalize_chunk`] for a second-moment accumulator: keeps
+    /// the product cells of term `t` at group 0.
+    pub fn finalize_moment(&self, ct: &Ciphertext, t: crate::layout::MomentTerm) -> Result<Ciphertext> {
+        let l = &self.layout;
+        if l.groups == 1 {
+            return ct.try_clone().map_err(Into::into);
+        }
+        let d = l.moment_digit as usize;
+        let mut m = vec![0u64; l.row];
+        for (pos, _, _) in l.moment_term_cells(t) {
+            m[l.group_slot(0, pos * d)] = 1;
+        }
+        Ok(self.ctx.mult_plain(&self.fold_all_groups(ct)?, &self.ctx.plaintext(&m)?)?)
     }
 
     /// One report's contribution `T`: coefficient-multiplied bit and linear
@@ -177,7 +266,7 @@ impl Circuit {
             }
         }
         let t = total.expect("at least one chunk and one repetition");
-        Ok(ctx.add_plain(&t, &ctx.plaintext(&ch.constant_vector(l))?)?)
+        Ok(ctx.add_plain(&t, &ctx.plaintext(&ch.constants)?)?)
     }
 
     /// Sums every repetition's terms into its result position(s): `S`.
@@ -218,21 +307,6 @@ impl Circuit {
         let mut ind = vec![0u64; l.row];
         ind[l.group_slot(group, 0)] = 1;
         Ok(self.ctx.mult_plain(g, &self.ctx.plaintext(&ind)?)?)
-    }
-
-    /// Batched silent mode: moves group `group`'s slots onto group 0's by
-    /// composing the power-of-two fold rotations. Cheap at the last level.
-    pub fn fold_to_group0(&self, ct: &Ciphertext, group: usize) -> Result<Ciphertext> {
-        let l = &self.layout;
-        let mut out = ct.try_clone()?;
-        let mut bit = 0;
-        while (1usize << bit) < l.groups {
-            if (group >> bit) & 1 == 1 {
-                out = self.ctx.rotate(&out, (l.classes << bit) as i32)?;
-            }
-            bit += 1;
-        }
-        Ok(out)
     }
 
     /// Verdict mode. Fresh encrypted mask: uniform field elements at the
@@ -282,6 +356,13 @@ impl Circuit {
     /// digit shifts; per pair `k_a + k_b - 1` multiplications (`k_a` for a
     /// square).
     pub fn moment_products(&self, chunks: &[Ciphertext], group: usize) -> Result<Vec<Ciphertext>> {
+        self.moment_products_of_groups(chunks, &[group])
+    }
+
+    /// [`Self::moment_products`] for several groups at once: the digit masks
+    /// select every listed group's slots, and the alignment rotations,
+    /// which move whole element positions, act on all groups alike.
+    pub fn moment_products_of_groups(&self, chunks: &[Ciphertext], groups: &[usize]) -> Result<Vec<Ciphertext>> {
         let l = &self.layout;
         let map = l.moments.as_ref().expect("moments enabled");
         let stride = l.element_stride();
@@ -295,16 +376,20 @@ impl Circuit {
             let k = l.chunk_of(start);
             let local = start - l.chunk_range(k).start;
             let mut w = vec![0u64; l.row];
-            for t in 0..bits as usize {
-                w[l.group_slot(group, local + t)] = 1u64 << (t % d);
+            for &group in groups {
+                for t in 0..bits as usize {
+                    w[l.group_slot(group, local + t)] = 1u64 << (t % d);
+                }
             }
             let z = ctx.mult_plain(&chunks[k], &ctx.plaintext(&w)?)?;
             let z = self.window_sum(z, window, stride)?;
             let aligned = if local == 0 { z } else { ctx.rotate(&z, (local * stride) as i32)? };
             let digits = l.moment_digits(bits);
             let mut m = vec![0u64; l.row];
-            for i in 0..digits {
-                m[l.group_slot(group, i * d)] = 1;
+            for &group in groups {
+                for i in 0..digits {
+                    m[l.group_slot(group, i * d)] = 1;
+                }
             }
             let mut shifted = vec![ctx.mult_plain(&aligned, &ctx.plaintext(&m)?)?];
             for _ in 1..digits {

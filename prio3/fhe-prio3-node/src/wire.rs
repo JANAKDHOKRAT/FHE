@@ -1,0 +1,299 @@
+//! Message envelopes and the HTTP helpers shared by all nodes.
+
+use axum::body::Bytes;
+use axum::http::{HeaderMap, StatusCode, header};
+use fhe_prio3::messages::ReportId;
+use fhe_prio3::messages::{decode, encode};
+use fhe_prio3::{
+    AggregateShare, BatchResult, CountCommit, CountOpening, CountReveal, CountShare, MaskCommit, MaskMessage, ReleaseCommit, ReleaseReveal, Report,
+    SealedShare, VerifierCommit, VerifierMessage,
+};
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
+
+pub const CONTENT_TYPE: &str = "application/x-fhe-prio3";
+pub const TOKEN_HEADER: &str = "x-fhe-prio3-token";
+
+#[derive(Serialize, Deserialize)]
+pub struct GroupTicket {
+    pub group: u32,
+    pub groups: u32,
+}
+
+/// Leader -> helper, verdict mode: every other aggregator's commitment to
+/// its mask; the helper then reveals its own mask.
+#[derive(Serialize, Deserialize)]
+pub struct MaskCommitsRequest {
+    pub report_id: ReportId,
+    pub commits: Vec<MaskCommit>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct MasksRequest {
+    pub report_id: ReportId,
+    pub masks: Vec<MaskMessage>,
+}
+
+/// Leader -> helper, verdict mode: every other aggregator's commitment to
+/// its partial decryption; the helper then reveals its own.
+#[derive(Serialize, Deserialize)]
+pub struct CommitsRequest {
+    pub report_id: ReportId,
+    pub commits: Vec<VerifierCommit>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct VerifiersRequest {
+    pub report_id: ReportId,
+    pub verifiers: Vec<VerifierMessage>,
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone)]
+pub enum SubmitOutcome {
+    Accepted,
+    Rejected(String),
+}
+
+/// Silent-mode count rounds (leader -> helper), in order: every count
+/// share (reply: `CountCommit`), every commitment (reply: `CountOpening`),
+/// every opening (reply: `CountReveal`), every reveal (reply: the verified
+/// valid count).
+#[derive(Serialize, Deserialize)]
+pub struct CountSharesRequest {
+    pub shares: Vec<CountShare>,
+}
+#[derive(Serialize, Deserialize)]
+pub struct CountCommitsRequest {
+    pub commits: Vec<CountCommit>,
+}
+#[derive(Serialize, Deserialize)]
+pub struct CountOpeningsRequest {
+    pub openings: Vec<CountOpening>,
+}
+#[derive(Serialize, Deserialize)]
+pub struct CountRevealsRequest {
+    pub reveals: Vec<CountReveal>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct StatusReply {
+    pub index: usize,
+    /// Task id served by this node, hex.
+    pub task_id: String,
+    pub accepted: usize,
+    pub closed: bool,
+    pub mode: String,
+}
+
+/// Leader -> collector, tasks without release policies: a plain share.
+#[derive(Serialize, Deserialize)]
+pub struct ShareEnvelope {
+    pub share: AggregateShare,
+}
+
+/// Leader -> collector, tasks with release policies: a share sealed by its
+/// aggregator to the collector's key; the leader cannot read it.
+#[derive(Serialize, Deserialize)]
+pub struct SealedEnvelope {
+    pub sealed: SealedShare,
+}
+
+/// Collector's answer to a share: whether every aggregator's share is now
+/// present, and then the checks every aggregator must answer.
+#[derive(Serialize, Deserialize)]
+pub struct ShareReceipt {
+    pub complete: bool,
+    pub challenge: Option<fhe_prio3::ReleaseChallenge>,
+}
+
+/// Leader -> collector: every aggregator's commitment (reply: the opening).
+#[derive(Serialize, Deserialize)]
+pub struct ReleaseCommitsRequest {
+    pub commits: Vec<ReleaseCommit>,
+}
+
+/// An aggregator's partials of the checks: plain without policies, sealed
+/// to the collector with them.
+#[derive(Serialize, Deserialize, Clone)]
+pub enum RevealEnvelope {
+    Plain(ReleaseReveal),
+    Sealed(SealedShare),
+}
+
+/// Leader -> collector: every aggregator's reveal.
+#[derive(Serialize, Deserialize)]
+pub struct ReleaseRevealsRequest {
+    pub reveals: Vec<RevealEnvelope>,
+}
+
+/// Collector's verified result: returned only on tasks without policies
+/// (where the leader relays it to the operator); with policies it is read
+/// from the collector by its own operator.
+#[derive(Serialize, Deserialize)]
+pub struct FinishReceipt {
+    pub result: Option<BatchResult>,
+}
+
+/// Leader -> helper: release for this collector.
+#[derive(Serialize, Deserialize)]
+pub struct ShareRequest {
+    pub collector: u32,
+}
+
+/// Helper -> leader.
+#[derive(Serialize, Deserialize)]
+pub enum ShareReply {
+    Plain(AggregateShare),
+    Sealed(SealedShare),
+}
+
+/// Answer to `/v1/close`.
+#[derive(Serialize, Deserialize)]
+pub struct CloseReply {
+    /// Tasks without policies: the batch result from the collector.
+    pub result: Option<BatchResult>,
+    /// Collectors whose release is complete.
+    pub released_to: Vec<u32>,
+}
+
+/// A protocol error carried back to the caller as HTTP 4xx/5xx with a body.
+#[derive(Debug)]
+pub struct HttpError(pub StatusCode, pub String);
+
+/// The handle of a TCP server (axum-server 0.8 makes the handle generic
+/// over the listening address type; every node here listens on a socket
+/// address).
+pub type ServerHandle = axum_server::Handle<std::net::SocketAddr>;
+
+/// Locks `m` for a request handler. A poisoned lock means an earlier
+/// request panicked while holding this state: the process must not carry
+/// on as if nothing happened, and it must not crash either. The request is
+/// refused with 503 and a message that names the state and says to restart
+/// the node, whose persisted snapshot is the last committed step.
+pub fn guard<'a, T>(m: &'a std::sync::Mutex<T>, what: &str) -> Result<std::sync::MutexGuard<'a, T>, HttpError> {
+    m.lock().map_err(|_| {
+        HttpError(
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!("{what} state is poisoned by an earlier panic; restart this node to resume from its last committed step"),
+        )
+    })
+}
+
+impl axum::response::IntoResponse for HttpError {
+    fn into_response(self) -> axum::response::Response {
+        (self.0, self.1).into_response()
+    }
+}
+
+impl From<fhe_prio3::Error> for HttpError {
+    fn from(e: fhe_prio3::Error) -> Self {
+        match e {
+            fhe_prio3::Error::Reject(r) => HttpError(StatusCode::UNPROCESSABLE_ENTITY, format!("rejected: {r}")),
+            fhe_prio3::Error::Protocol(m) => HttpError(StatusCode::CONFLICT, m),
+            other => HttpError(StatusCode::INTERNAL_SERVER_ERROR, other.to_string()),
+        }
+    }
+}
+
+impl From<anyhow::Error> for HttpError {
+    fn from(e: anyhow::Error) -> Self {
+        HttpError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+    }
+}
+
+pub fn parse_body<T: DeserializeOwned>(body: &Bytes) -> Result<T, HttpError> {
+    decode(body).map_err(|e| HttpError(StatusCode::BAD_REQUEST, format!("malformed body: {e}")))
+}
+
+pub fn reply<T: Serialize>(t: &T) -> Result<axum::response::Response, HttpError> {
+    let bytes = encode(t).map_err(|e| HttpError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(axum::response::IntoResponse::into_response(([(header::CONTENT_TYPE, CONTENT_TYPE)], bytes)))
+}
+
+/// Constant-time comparison of the bearer token.
+pub fn check_token(headers: &HeaderMap, expected: &str) -> Result<(), HttpError> {
+    let got = headers.get(TOKEN_HEADER).and_then(|v| v.to_str().ok()).unwrap_or("");
+    let a = got.as_bytes();
+    let b = expected.as_bytes();
+    let mut diff = (a.len() ^ b.len()) as u8;
+    for i in 0..a.len().max(b.len()) {
+        diff |= a.get(i).copied().unwrap_or(0) ^ b.get(i).copied().unwrap_or(0);
+    }
+    if diff != 0 || expected.is_empty() {
+        return Err(HttpError(StatusCode::UNAUTHORIZED, "bad token".into()));
+    }
+    Ok(())
+}
+
+/// Installs the process-wide rustls crypto provider once. rustls refuses to
+/// pick one when several are compiled in (reqwest and axum-server can pull
+/// different ones), and a missing provider surfaces as a panic inside the
+/// server task, so every entry point calls this first.
+pub fn init_crypto() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+}
+
+/// HTTPS client trusting one CA (the deployment's), used by every node and
+/// by the client library.
+pub fn https_client(ca_pem: &[u8]) -> anyhow::Result<reqwest::Client> {
+    init_crypto();
+    let cert = reqwest::Certificate::from_pem(ca_pem)?;
+    Ok(reqwest::Client::builder()
+        .use_rustls_tls()
+        .add_root_certificate(cert)
+        .tls_built_in_root_certs(false)
+        .timeout(std::time::Duration::from_secs(3600))
+        .build()?)
+}
+
+pub async fn http_post<T: Serialize, R: DeserializeOwned>(client: &reqwest::Client, url: &str, token: Option<&str>, body: &T) -> anyhow::Result<R> {
+    let bytes = encode(body)?;
+    let mut req = client.post(url).header(header::CONTENT_TYPE, CONTENT_TYPE).body(bytes);
+    if let Some(t) = token {
+        req = req.header(TOKEN_HEADER, t);
+    }
+    let resp = req.send().await?;
+    let status = resp.status();
+    let data = resp.bytes().await?;
+    if !status.is_success() {
+        anyhow::bail!("{url}: HTTP {status}: {}", String::from_utf8_lossy(&data));
+    }
+    Ok(decode(&data)?)
+}
+
+/// POST of an already encoded body (sent to several peers without
+/// re-encoding); returns the raw reply body.
+pub async fn http_post_raw(client: &reqwest::Client, url: &str, token: Option<&str>, body: Vec<u8>) -> anyhow::Result<Vec<u8>> {
+    let mut req = client.post(url).header(header::CONTENT_TYPE, CONTENT_TYPE).body(body);
+    if let Some(t) = token {
+        req = req.header(TOKEN_HEADER, t);
+    }
+    let resp = req.send().await?;
+    let status = resp.status();
+    let data = resp.bytes().await?;
+    if !status.is_success() {
+        anyhow::bail!("{url}: HTTP {status}: {}", String::from_utf8_lossy(&data));
+    }
+    Ok(data.to_vec())
+}
+
+pub async fn http_get<R: DeserializeOwned>(client: &reqwest::Client, url: &str, token: Option<&str>) -> anyhow::Result<R> {
+    let mut req = client.get(url);
+    if let Some(t) = token {
+        req = req.header(TOKEN_HEADER, t);
+    }
+    let resp = req.send().await?;
+    let status = resp.status();
+    let data = resp.bytes().await?;
+    if !status.is_success() {
+        anyhow::bail!("{url}: HTTP {status}: {}", String::from_utf8_lossy(&data));
+    }
+    Ok(decode(&data)?)
+}
+
+pub fn report_id_hex(r: &Report) -> String {
+    hex::encode(r.report_id)
+}

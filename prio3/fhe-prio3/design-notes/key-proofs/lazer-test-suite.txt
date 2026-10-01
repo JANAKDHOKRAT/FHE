@@ -1,0 +1,34 @@
+--------------------
+lazer-test         : [PASS]
+bytes-test         : [PASS]
+shake128-test      : [PASS]
+rng-test           : [PASS]
+int-test           : [PASS]
+intvec-test        : [PASS]
+intmat-test        : [PASS]
+polyring-test      : [PASS]
+poly-test          : [PASS]
+polyvec-test       : [PASS]
+polymat-test       : [PASS]
+spolymat-test      : [PASS]
+quad-test          : [PASS]
+dcompress-test     : [PASS]
+sage-test.sh       : [SKIP]
+coder-test         : [PASS]
+urandom-test       : [PASS]
+brandom-test       : [PASS]
+grandom-test       : [PASS]
+rejection-test     : [PASS]
+abdlop-test        : [PASS]
+lnp-quad-test      : [PASS]
+lnp-quad-many-test : [PASS]
+lnp-quad-eval-test : [PASS]
+lnp-tbox-test      : [PASS]
+--------------------
+TOTAL              : 25
+PASS               : 24
+SKIP               : 1
+FAIL               : 0
+ERROR              : 0
+--------------------
+run exit 0

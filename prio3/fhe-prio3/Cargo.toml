@@ -1,0 +1,27 @@
+[package]
+name = "fhe-prio3"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Prio3 measurement types (Count, Sum, SumVec, Histogram, MultihotCountVec) with homomorphic validity checks over threshold BGV"
+license = "MIT"
+
+[dependencies]
+openfhe-tbgv-rs = { path = "../openfhe-tbgv-rs" }
+sha2 = "0.10"
+sha3 = "0.10"
+rand = "0.8"
+serde = { version = "1", features = ["derive"] }
+postcard = { version = "1.1", features = ["use-std"] }
+thiserror = "1"
+hex = "0.4"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+hkdf = "0.12"
+aes-gcm = "0.10"
+zeroize = "1"
+
+[dev-dependencies]
+
+[workspace]

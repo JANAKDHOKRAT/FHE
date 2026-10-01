@@ -1,0 +1,18 @@
+LaZer reference proof, measured 2026-09-30 on a 4-vCPU Intel Xeon 2.80 GHz with AVX-512
+(avx512f/bw/cd/dq/vl), Ubuntu 24.04, gcc 13.3.0, gmp 6.3, mpfr 4.2.1.
+LaZer commit 3330e487228f633eceb322807b13a596b516770f (28 Sep 2026), version string 0.1.0.
+
+Build:      make lib        -> liblazer.a 7,273,682 bytes, 2 m 14 s (includes Intel HEXL)
+Link fix:   the stock Makefile links third_party/hexl-development/build/hexl/lib64/libhexl.a;
+            HEXL installed to .../hexl/lib/libhexl.a on this system. Linked by hand, no other change.
+Bench:      kyber1024-bench.c = demos/kyber1024/kyber1024-demo.c patched only to report the proof
+            length and to time prover and verifier separately over 20 runs.
+
+Statement:  Kyber1024 secret key, A in R_3329^{4x8}, s in R^8, l2(s) <= 1.2*sqrt(2048), d = 256
+Proof sys:  d = 64, log q ~ 41, m1 = 32, m2 = 55, knowledge error <= 2^-127 (generated header)
+
+run 1 (20 proofs): proof 20,279 bytes, prover mean 102.6 ms, verifier mean 53.0 ms, 20/20 accepted
+run 2 (20 proofs): proof 20,276 bytes, prover mean 118.9 ms, verifier mean 52.8 ms, 20/20 accepted
+whole demo process, 3 runs: 0.135 s, 0.208 s, 0.135 s wall (includes library initialisation)
+
+LaZer's own suite (tests/run-tests): 24 pass, 1 skip (sage-test.sh: SageMath not installed), 0 fail.

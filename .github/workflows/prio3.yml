@@ -1,0 +1,296 @@
+name: prio3
+
+# Builds OpenFHE 1.3.1 (the version the shim is tested against, see
+# prio3/openfhe-tbgv-rs/build.rs), runs every test suite of the threshold-BGV
+# shim, the protocol crate and the network node, and fuzzes the packed wire
+# format parser (5 minutes per target on each change, one hour per target
+# nightly). Gates on every change: rustfmt (prio3/rustfmt.toml), clippy with
+# warnings denied on every target, cargo-deny (RustSec advisories, licenses,
+# duplicate and wildcard versions, sources; prio3/deny.toml), and line
+# coverage of the protocol crate's fast suites above a measured floor.
+# Nightly and on demand: the OpenFHE pin is checked against upstream (tag
+# still at the pinned commit, no advisory published after the pinned
+# release, pin is the latest release; .github/scripts/openfhe-pin-check.sh).
+
+on:
+  push:
+    branches: [main]
+    paths: ["prio3/**", ".github/workflows/prio3.yml"]
+  pull_request:
+    paths: ["prio3/**", ".github/workflows/prio3.yml"]
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # Same source commit and options as the development container's build.
+  OPENFHE_TAG: v1.3.1
+  OPENFHE_COMMIT: 32362085fcfa8133f86a4e81d4440734c984b16d
+  OPENFHE_DIR: /home/runner/openfhe-install
+  RUST_STABLE: "1.94.1"
+  RUST_NIGHTLY: nightly-2026-09-28
+  CARGO_TERM_COLOR: always
+
+jobs:
+  openfhe:
+    name: build OpenFHE
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: cache
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.OPENFHE_DIR }}
+          key: openfhe-${{ env.OPENFHE_COMMIT }}-ubuntu-24.04-release-openmp-v1
+      - name: build and install
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ninja-build
+          git clone --branch "$OPENFHE_TAG" --depth 1 https://github.com/openfheorg/openfhe-development.git openfhe
+          test "$(git -C openfhe rev-parse HEAD)" = "$OPENFHE_COMMIT"
+          cmake -S openfhe -B openfhe/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$OPENFHE_DIR" \
+            -DBUILD_SHARED=ON -DBUILD_STATIC=OFF -DWITH_OPENMP=ON -DWITH_NATIVEOPT=OFF \
+            -DBUILD_UNITTESTS=OFF -DBUILD_EXAMPLES=OFF -DBUILD_BENCHMARKS=OFF -DBUILD_EXTRAS=OFF
+          cmake --build openfhe/build -j "$(nproc)"
+          cmake --install openfhe/build
+          test -f "$OPENFHE_DIR/lib/OpenFHE/OpenFHEConfigVersion.cmake"
+          test -f "$OPENFHE_DIR/lib/libOPENFHEpke.so.1.3.1"
+
+  test:
+    name: test ${{ matrix.suite.name }}
+    needs: openfhe
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        suite:
+          - { name: shim, dir: prio3/openfhe-tbgv-rs, args: "" }
+          - { name: protocol-lib, dir: prio3/fhe-prio3, args: "--lib --bins" }
+          - { name: protocol-wire, dir: prio3/fhe-prio3, args: "--test wire" }
+          - { name: protocol, dir: prio3/fhe-prio3, args: "--test protocol" }
+          - { name: protocol-bounds, dir: prio3/fhe-prio3, args: "--test bounds" }
+          - { name: protocol-ceremony, dir: prio3/fhe-prio3, args: "--test ceremony" }
+          - { name: protocol-mitigations, dir: prio3/fhe-prio3, args: "--test mitigations" }
+          - { name: protocol-policy, dir: prio3/fhe-prio3, args: "--test policy" }
+          - { name: protocol-regression, dir: prio3/fhe-prio3, args: "--test regression" }
+          - { name: protocol-upgrade, dir: prio3/fhe-prio3, args: "--test upgrade" }
+          - { name: protocol-vdec, dir: prio3/fhe-prio3, args: "--test vdec" }
+          - { name: protocol-batch-noise, dir: prio3/fhe-prio3, args: "--test batch_noise" }
+          - { name: protocol-malicious-aggregator, dir: prio3/fhe-prio3, args: "--test malicious_aggregator" }
+          - { name: protocol-key-noise, dir: prio3/fhe-prio3, args: "--test key_noise_protocol" }
+          - { name: node, dir: prio3/fhe-prio3-node, args: "" }
+    env:
+      LD_LIBRARY_PATH: /home/runner/openfhe-install/lib
+    steps:
+      - uses: actions/checkout@v4
+      - name: restore OpenFHE
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.OPENFHE_DIR }}
+          key: openfhe-${{ env.OPENFHE_COMMIT }}-ubuntu-24.04-release-openmp-v1
+          fail-on-cache-miss: true
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_STABLE }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ matrix.suite.dir }}
+          key: ${{ matrix.suite.name }}
+      - name: cargo test
+        working-directory: ${{ matrix.suite.dir }}
+        run: cargo test --release --locked --no-fail-fast ${{ matrix.suite.args }} -- --test-threads=1
+
+  fuzz:
+    name: fuzz ${{ matrix.target }}
+    needs: openfhe
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [parse, roundtrip]
+    env:
+      LD_LIBRARY_PATH: /home/runner/openfhe-install/lib
+      FUZZ_SECONDS: ${{ github.event_name == 'schedule' && 3600 || 300 }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: restore OpenFHE
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.OPENFHE_DIR }}
+          key: openfhe-${{ env.OPENFHE_COMMIT }}-ubuntu-24.04-release-openmp-v1
+          fail-on-cache-miss: true
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_NIGHTLY }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: prio3/fhe-prio3/fuzz
+          key: fuzz
+      - name: install cargo-fuzz
+        run: cargo install cargo-fuzz --version 0.13.2 --locked
+      - name: fuzz
+        working-directory: prio3/fhe-prio3
+        run: |
+          cargo +"$RUST_NIGHTLY" fuzz run ${{ matrix.target }} -- \
+            -max_total_time="$FUZZ_SECONDS" -print_final_stats=1
+      - name: keep crashing inputs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: prio3/fhe-prio3/fuzz/artifacts
+
+  # rustfmt against prio3/rustfmt.toml and clippy with every warning denied,
+  # on every target (lib, bins, tests, examples) of the three crates. The
+  # fuzz crate is format-checked only: its targets build on nightly.
+  lint:
+    name: lint ${{ matrix.crate }}
+    needs: openfhe
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        crate: [openfhe-tbgv-rs, fhe-prio3, fhe-prio3-node]
+    env:
+      LD_LIBRARY_PATH: /home/runner/openfhe-install/lib
+    steps:
+      - uses: actions/checkout@v4
+      - name: restore OpenFHE
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.OPENFHE_DIR }}
+          key: openfhe-${{ env.OPENFHE_COMMIT }}-ubuntu-24.04-release-openmp-v1
+          fail-on-cache-miss: true
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_STABLE }}
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: prio3/${{ matrix.crate }}
+          key: lint-${{ matrix.crate }}
+      - name: rustfmt
+        working-directory: prio3/${{ matrix.crate }}
+        run: cargo fmt --check
+      - name: rustfmt (fuzz crate)
+        if: matrix.crate == 'fhe-prio3'
+        working-directory: prio3/fhe-prio3/fuzz
+        run: cargo fmt --check
+      - name: clippy
+        working-directory: prio3/${{ matrix.crate }}
+        run: cargo clippy --release --locked --all-targets -- -D warnings
+
+  # RustSec advisories, licenses, duplicate and wildcard versions, sources,
+  # against prio3/deny.toml, for each crate's own lockfile.
+  deny:
+    name: cargo-deny ${{ matrix.crate }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        crate: [openfhe-tbgv-rs, fhe-prio3, fhe-prio3-node]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          rust-version: ${{ env.RUST_STABLE }}
+          manifest-path: prio3/${{ matrix.crate }}/Cargo.toml
+          arguments: --config prio3/deny.toml
+          command: check
+
+  # Line coverage of the protocol crate over its fast suites (unit tests,
+  # wire, protocol, policy, bounds, upgrade), with cargo-llvm-cov. The
+  # floor is the measured value at the time it was set, rounded down; a
+  # change that drops below it fails. The lcov report is kept as an
+  # artifact for review.
+  coverage:
+    name: coverage fhe-prio3
+    needs: openfhe
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      LD_LIBRARY_PATH: /home/runner/openfhe-install/lib
+      # Measured 72.09% of lines (6008 lines, 1677 uncovered) on 2026-09-30
+      # over these suites; the floor leaves two points for platform noise.
+      COVERAGE_FLOOR_LINES: "70"
+    steps:
+      - uses: actions/checkout@v4
+      - name: restore OpenFHE
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.OPENFHE_DIR }}
+          key: openfhe-${{ env.OPENFHE_COMMIT }}-ubuntu-24.04-release-openmp-v1
+          fail-on-cache-miss: true
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_STABLE }}
+          components: llvm-tools-preview
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov@0.9.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: prio3/fhe-prio3
+          key: coverage
+      - name: measure
+        working-directory: prio3/fhe-prio3
+        run: |
+          cargo llvm-cov --manifest-path Cargo.toml --release --locked \
+            --lib --bins --test wire --test protocol --test policy --test bounds --test upgrade \
+            --lcov --output-path lcov.info -- --test-threads=1
+          cargo llvm-cov report --manifest-path Cargo.toml --release --summary-only | tee coverage-summary.txt
+      - name: enforce floor
+        working-directory: prio3/fhe-prio3
+        run: cargo llvm-cov report --manifest-path Cargo.toml --release --fail-under-lines "$COVERAGE_FLOOR_LINES"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-fhe-prio3
+          path: |
+            prio3/fhe-prio3/lcov.info
+            prio3/fhe-prio3/coverage-summary.txt
+
+  # The OpenFHE pin against upstream: the tag still at the pinned commit, no
+  # security advisory published after the pinned release, and the pin is the
+  # latest release. Nightly and on demand it fails the workflow, which
+  # notifies the repository's owner. On a pull request it only annotates,
+  # so an upstream release does not block unrelated changes; moving the pin
+  # is its own change (AUDIT.md §8).
+  openfhe-pin:
+    name: OpenFHE pin against upstream
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      # A finding fails the nightly and manual runs. On a pull request or a
+      # push it is a warning annotation and the job passes: a newer upstream
+      # release is a standing fact until the pin moves, and a red check on
+      # every pull request for months would only teach people to ignore red.
+      - name: check
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          STRICT: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+        run: |
+          set +e
+          out=$(.github/scripts/openfhe-pin-check.sh "$OPENFHE_TAG" "$OPENFHE_COMMIT" 2>&1)
+          rc=$?
+          set -e
+          printf '%s\n' "$out"
+          if [ "$rc" -ne 0 ]; then
+            if [ "$STRICT" = "true" ]; then
+              exit "$rc"
+            fi
+            while IFS= read -r line; do
+              case "$line" in FAIL:*) echo "::warning title=OpenFHE pin::${line#FAIL: }";; esac
+            done <<< "$out"
+          fi

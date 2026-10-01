@@ -114,11 +114,15 @@ pub fn make_context(cfg: &TaskConfig) -> Result<Context> {
     // parties created on several threads (the ceremony tests) take turns.
     static CONTEXT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _g = CONTEXT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let ctx = Context::new(Params {
-        plain_mod: cfg.plain_mod,
-        mult_depth: cfg.mult_depth(),
-        security_bits: cfg.security_bits,
-    })?;
+    let ctx = Context::new_tuned(
+        Params {
+            plain_mod: cfg.plain_mod,
+            mult_depth: cfg.mult_depth(),
+            security_bits: cfg.security_bits,
+        },
+        cfg.key_switch_digits(),
+        0,
+    )?;
     // Fails loudly if p is not compatible with the chosen ring dimension.
     ctx.plaintext(&[1])?;
     Ok(ctx)

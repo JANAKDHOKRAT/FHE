@@ -17,6 +17,7 @@ unsafe extern "C" {
     pub fn tbgv_string_free(s: *mut c_char);
 
     pub fn tbgv_context_new(plain_mod: u64, mult_depth: u32, security_bits: u32) -> TbgvContext;
+    pub fn tbgv_context_new_tuned(plain_mod: u64, mult_depth: u32, security_bits: u32, num_large_digits: u32, scaling_mod_size: u32) -> TbgvContext;
     pub fn tbgv_context_free(ctx: TbgvContext);
     pub fn tbgv_context_plain_mod(ctx: TbgvContext) -> u64;
     pub fn tbgv_context_ring_dim(ctx: TbgvContext) -> u32;

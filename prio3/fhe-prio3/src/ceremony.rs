@@ -404,18 +404,24 @@ fn protocol_decryption_points(
         }
         VerificationMode::Silent => {
             let ch = Challenge::derive(cfg, field, &layout, &verify_key, &report_id, 0);
-            let g = circuit.silent_validity(&circuit.class_sums(&circuit.report_terms(&chunks, &ch)?)?)?;
             let masked: Vec<Ciphertext> = chunks
                 .iter()
                 .enumerate()
                 .map(|(c, ct)| circuit.mask_to_group(ct, c, 0))
                 .collect::<Result<_>>()?;
-            out.push(circuit.fold_to_group0(&ctx.mult(&masked[0], &g)?, 0)?);
-            out.push(circuit.fold_to_group0(&circuit.count_of_group(&g, 0)?, 0)?);
+            // the batched aggregator runs the circuit on reports already
+            // masked to their group, one level down; a single group on the
+            // raw chunks
+            let input = if layout.groups > 1 { &masked } else { &chunks };
+            let g = circuit.silent_validity(&circuit.class_sums(&circuit.report_terms(input, &ch)?)?)?;
+            // the accumulators as the aggregator decrypts them: gated at the
+            // group, then folded into group 0 and masked at the close
+            out.push(circuit.finalize_chunk(&ctx.mult(&masked[0], &g)?, 0)?);
+            out.push(circuit.finalize_count(&circuit.count_of_group(&g, 0)?)?);
             if layout.moments.is_some()
-                && let Some(p) = circuit.moment_products(&masked, 0)?.into_iter().next()
+                && let Some((p, t)) = circuit.moment_products(&masked, 0)?.into_iter().zip(layout.moment_terms()).next()
             {
-                out.push(circuit.fold_to_group0(&ctx.mult(&p, &g)?, 0)?);
+                out.push(circuit.finalize_moment(&ctx.mult(&p, &g)?, t)?);
             }
         }
     }

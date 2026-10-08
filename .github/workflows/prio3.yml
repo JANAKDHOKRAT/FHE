@@ -85,6 +85,10 @@ jobs:
           - { name: protocol-batch-noise, dir: prio3/fhe-prio3, args: "--test batch_noise" }
           - { name: protocol-malicious-aggregator, dir: prio3/fhe-prio3, args: "--test malicious_aggregator" }
           - { name: protocol-key-noise, dir: prio3/fhe-prio3, args: "--test key_noise_protocol" }
+          - { name: protocol-wfe, dir: prio3/fhe-prio3, args: "--test wfe" }
+          - { name: protocol-gate-noise, dir: prio3/fhe-prio3, args: "--test gate_noise" }
+          - { name: protocol-split-key, dir: prio3/fhe-prio3, args: "--test split_key" }
+          - { name: protocol-suppression, dir: prio3/fhe-prio3, args: "--test suppression" }
           - { name: node, dir: prio3/fhe-prio3-node, args: "" }
     env:
       LD_LIBRARY_PATH: /home/runner/openfhe-install/lib

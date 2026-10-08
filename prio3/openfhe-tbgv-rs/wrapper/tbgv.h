@@ -157,6 +157,12 @@ TbgvCiphertext tbgv_ciphertext_mult_monomial(TbgvContext ctx, TbgvCiphertext ct,
  * (length n = ring dimension). */
 TbgvCiphertext tbgv_zero_encryption(TbgvContext ctx, TbgvPublicKey pk, TbgvCiphertext reference, const int8_t* u,
                                     const int8_t* e0, const int8_t* e1, size_t n);
+/* (b u + t e0 + m, a u + t e1) over the towers of `reference`, with its
+ * metadata: an encryption of the plaintext polynomial m (coefficients in
+ * [0, t), NULL for zero) whose randomness the caller chose (signed 32-bit,
+ * INT32_MIN refused); length n = ring dimension. */
+TbgvCiphertext tbgv_encryption_with(TbgvContext ctx, TbgvPublicKey pk, TbgvCiphertext reference, const uint64_t* m,
+                                    const int32_t* u, const int32_t* e0, const int32_t* e1, size_t n);
 /* Slot values (in [0, t)) of the plaintext polynomial X; out_len = N. */
 int tbgv_monomial_slots(TbgvContext ctx, uint64_t* out, size_t out_len);
 /* The fused value that decryption reads, before it is reduced mod t:

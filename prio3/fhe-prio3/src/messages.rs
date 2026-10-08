@@ -207,6 +207,91 @@ pub struct ReleaseReveal {
     pub partials: Vec<Vec<u8>>,
 }
 
+/// Gated release, round 0: a key party's commitment to its contribution
+/// (and, for the aggregator of a split-key task, to the accumulators it
+/// asks the collector to refresh), sent before any contribution is
+/// revealed. See `gate.rs`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GateCommit {
+    pub task_id: [u8; 32],
+    pub party: usize,
+    pub batch_digest: [u8; 32],
+    pub digest: [u8; 32],
+}
+
+/// Gated release, round 1: a key party's masks (one per refreshed
+/// accumulator) and, for aggregators, random factors (one per gate input),
+/// each a fresh encryption with a proof that it is well formed (`wfe.rs`).
+/// The aggregator of a split-key task also carries the accumulators.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct GateContribution {
+    pub task_id: [u8; 32],
+    pub party: usize,
+    pub batch_digest: [u8; 32],
+    pub accumulators: Vec<Vec<u8>>,
+    pub masks: Vec<Vec<u8>>,
+    pub factors: Vec<Vec<u8>>,
+    /// One per mask, then one per factor.
+    pub proofs: Vec<crate::wfe::Proof>,
+}
+
+impl GateContribution {
+    pub fn digest(&self) -> [u8; 32] {
+        let mut h = Sha256::new();
+        h.update(b"fhe-prio3/1 gate contribution");
+        h.update(self.task_id);
+        h.update((self.party as u64).to_le_bytes());
+        h.update(self.batch_digest);
+        for list in [&self.accumulators, &self.masks, &self.factors] {
+            h.update((list.len() as u64).to_le_bytes());
+            for c in list.iter() {
+                h.update(Sha256::digest(c));
+            }
+        }
+        h.update(Sha256::digest(encode(&self.proofs).expect("serializable")));
+        h.finalize().into()
+    }
+}
+
+/// Gated release, joint decryption round 1: a key party's partial
+/// decryptions of the masked accumulators `Y` and its blinded checks of
+/// them (`vdec`), which every other key party partially decrypts.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct GateShare {
+    pub task_id: [u8; 32],
+    pub party: usize,
+    pub batch_digest: [u8; 32],
+    pub partials: Vec<Vec<u8>>,
+    pub checks: Vec<Vec<u8>>,
+}
+
+/// Joint decryption round 2: commitments to partials of the others' checks, by verifier.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GateCheckCommit {
+    pub task_id: [u8; 32],
+    pub party: usize,
+    pub batch_digest: [u8; 32],
+    pub digests: Vec<(usize, Vec<[u8; 32]>)>,
+}
+
+/// Joint decryption round 3: what a party's checks were.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct GateOpening {
+    pub task_id: [u8; 32],
+    pub party: usize,
+    pub batch_digest: [u8; 32],
+    pub opening: crate::vdec::Opening,
+}
+
+/// Joint decryption round 4: partials of the others' checks, after verifying them.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct GateReveal {
+    pub task_id: [u8; 32],
+    pub party: usize,
+    pub batch_digest: [u8; 32],
+    pub partials: Vec<(usize, Vec<Vec<u8>>)>,
+}
+
 /// Output of the key ceremony that every party may hold.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct PublicMaterial {

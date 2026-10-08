@@ -11,15 +11,25 @@
 //! every check holds ([`Collector::release_finish`]). A malicious
 //! aggregator's shifted partial decryption is caught with probability at
 //! least `1 - 2^-80`; there is no unverified path.
+//!
+//! In a split-key task the collector holds the second key share
+//! ([`Collector::with_key_share`]). It takes part in the gated release's
+//! refresh (`gate_*`, `gate.rs`), where it partially decrypts only the
+//! masked values it formed itself, and it adds its own partial decryptions
+//! when it fuses the release; it never sends a partial decryption of a
+//! released value to anyone.
 
 use crate::config::{TaskConfig, VerificationMode};
 use crate::error::{Error, Result};
 use crate::layout::Layout;
-use crate::messages::{AggregateShare, PublicMaterial, ReleaseChallenge, ReleaseCommit, ReleaseOpening, ReleaseReveal};
+use crate::messages::{
+    AggregateShare, GateCheckCommit, GateCommit, GateContribution, GateOpening, GateReveal, GateShare, PublicMaterial, ReleaseChallenge, ReleaseCommit,
+    ReleaseOpening, ReleaseReveal,
+};
 use crate::packed::{Codec, Expect, check_stored};
 use crate::types::{AggregateResult, BatchResult, RegressionResult};
 use crate::vdec;
-use openfhe_tbgv_rs::{Ciphertext, CiphertextMeta, Context, PartialDecryption, PublicKey};
+use openfhe_tbgv_rs::{Ciphertext, CiphertextMeta, Context, PartialDecryption, PublicKey, SecretShare};
 
 /// A release in progress at the collector: the shares, the checks sent and
 /// their opening (secret until every commitment is in), and the
@@ -41,6 +51,10 @@ pub struct Collector {
     /// Partial decryptions arrive packed and are rebuilt through this
     /// codec, never through OpenFHE's deserializer.
     codec: Codec,
+    /// Split-key tasks: the collector's key share.
+    share: Option<SecretShare>,
+    /// Split-key tasks: the gated release's state (`gate.rs`).
+    gate: crate::gate::GateState,
 }
 
 impl Collector {
@@ -53,7 +67,124 @@ impl Collector {
         let layout = cfg.layout(ctx.row_slots())?;
         let pk = ctx.deserialize_public_key(&material.public_key)?;
         let codec = Codec::new(&ctx, &pk, &material.public_key)?;
-        Ok(Self { cfg, ctx, pk, layout, codec })
+        Ok(Self {
+            cfg,
+            ctx,
+            pk,
+            layout,
+            codec,
+            share: None,
+            gate: crate::gate::GateState::default(),
+        })
+    }
+
+    /// The collector of a split-key task, with its encoded
+    /// [`crate::keys::CollectorSecret`].
+    pub fn with_key_share(cfg: TaskConfig, material: &PublicMaterial, secret: &[u8]) -> Result<Self> {
+        if !cfg.collector_holds_key() {
+            return Err(Error::Config("only split-key tasks give the collector a key share".into()));
+        }
+        let secret = crate::keys::CollectorSecret::decode(secret)?;
+        let mut c = Self::new(cfg, material)?;
+        c.share = Some(c.ctx.deserialize_secret_share(&secret.share)?);
+        Ok(c)
+    }
+
+    fn key_share(&self) -> Result<&SecretShare> {
+        self.share
+            .as_ref()
+            .ok_or_else(|| Error::Config("split-key task: this collector was built without its key share (Collector::with_key_share)".into()))
+    }
+
+    fn gate_env(&self) -> Result<crate::gate::GateEnv<'_>> {
+        Ok(crate::gate::GateEnv {
+            cfg: &self.cfg,
+            layout: &self.layout,
+            ctx: &self.ctx,
+            pk: &self.pk,
+            codec: &self.codec,
+            share: self.key_share()?,
+            party: self.cfg.collector_party().expect("split-key task"),
+        })
+    }
+
+    fn with_gate<T>(&mut self, f: impl FnOnce(&crate::gate::GateEnv, &mut crate::gate::GateState) -> Result<T>) -> Result<T> {
+        let mut st = std::mem::take(&mut self.gate);
+        let r = self.gate_env().and_then(|env| f(&env, &mut st));
+        self.gate = st;
+        r
+    }
+
+    /// Split-key tasks, gated release round 0: on the aggregator's
+    /// commitment (which names the batch), draws the collector's masks and
+    /// commits to them.
+    pub fn gate_commit(&mut self, aggregator: &GateCommit) -> Result<GateCommit> {
+        if aggregator.party != 0 || aggregator.task_id != self.cfg.task_id {
+            return Err(Error::Protocol("gate commitment is not the aggregator's for this task".into()));
+        }
+        let batch = aggregator.batch_digest;
+        self.with_gate(|env, st| crate::gate::commit(env, st, batch, &[], &mut rand::rngs::OsRng))
+    }
+
+    /// Round 1: reveals the collector's masks once both commitments are in.
+    pub fn gate_contribute(&mut self, commits: &[GateCommit]) -> Result<GateContribution> {
+        self.with_gate(|env, st| crate::gate::contribute(env, st, commits))
+    }
+
+    /// Round 2: verifies the aggregator's contribution (its proofs, and that
+    /// the accumulators are those it committed to before seeing the
+    /// collector's masks), forms `Y` from them and its own masks, and
+    /// partially decrypts that `Y` only.
+    pub fn gate_share(&mut self, contributions: &[GateContribution]) -> Result<GateShare> {
+        self.with_gate(|env, st| crate::gate::share(env, st, contributions, None, &mut rand::rngs::OsRng))
+    }
+
+    fn gate_ys(&self) -> Result<Vec<Ciphertext>> {
+        crate::gate::masked_values(&self.gate_env()?, &self.gate, None)
+    }
+
+    /// Round 3.
+    pub fn gate_check_commit(&mut self, shares: &[GateShare]) -> Result<GateCheckCommit> {
+        let ys = self.gate_ys()?;
+        self.with_gate(|env, st| crate::gate::check_commit(env, st, shares, &ys))
+    }
+
+    /// Round 4.
+    pub fn gate_open(&mut self, commits: &[GateCheckCommit]) -> Result<GateOpening> {
+        self.with_gate(|env, st| crate::gate::open(env, st, commits))
+    }
+
+    /// Round 5.
+    pub fn gate_reveal(&mut self, openings: &[GateOpening]) -> Result<GateReveal> {
+        let ys = self.gate_ys()?;
+        self.with_gate(|env, st| crate::gate::reveal(env, st, openings, &ys))
+    }
+
+    /// Round 6: verifies the aggregator's partials of `Y` (the collector
+    /// learns `y`, uniform to it: the aggregator's masks are in it).
+    pub fn gate_finish(&mut self, reveals: &[GateReveal]) -> Result<()> {
+        let ys = self.gate_ys()?;
+        self.with_gate(|env, st| crate::gate::finish(env, st, reveals, &ys).map(|_| ()))
+    }
+
+    /// TEST HOOK: the masked values `Y` this collector decrypts in the refresh.
+    pub fn gate_masked_values_for_tests(&self) -> Result<Vec<Ciphertext>> {
+        self.gate_ys()
+    }
+
+    /// TEST HOOK: the gated release's state (tests acting as a malicious collector).
+    pub fn gate_state_for_tests(&mut self) -> &mut crate::gate::GateState {
+        &mut self.gate
+    }
+
+    /// The gated release's state, for a collector node to persist.
+    pub fn gate_state(&self) -> &crate::gate::GateState {
+        &self.gate
+    }
+
+    /// Restores a state from [`Self::gate_state`] (same task, same key share).
+    pub fn restore_gate_state(&mut self, st: crate::gate::GateState) {
+        self.gate = st;
     }
 
     /// Checks that a stored aggregate share (one a collector node kept while
@@ -76,6 +207,9 @@ impl Collector {
     /// and accumulators the collector's policy covers, and identical
     /// accumulators.
     fn check_shares(&self, collector: usize, shares: &[AggregateShare]) -> Result<()> {
+        if self.cfg.gated() {
+            return self.check_gated_shares(collector, shares);
+        }
         let n = self.cfg.num_aggregators;
         let chunks = self.cfg.collector_chunks(&self.layout, collector);
         let terms = self.collector_terms(collector)?;
@@ -125,6 +259,50 @@ impl Collector {
         if shares[0].report_count > self.cfg.max_batch_size {
             // every bound below (and the digit width) assumes at most
             // max_batch_size reports; aggregators admit no more
+            return Err(Error::Protocol("aggregate inconsistent: report count exceeds max_batch_size".into()));
+        }
+        Ok(())
+    }
+
+    /// [`Self::check_shares`] for a gated task: one share per aggregator,
+    /// each with one partial per gated output and the same outputs.
+    fn check_gated_shares(&self, collector: usize, shares: &[AggregateShare]) -> Result<()> {
+        let n = self.cfg.num_aggregators;
+        let outputs = crate::gate::GatePlan::new(&self.cfg, &self.layout)?.outputs.len();
+        if collector != 0 {
+            return Err(Error::Protocol("gated tasks have one collector".into()));
+        }
+        if self.cfg.collector_holds_key() {
+            self.key_share()?;
+        }
+        if shares.len() != n {
+            return Err(Error::Protocol(format!("expected {n} aggregate shares, got {}", shares.len())));
+        }
+        let mut seen = vec![false; n];
+        for s in shares {
+            if s.task_id != self.cfg.task_id || s.collector != 0 {
+                return Err(Error::Protocol("aggregate share for a different task or collector".into()));
+            }
+            if s.aggregator >= n || std::mem::replace(&mut seen[s.aggregator], true) {
+                return Err(Error::Protocol("duplicate or out-of-range aggregator in shares".into()));
+            }
+            if s.batch_digest != shares[0].batch_digest || s.report_count != shares[0].report_count {
+                return Err(Error::Protocol("aggregators disagree on the batch".into()));
+            }
+            if s.partials.len() != outputs || s.accumulators.len() != outputs || s.valid_count_partial.is_some() || !s.moment_partials.is_empty() {
+                return Err(Error::Protocol(format!("gated share must carry exactly {outputs} outputs and their partials")));
+            }
+            if s.accumulators != shares[0].accumulators {
+                return Err(Error::Protocol(format!(
+                    "aggregator {} computed other gated outputs than aggregator {}",
+                    s.aggregator, shares[0].aggregator
+                )));
+            }
+        }
+        if self.cfg.min_cell_count > 0 && shares[0].report_count != 0 {
+            return Err(Error::Protocol("suppression task: the report count must be withheld".into()));
+        }
+        if shares[0].report_count > self.cfg.max_batch_size {
             return Err(Error::Protocol("aggregate inconsistent: report count exceeds max_batch_size".into()));
         }
         Ok(())
@@ -299,7 +477,7 @@ impl Collector {
                 num_elements: 1,
                 ..acc.meta()?
             };
-            let parts = shares
+            let mut parts = shares
                 .iter()
                 .map(|s| {
                     Ok(PartialDecryption::from_ciphertext(
@@ -308,6 +486,10 @@ impl Collector {
                     ))
                 })
                 .collect::<Result<Vec<_>>>()?;
+            // split-key: the collector's own share, kept to itself
+            if let Some(sk) = &self.share {
+                parts.push(sk.partial_decrypt(acc, false)?);
+            }
             fused_accs.push(vdec::fuse_checked(&self.ctx, &parts.iter().collect::<Vec<_>>(), &format!("accumulator {i}"))?);
         }
         let mut fused_checks = Vec::with_capacity(checks.len());
@@ -331,9 +513,15 @@ impl Collector {
                     j == 0,
                 ));
             }
+            if let Some(sk) = &self.share {
+                parts.push(sk.partial_decrypt(c, false)?);
+            }
             fused_checks.push(vdec::fuse_checked(&self.ctx, &parts.iter().collect::<Vec<_>>(), &format!("check {l}"))?);
         }
         vdec::verify(&vdec::SlotPowers::new(&self.ctx)?, &groups, &fused_accs, &fused_checks, &p.opening)?;
+        if self.cfg.gated() {
+            return self.result_from_gated(&p.shares[0], &fused_accs);
+        }
         self.result_from(p.collector as usize, &p.shares[0], &fused_accs)
     }
 
@@ -342,6 +530,71 @@ impl Collector {
         self.check_seal_key(p.collector as usize, key)?;
         let reveals = sealed.iter().map(|s| crate::seal::open_reveal(s, key)).collect::<Result<Vec<_>>>()?;
         self.release_finish(p, &reveals)
+    }
+
+    /// The batch result of a gated task from its verified fused outputs.
+    fn result_from_gated(&self, share: &AggregateShare, fused: &[Vec<u64>]) -> Result<BatchResult> {
+        let plan = crate::gate::GatePlan::new(&self.cfg, &self.layout)?;
+        let un = crate::gate::ungate(&self.cfg, &self.layout, self.ctx.plain_mod(), fused)?;
+        let t = &self.cfg.measurement_type;
+        if plan.cell_gate {
+            // cells only: constraint slots are never released, and the
+            // counts are withheld
+            let cells = t.cell_slots().expect("validated");
+            let k = self.cfg.min_cell_count;
+            let mut slot_sums = vec![0u64; self.layout.input_len];
+            let mut suppressed = Vec::new();
+            for (e, &g) in cells.iter().enumerate() {
+                let c = self.layout.chunk_of(g);
+                let slot = self.layout.client_slot(g - self.layout.chunk_range(c).start);
+                let pos = plan.cell_slots[c].iter().position(|&s| s == slot).expect("cell slot of its chunk");
+                if un.suppressed[c][pos] {
+                    suppressed.push(e);
+                    continue;
+                }
+                let v = un.values[c][slot];
+                if v < k || v > self.cfg.max_batch_size {
+                    return Err(Error::Protocol(format!(
+                        "aggregate inconsistent: released cell {e} is {v}, outside [{k}, {}]",
+                        self.cfg.max_batch_size
+                    )));
+                }
+                slot_sums[g] = v;
+            }
+            return Ok(BatchResult {
+                collector: 0,
+                elements: (0..t.num_elements()).collect(),
+                aggregate: t.decode_aggregate(&slot_sums)?,
+                report_count: 0,
+                valid_count: 0,
+                regression: None,
+                counts_withheld: true,
+                suppressed,
+            });
+        }
+        // batch-size gate only: the ungated values in the order of an
+        // ordinary release (chunks, valid count, moments)
+        let spread = plan
+            .refreshed
+            .iter()
+            .position(|r| *r == crate::gate::Refreshed::SpreadCount)
+            .expect("split-key plan refreshes the count");
+        let counts: Vec<u64> = plan.spread_slots.iter().map(|&s| un.values[spread][s]).collect();
+        if counts.windows(2).any(|w| w[0] != w[1]) {
+            return Err(Error::Protocol("aggregate inconsistent: the valid count differs between its slots".into()));
+        }
+        let mut legacy = Vec::with_capacity(plan.refreshed.len());
+        for (i, r) in plan.refreshed.iter().enumerate() {
+            match r {
+                crate::gate::Refreshed::SpreadCount => {
+                    let mut v = vec![0u64; un.values[i].len()];
+                    v[0] = counts[0];
+                    legacy.push(v);
+                }
+                _ => legacy.push(un.values[i].clone()),
+            }
+        }
+        self.result_from(0, share, &legacy)
     }
 
     /// The batch result from verified fused accumulators (all slots, in the
@@ -436,6 +689,8 @@ impl Collector {
             report_count: count,
             valid_count: valid,
             regression,
+            counts_withheld: false,
+            suppressed: Vec::new(),
         })
     }
 }

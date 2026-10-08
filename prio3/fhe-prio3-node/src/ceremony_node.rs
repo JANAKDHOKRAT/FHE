@@ -246,7 +246,7 @@ impl Transport for HttpTransport {
 /// peers stop too.
 pub async fn run(cfg: CeremonyNodeConfig) -> anyhow::Result<CeremonyOutput> {
     init_crypto();
-    let n = cfg.task.num_aggregators;
+    let n = cfg.task.num_key_parties();
     anyhow::ensure!(
         cfg.peers.len() == n && cfg.pinned.len() == n && cfg.index < n,
         "need one peer URL and one pinned key per aggregator, and index < {n}"

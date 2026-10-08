@@ -13,6 +13,18 @@ pub fn serial() -> std::sync::MutexGuard<'static, ()> {
     SERIAL.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// The messages of one round of the gated release, for tests to tamper with.
+pub enum GateStage<'a> {
+    Commits(&'a mut Vec<GateCommit>),
+    Contributions(&'a mut Vec<GateContribution>),
+    /// With the masked values `Y` (aggregator 0's; every honest key party has the same).
+    Shares(&'a mut Vec<GateShare>, &'a [openfhe_tbgv_rs::Ciphertext]),
+    CheckCommits(&'a mut Vec<GateCheckCommit>),
+    Openings(&'a mut Vec<GateOpening>),
+    Reveals(&'a mut Vec<GateReveal>),
+    Released(&'a mut Vec<AggregateShare>),
+}
+
 pub struct Net {
     pub cfg: TaskConfig,
     /// Only what clients need: the evaluation keys are dropped once the
@@ -36,8 +48,23 @@ impl Net {
     }
 
     pub fn with_registry(cfg: TaskConfig, registry: Option<Arc<dyn ClientRegistry>>) -> Self {
-        let (full, shares) = keys::run_local_ceremony(&cfg).expect("ceremony");
-        Self::with_keys(cfg, full, &shares, registry)
+        let k = keys::run_local_key_ceremony(&cfg).expect("ceremony");
+        let mut net = Self::with_keys(cfg.clone(), k.material, &k.aggregator_secrets, registry);
+        if let Some(secret) = &k.collector_secret {
+            net.collector = Collector::with_key_share(cfg, &net.material, secret).expect("collector with key share");
+        }
+        net
+    }
+
+    /// From keys made once for several tests: a task with the same depth and
+    /// layout as the one the keys were made for (the batch-size and cell
+    /// thresholds do not enter the keys).
+    pub fn from_local_keys(cfg: TaskConfig, k: &keys::LocalKeys) -> Self {
+        let mut net = Self::with_keys(cfg.clone(), k.material.clone(), &k.aggregator_secrets, None);
+        if let Some(secret) = &k.collector_secret {
+            net.collector = Collector::with_key_share(cfg, &net.material, secret).expect("collector with key share");
+        }
+        net
     }
 
     /// From material and shares made elsewhere (e.g. the distributed ceremony).
@@ -175,8 +202,89 @@ impl Net {
         self.collector.release_finish_sealed(&pending, key, &reveals)
     }
 
+    /// Gated release (`gate.rs`), every message across postcard: the count
+    /// round when the aggregators hold every share, rounds 0 to 6 among the
+    /// key parties, then the verified release.
+    pub fn gated_collect(&mut self) -> Result<BatchResult> {
+        self.gated_collect_with(|_| {})
+    }
+
+    /// [`Self::gated_collect`], with `hook` seeing (and able to change)
+    /// every round's messages before they are delivered: what a malicious
+    /// party or network can do.
+    pub fn gated_collect_with(&mut self, mut hook: impl FnMut(GateStage)) -> Result<BatchResult> {
+        fn wire<T: serde::Serialize + serde::de::DeserializeOwned>(v: Vec<T>) -> Vec<T> {
+            v.into_iter().map(|x| decode(&encode(&x).unwrap()).unwrap()).collect()
+        }
+        let split = self.cfg.collector_holds_key();
+        if !split {
+            self.count_round()?;
+        }
+        let mut commits = self.aggs.iter_mut().map(|a| a.gate_commit()).collect::<Result<Vec<_>>>()?;
+        if split {
+            let c = self.collector.gate_commit(&commits[0])?;
+            commits.push(c);
+        }
+        let mut commits = wire(commits);
+        hook(GateStage::Commits(&mut commits));
+        let mut contributions = self.aggs.iter_mut().map(|a| a.gate_contribute(&commits)).collect::<Result<Vec<_>>>()?;
+        if split {
+            contributions.push(self.collector.gate_contribute(&commits)?);
+        }
+        let mut contributions = wire(contributions);
+        hook(GateStage::Contributions(&mut contributions));
+        let mut shares = self.aggs.iter_mut().map(|a| a.gate_share(&contributions)).collect::<Result<Vec<_>>>()?;
+        if split {
+            shares.push(self.collector.gate_share(&contributions)?);
+        }
+        let mut shares = wire(shares);
+        let ys = self.aggs[0].gate_masked_values_for_tests()?;
+        hook(GateStage::Shares(&mut shares, &ys));
+        // a party whose share the hook changed sends that share to everyone
+        // and keeps it as its own (what a malicious party does)
+        for a in self.aggs.iter_mut() {
+            let i = a.index();
+            a.gate_state_for_tests().own_share = Some(shares[i].clone());
+        }
+        if split {
+            let c = self.cfg.num_aggregators;
+            self.collector.gate_state_for_tests().own_share = Some(shares[c].clone());
+        }
+        let mut cc = self.aggs.iter_mut().map(|a| a.gate_check_commit(&shares)).collect::<Result<Vec<_>>>()?;
+        if split {
+            cc.push(self.collector.gate_check_commit(&shares)?);
+        }
+        let mut cc = wire(cc);
+        hook(GateStage::CheckCommits(&mut cc));
+        let mut openings = self.aggs.iter_mut().map(|a| a.gate_open(&cc)).collect::<Result<Vec<_>>>()?;
+        if split {
+            openings.push(self.collector.gate_open(&cc)?);
+        }
+        let mut openings = wire(openings);
+        hook(GateStage::Openings(&mut openings));
+        let mut reveals = self.aggs.iter_mut().map(|a| a.gate_reveal(&openings)).collect::<Result<Vec<_>>>()?;
+        if split {
+            reveals.push(self.collector.gate_reveal(&openings)?);
+        }
+        let mut reveals = wire(reveals);
+        hook(GateStage::Reveals(&mut reveals));
+        for a in self.aggs.iter_mut() {
+            a.gate_finish(&reveals)?;
+        }
+        if split {
+            self.collector.gate_finish(&reveals)?;
+        }
+        let mut released = wire(self.aggs.iter_mut().map(|a| a.aggregate_share_for(0)).collect::<Result<Vec<_>>>()?);
+        hook(GateStage::Released(&mut released));
+        self.finish_release(0, released)
+    }
+
     /// Verified release to collector `c` unsealed (library-level tests of policies).
     pub fn collect_for(&mut self, c: usize) -> Result<BatchResult> {
+        if self.cfg.gated() {
+            assert_eq!(c, 0);
+            return self.gated_collect();
+        }
         self.count_round()?;
         let shares: Vec<AggregateShare> = self
             .aggs

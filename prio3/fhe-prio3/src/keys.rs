@@ -106,6 +106,55 @@ impl Drop for AggregatorSecret {
     }
 }
 
+/// What the collector of a split-key task
+/// ([`crate::config::KeyTopology::AggregatorAndCollector`]) holds: its share
+/// of the joint BGV secret key, and nothing else. In particular not the
+/// verify key: with it, the collector could compute every report's
+/// challenge and help a client forge a report that passes the check.
+///
+/// Encoding: `MAGIC (16 bytes) || version (1) || share`.
+pub struct CollectorSecret {
+    /// Serialized `SecretShare`.
+    pub share: Vec<u8>,
+}
+
+impl CollectorSecret {
+    pub const MAGIC: &'static [u8; 16] = b"fhe-prio3/csecrt";
+    pub const VERSION: u8 = 1;
+
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(Self::MAGIC.len() + 1 + self.share.len());
+        out.extend_from_slice(Self::MAGIC);
+        out.push(Self::VERSION);
+        out.extend_from_slice(&self.share);
+        out
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
+        let head = Self::MAGIC.len() + 1;
+        if bytes.len() < head || &bytes[..Self::MAGIC.len()] != Self::MAGIC {
+            return Err(Error::Config("not a collector secret (no fhe-prio3/csecrt header)".into()));
+        }
+        let version = bytes[Self::MAGIC.len()];
+        if version != Self::VERSION {
+            return Err(Error::Config(format!(
+                "collector secret version {version}, this build reads version {}",
+                Self::VERSION
+            )));
+        }
+        if bytes.len() == head {
+            return Err(Error::Config("collector secret carries no key share".into()));
+        }
+        Ok(Self { share: bytes[head..].to_vec() })
+    }
+}
+
+impl Drop for CollectorSecret {
+    fn drop(&mut self) {
+        self.share.zeroize();
+    }
+}
+
 /// Creates the crypto context for a task. Every party runs this with the
 /// same configuration and checks the resulting parameters match.
 pub fn make_context(cfg: &TaskConfig) -> Result<Context> {
@@ -241,14 +290,35 @@ pub fn install(ctx: &Context, material: &PublicMaterial) -> Result<KeyLease> {
     })
 }
 
+/// Output of [`run_local_key_ceremony`].
+pub struct LocalKeys {
+    pub material: PublicMaterial,
+    /// One encoded [`AggregatorSecret`] per aggregator.
+    pub aggregator_secrets: Vec<Vec<u8>>,
+    /// The encoded [`CollectorSecret`] of a split-key task.
+    pub collector_secret: Option<Vec<u8>>,
+}
+
 /// Runs the whole ceremony in-process. Every inter-party value crosses a
 /// serialization boundary. Returns the public material and one encoded
 /// [`AggregatorSecret`] per aggregator (its key share and the task's verify
 /// key, drawn here from the operating system: this is a dealer, for tests
-/// and trials).
+/// and trials). Split-key tasks need [`run_local_key_ceremony`].
 pub fn run_local_ceremony(cfg: &TaskConfig) -> Result<(PublicMaterial, Vec<Vec<u8>>)> {
+    if cfg.collector_holds_key() {
+        return Err(Error::Config(
+            "split-key task: the collector holds a key share, use run_local_key_ceremony".into(),
+        ));
+    }
+    let k = run_local_key_ceremony(cfg)?;
+    Ok((k.material, k.aggregator_secrets))
+}
+
+/// [`run_local_ceremony`] over every key party: the aggregators and, in a
+/// split-key task, the collector (the last share, without the verify key).
+pub fn run_local_key_ceremony(cfg: &TaskConfig) -> Result<LocalKeys> {
     let ctx = make_context(cfg)?;
-    let n = cfg.num_aggregators;
+    let n = cfg.num_key_parties();
     let layout = cfg.layout(ctx.row_slots())?;
     let indices = layout.rotation_indices();
 
@@ -292,7 +362,7 @@ pub fn run_local_ceremony(cfg: &TaskConfig) -> Result<(PublicMaterial, Vec<Vec<u
         attestations: Vec::new(),
     };
     let verify_key = VerifyKey::random();
-    let secrets = shares
+    let aggregator_secrets = shares[..cfg.num_aggregators]
         .iter()
         .map(|s| {
             Ok(AggregatorSecret {
@@ -302,7 +372,15 @@ pub fn run_local_ceremony(cfg: &TaskConfig) -> Result<(PublicMaterial, Vec<Vec<u
             .encode())
         })
         .collect::<Result<Vec<_>>>()?;
-    Ok((material, secrets))
+    let collector_secret = match cfg.collector_party() {
+        Some(c) => Some(CollectorSecret { share: shares[c].serialize()? }.encode()),
+        None => None,
+    };
+    Ok(LocalKeys {
+        material,
+        aggregator_secrets,
+        collector_secret,
+    })
 }
 
 #[cfg(test)]
@@ -332,5 +410,21 @@ mod tests {
         assert!(AggregatorSecret::decode(&s.encode()[..40]).is_err());
         // the key never shows in logs
         assert_eq!(format!("{:?}", s.verify_key), "VerifyKey(<redacted>)");
+    }
+
+    #[test]
+    fn collector_secret_round_trips_and_is_not_an_aggregator_secret() {
+        let c = CollectorSecret { share: vec![4, 5, 6] };
+        assert_eq!(CollectorSecret::decode(&c.encode()).unwrap().share, c.share);
+        assert!(AggregatorSecret::decode(&c.encode()).is_err());
+        let a = AggregatorSecret {
+            verify_key: VerifyKey::from_bytes([1; 32]),
+            share: vec![1],
+        };
+        assert!(CollectorSecret::decode(&a.encode()).is_err());
+        assert!(CollectorSecret::decode(&c.encode()[..17]).err().unwrap().to_string().contains("no key share"));
+        let mut v = c.encode();
+        v[16] = 9;
+        assert!(CollectorSecret::decode(&v).err().unwrap().to_string().contains("version 9"));
     }
 }

@@ -584,6 +584,24 @@ impl Context {
         self.wrap_ct(unsafe { ffi::tbgv_zero_encryption(self.raw(), pk.ptr, reference.ptr, u.as_ptr(), e0.as_ptr(), e1.as_ptr(), n) })
     }
 
+    /// `(b u + t e0 + m, a u + t e1)` under `pk`, on `reference`'s towers and
+    /// with its metadata: an encryption of the raw plaintext polynomial `m`
+    /// (coefficients in `[0, t)`, `None` for zero; it decodes to the slots
+    /// of `m` divided by the reference's `scaling_factor_int`, so encode a
+    /// slot vector `v` as the coefficients of `v * scaling_factor_int`), with
+    /// randomness the
+    /// caller chose, wider than [`Self::zero_encryption`] allows (signed
+    /// 32-bit, `i32::MIN` refused). Deterministic, so a verifier can rebuild
+    /// it from a revealed opening. Coefficient vectors have the ring dimension.
+    pub fn encryption_with(&self, pk: &PublicKey, reference: &Ciphertext, m: Option<&[u64]>, u: &[i32], e0: &[i32], e1: &[i32]) -> Result<Ciphertext> {
+        let n = self.ring_dim() as usize;
+        if u.len() != n || e0.len() != n || e1.len() != n || m.is_some_and(|m| m.len() != n) {
+            return Err(Error("coefficient vectors must have the ring dimension".into()));
+        }
+        let mp = m.map_or(std::ptr::null(), |m| m.as_ptr());
+        self.wrap_ct(unsafe { ffi::tbgv_encryption_with(self.raw(), pk.ptr, reference.ptr, mp, u.as_ptr(), e0.as_ptr(), e1.as_ptr(), n) })
+    }
+
     /// Slot values of the plaintext polynomial `X`, all `N` slots, in `[0, t)`.
     pub fn monomial_slots(&self) -> Result<Vec<u64>> {
         let mut out = vec![0u64; self.ring_dim() as usize];

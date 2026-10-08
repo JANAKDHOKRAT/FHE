@@ -76,6 +76,7 @@ fn col_config(b: &Batch, db: std::path::PathBuf) -> CollectorNodeConfig {
         seal_key: None,
         token: "t".into(),
         db,
+        key_share: None,
     }
 }
 

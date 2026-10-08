@@ -40,8 +40,9 @@ use crate::field::Field;
 use crate::keys;
 use crate::layout::Layout;
 use crate::messages::{
-    AggregateShare, CountCommit, CountOpening, CountReveal, CountShare, MaskCommit, MaskMessage, PublicMaterial, ReleaseChallenge, ReleaseCommit,
-    ReleaseOpening, ReleaseReveal, Report, ReportId, VerifierCommit, VerifierMessage, batch_digest,
+    AggregateShare, CountCommit, CountOpening, CountReveal, CountShare, GateCheckCommit, GateCommit, GateContribution, GateOpening, GateReveal, GateShare,
+    MaskCommit, MaskMessage, PublicMaterial, ReleaseChallenge, ReleaseCommit, ReleaseOpening, ReleaseReveal, Report, ReportId, VerifierCommit, VerifierMessage,
+    batch_digest,
 };
 use crate::packed::{Codec, Expect, WireError, check_stored};
 use crate::vdec;
@@ -89,6 +90,13 @@ pub struct AggregatorState {
     /// Verifiable-decryption state of the count round and the releases.
     #[serde(default)]
     pub verification: VerificationState,
+    /// Split-key tasks: the valid count at every element slot (the input of
+    /// the batch-size gate, `gate.rs`).
+    #[serde(default)]
+    pub valid_spread_sum: Option<Vec<u8>>,
+    /// Gated release state (`gate.rs`).
+    #[serde(default)]
+    pub gate: crate::gate::GateState,
 }
 
 /// What an aggregator keeps between the rounds of verifiable decryption
@@ -193,6 +201,9 @@ pub struct Aggregator {
     released_count_share: Option<CountShare>,
     released_aggregate_shares: BTreeMap<u32, AggregateShare>,
     verification: VerificationState,
+    /// See `AggregatorState::valid_spread_sum`.
+    valid_spread_sum: Option<Ciphertext>,
+    gate: crate::gate::GateState,
     rng: OsRng,
 }
 
@@ -260,6 +271,8 @@ impl Aggregator {
             released_count_share: None,
             released_aggregate_shares: BTreeMap::new(),
             verification: VerificationState::default(),
+            valid_spread_sum: None,
+            gate: crate::gate::GateState::default(),
             rng: OsRng,
         })
     }
@@ -278,6 +291,9 @@ impl Aggregator {
 
     pub fn index(&self) -> usize {
         self.index
+    }
+    pub fn config(&self) -> &TaskConfig {
+        &self.cfg
     }
     pub fn is_silent(&self) -> bool {
         self.cfg.mode == VerificationMode::Silent
@@ -793,6 +809,13 @@ impl Aggregator {
             self.add_to_moments(gated)?;
         }
         self.add_to_sums(y)?;
+        if self.cfg.collector_holds_key() {
+            let spread = self.circuit.spread_of_groups(&g, &groups)?;
+            self.valid_spread_sum = Some(match self.valid_spread_sum.take() {
+                None => spread,
+                Some(acc) => self.ctx.add(&acc, &spread)?,
+            });
+        }
         let cnt = self.circuit.count_of_groups(&g, &groups)?;
         self.valid_count_sum = Some(match self.valid_count_sum.take() {
             None => cnt,
@@ -817,6 +840,9 @@ impl Aggregator {
         }
         if let Some(ct) = &self.valid_count_sum {
             self.valid_count_sum = Some(self.circuit.finalize_count(ct)?);
+        }
+        if let Some(ct) = &self.valid_spread_sum {
+            self.valid_spread_sum = Some(self.circuit.finalize_spread(ct)?);
         }
         if let Some(m) = &mut self.moment_sums {
             for (ct, t) in m.iter_mut().zip(self.layout.moment_terms()) {
@@ -864,6 +890,11 @@ impl Aggregator {
             released_count_share: self.released_count_share.clone(),
             released_aggregate_shares: self.released_aggregate_shares.clone(),
             verification: self.verification.clone(),
+            valid_spread_sum: match &self.valid_spread_sum {
+                Some(c) => Some(c.serialize()?),
+                None => None,
+            },
+            gate: self.gate.clone(),
         })
     }
 
@@ -951,6 +982,11 @@ impl Aggregator {
         self.released_count_share = st.released_count_share;
         self.released_aggregate_shares = st.released_aggregate_shares;
         self.verification = st.verification;
+        self.valid_spread_sum = match &st.valid_spread_sum {
+            Some(b) => Some(self.ctx.deserialize_ciphertext(b)?),
+            None => None,
+        };
+        self.gate = st.gate;
         self.pending.clear();
         Ok(())
     }
@@ -976,6 +1012,11 @@ impl Aggregator {
     pub fn count_share(&mut self) -> Result<CountShare> {
         if self.cfg.mode != VerificationMode::Silent {
             return Err(Error::Protocol("count_share is only used in silent mode".into()));
+        }
+        if self.cfg.collector_holds_key() {
+            return Err(Error::Protocol(
+                "split-key task: the batch size is gated under encryption (gate_commit), there is no count round".into(),
+            ));
         }
         if let Some(s) = &self.released_count_share {
             return Ok(s.clone());
@@ -1351,6 +1392,9 @@ impl Aggregator {
             return Ok(s.clone());
         }
         let count = self.accepted_ids.len();
+        if self.cfg.gated() {
+            return self.gated_share(collector);
+        }
         let valid = match self.cfg.mode {
             VerificationMode::Verdict => count as u64,
             VerificationMode::Silent => self
@@ -1392,8 +1436,13 @@ impl Aggregator {
     }
 
     /// The ciphertexts released to `collector`, in the order chunks, valid
-    /// count (silent mode), second-moment accumulators of its pairs.
+    /// count (silent mode), second-moment accumulators of its pairs; in a
+    /// gated task, the gated release's outputs.
     fn release_accumulators(&self, collector: usize) -> Result<Vec<Ciphertext>> {
+        if self.cfg.gated() {
+            let out = self.gate.outputs.as_ref().ok_or_else(|| Error::Protocol("gated release not finished".into()))?;
+            return out.iter().map(|b| self.codec.decode(b, Expect::Any).map_err(Into::into)).collect();
+        }
         let sums = self.sums.as_ref().ok_or_else(|| Error::Protocol("no report in the batch".into()))?;
         let mut out = Vec::new();
         for k in self.cfg.collector_chunks(&self.layout, collector) {
@@ -1542,5 +1591,215 @@ impl Aggregator {
             .ok_or_else(|| Error::Config(format!("no sealing key for collector {collector}")))?;
         let share = self.aggregate_share_for(collector)?;
         crate::seal::seal(&share, &key)
+    }
+
+    // ---- gated release (`gate.rs`) ----------------------------------------
+
+    fn gate_env(&self) -> crate::gate::GateEnv<'_> {
+        crate::gate::GateEnv {
+            cfg: &self.cfg,
+            layout: &self.layout,
+            ctx: &self.ctx,
+            pk: &self.pk,
+            codec: &self.codec,
+            share: &self.share,
+            party: self.index,
+        }
+    }
+
+    /// The values the gated release refreshes ([`crate::gate::GatePlan`]).
+    fn gate_values(&self) -> Result<Vec<Ciphertext>> {
+        let plan = crate::gate::GatePlan::new(&self.cfg, &self.layout)?;
+        let sums = self.sums.as_ref().ok_or_else(|| Error::Protocol("no report in the batch".into()))?;
+        plan.refreshed
+            .iter()
+            .map(|r| match *r {
+                crate::gate::Refreshed::Chunk(c) => Ok(sums[c].try_clone()?),
+                crate::gate::Refreshed::SpreadCount => Ok(self
+                    .valid_spread_sum
+                    .as_ref()
+                    .ok_or_else(|| Error::Protocol("no spread count accumulated".into()))?
+                    .try_clone()?),
+                crate::gate::Refreshed::Moment(i) => Ok(self
+                    .moment_sums
+                    .as_ref()
+                    .ok_or_else(|| Error::Protocol("moments enabled but no products accumulated".into()))?[i]
+                    .try_clone()?),
+            })
+            .collect()
+    }
+
+    /// Gated release, round 0: closes the batch and commits to this
+    /// aggregator's contribution (masks, random factors, and in a split-key
+    /// task the accumulators to refresh). Tasks with a count round
+    /// (aggregators only, suppression) require a verified count of at
+    /// least `min_batch_size`; split-key tasks gate the batch size under
+    /// encryption and only require that many admitted reports.
+    pub fn gate_commit(&mut self) -> Result<GateCommit> {
+        if !self.cfg.gated() {
+            return Err(Error::Protocol("task does not use the gated release".into()));
+        }
+        let admitted = self.accepted_ids.len();
+        if admitted < self.cfg.min_batch_size {
+            return Err(Error::Protocol(format!(
+                "batch has {admitted} admitted reports, minimum is {}",
+                self.cfg.min_batch_size
+            )));
+        }
+        if !self.cfg.collector_holds_key() {
+            let valid = self
+                .valid_count
+                .ok_or_else(|| Error::Protocol("run the count round before the gated release".into()))?;
+            if valid < self.cfg.min_batch_size as u64 {
+                return Err(Error::Protocol(format!(
+                    "batch has {valid} valid reports, minimum is {}",
+                    self.cfg.min_batch_size
+                )));
+            }
+        }
+        self.flush_silent_batch()?;
+        self.finalize_silent()?;
+        self.closed = true;
+        self.pending.clear();
+        let xs = if self.cfg.collector_holds_key() { self.gate_values()? } else { Vec::new() };
+        let digest = batch_digest(self.accepted_ids.clone());
+        let mut gate = std::mem::take(&mut self.gate);
+        let r = crate::gate::commit(&self.gate_env(), &mut gate, digest, &xs, &mut OsRng);
+        self.gate = gate;
+        r
+    }
+
+    /// Gated release, round 1: reveals the contribution once every key
+    /// party's commitment is in.
+    pub fn gate_contribute(&mut self, commits: &[GateCommit]) -> Result<GateContribution> {
+        let mut gate = std::mem::take(&mut self.gate);
+        let r = crate::gate::contribute(&self.gate_env(), &mut gate, commits);
+        self.gate = gate;
+        r
+    }
+
+    /// Gated release, round 2: checks every contribution (proofs of well
+    /// formedness included), partially decrypts the masked accumulators and
+    /// publishes this aggregator's checks of them.
+    pub fn gate_share(&mut self, contributions: &[GateContribution]) -> Result<GateShare> {
+        let xs = self.gate_own_values()?;
+        let mut gate = std::mem::take(&mut self.gate);
+        let r = crate::gate::share(&self.gate_env(), &mut gate, contributions, xs.as_deref(), &mut OsRng);
+        self.gate = gate;
+        r
+    }
+
+    /// The accumulators this aggregator refreshes: its own; in a split-key
+    /// task, exactly those it committed to and sent the collector (`None`:
+    /// taken from its contribution), so both key parties form the same `Y`.
+    fn gate_own_values(&self) -> Result<Option<Vec<Ciphertext>>> {
+        Ok(if self.cfg.collector_holds_key() { None } else { Some(self.gate_values()?) })
+    }
+
+    fn gate_ys(&self) -> Result<Vec<Ciphertext>> {
+        crate::gate::masked_values(&self.gate_env(), &self.gate, self.gate_own_values()?.as_deref())
+    }
+
+    /// Gated release, round 3.
+    pub fn gate_check_commit(&mut self, shares: &[GateShare]) -> Result<GateCheckCommit> {
+        let ys = self.gate_ys()?;
+        let mut gate = std::mem::take(&mut self.gate);
+        let r = crate::gate::check_commit(&self.gate_env(), &mut gate, shares, &ys);
+        self.gate = gate;
+        r
+    }
+
+    /// Gated release, round 4.
+    pub fn gate_open(&mut self, commits: &[GateCheckCommit]) -> Result<GateOpening> {
+        let mut gate = std::mem::take(&mut self.gate);
+        let r = crate::gate::open(&self.gate_env(), &mut gate, commits);
+        self.gate = gate;
+        r
+    }
+
+    /// Gated release, round 5.
+    pub fn gate_reveal(&mut self, openings: &[GateOpening]) -> Result<GateReveal> {
+        let ys = self.gate_ys()?;
+        let mut gate = std::mem::take(&mut self.gate);
+        let r = crate::gate::reveal(&self.gate_env(), &mut gate, openings, &ys);
+        self.gate = gate;
+        r
+    }
+
+    /// Gated release, round 6: verifies and fuses the masked accumulators,
+    /// re-encrypts them at the top of the chain and computes the gates and
+    /// the released ciphertexts. Nothing is decrypted here.
+    pub fn gate_finish(&mut self, reveals: &[GateReveal]) -> Result<()> {
+        if self.gate.outputs.is_some() {
+            return Ok(());
+        }
+        let ys = self.gate_ys()?;
+        let mut gate = std::mem::take(&mut self.gate);
+        let r = crate::gate::finish(&self.gate_env(), &mut gate, reveals, &ys).and_then(|_| crate::gate::outputs(&self.gate_env(), &gate));
+        let out = match r {
+            Ok(o) => o,
+            Err(e) => {
+                self.gate = gate;
+                return Err(e);
+            }
+        };
+        gate.outputs = Some(out.iter().map(|c| self.codec.encode(c)).collect::<Result<_>>()?);
+        self.gate = gate;
+        Ok(())
+    }
+
+    /// The release of a gated task: partial decryptions of the gated
+    /// outputs (once). With suppression the counts are withheld.
+    fn gated_share(&mut self, collector: usize) -> Result<AggregateShare> {
+        if collector != 0 {
+            return Err(Error::Protocol("gated tasks have one collector".into()));
+        }
+        let accs = self.release_accumulators(0)?;
+        let mut partials = Vec::with_capacity(accs.len());
+        for c in &accs {
+            partials.push(self.codec.encode(self.share.partial_decrypt(c, self.index == 0)?.ciphertext())?);
+        }
+        let share = AggregateShare {
+            task_id: self.cfg.task_id,
+            collector: 0,
+            aggregator: self.index,
+            batch_digest: batch_digest(self.accepted_ids.clone()),
+            report_count: if self.cfg.min_cell_count > 0 { 0 } else { self.accepted_ids.len() as u64 },
+            partials,
+            valid_count_partial: None,
+            moment_partials: Vec::new(),
+            accumulators: self.gate.outputs.clone().expect("checked by release_accumulators"),
+        };
+        self.released_aggregate_shares.insert(0, share.clone());
+        Ok(share)
+    }
+
+    /// TEST HOOK: the accumulators a split-key aggregator sends to be
+    /// refreshed, for tests that substitute them (a malicious aggregator).
+    pub fn gate_values_for_tests(&self) -> Result<Vec<Ciphertext>> {
+        self.gate_values()
+    }
+
+    /// TEST HOOK: commits like [`Self::gate_commit`] but with `xs` as the
+    /// accumulators to refresh (what a malicious split-key aggregator does).
+    pub fn gate_commit_substituted_for_tests(&mut self, xs: &[Ciphertext]) -> Result<GateCommit> {
+        self.flush_silent_batch()?;
+        self.finalize_silent()?;
+        self.closed = true;
+        let digest = batch_digest(self.accepted_ids.clone());
+        let mut gate = std::mem::take(&mut self.gate);
+        let r = crate::gate::commit(&self.gate_env(), &mut gate, digest, xs, &mut OsRng);
+        self.gate = gate;
+        r
+    }
+
+    /// TEST HOOK: the masked values `Y` this aggregator decrypts in the refresh.
+    pub fn gate_masked_values_for_tests(&self) -> Result<Vec<Ciphertext>> {
+        self.gate_ys()
+    }
+
+    /// The gated release's state (tests that act as a malicious party).
+    pub fn gate_state_for_tests(&mut self) -> &mut crate::gate::GateState {
+        &mut self.gate
     }
 }

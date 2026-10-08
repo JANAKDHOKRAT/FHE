@@ -69,6 +69,23 @@ pub struct CollectorPolicy {
     pub seal_key: [u8; 32],
 }
 
+/// Who holds shares of the joint decryption key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum KeyTopology {
+    /// `num_aggregators >= 2` aggregators, n-of-n; collectors hold no key.
+    #[default]
+    Aggregators,
+    /// One aggregator and the collector, 2-of-2. The aggregator does every
+    /// homomorphic computation; the collector holds the second key share,
+    /// takes part in the key ceremony and in the gated release
+    /// (`gate.rs`), and is the only party that ever fuses a decryption of
+    /// data. Neither learns anything alone: the aggregator sees only
+    /// ciphertexts and values masked by the collector, the collector only
+    /// what the gates release. Silent mode only; one collector, no release
+    /// policies.
+    AggregatorAndCollector,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskConfig {
     /// 32-byte task identifier chosen by the deployment.
@@ -102,7 +119,65 @@ pub struct TaskConfig {
     /// `collectors[c]` says, sealed to its key, and nothing is ever
     /// partially decrypted that no policy names.
     pub collectors: Vec<CollectorPolicy>,
+    /// Who holds key shares (absent in task files from before it existed:
+    /// the aggregators).
+    #[serde(default)]
+    pub key_topology: KeyTopology,
+    /// Small-cell suppression: every released cell (histogram bucket,
+    /// multihot position, count) whose value is below this is zeroed under
+    /// encryption before anyone decrypts it, and the collector learns only
+    /// that it was suppressed. 0 disables. Silent mode, `Count`, `Histogram`
+    /// and `MultihotCountVec`, no moments, no release policies. With
+    /// suppression the valid and admitted report counts are withheld from
+    /// the collector (with them it would recover the suppressed total).
+    #[serde(default)]
+    pub min_cell_count: u64,
 }
+
+/// The configuration fields that existed before `key_topology` and
+/// `min_cell_count`, in declaration order: their postcard encoding is the
+/// binding of every task that leaves the new fields at their defaults, so
+/// existing tasks keep their digest, their attestations and their reports.
+#[derive(Serialize)]
+struct LegacyBinding<'a> {
+    task_id: &'a [u8; 32],
+    measurement_type: &'a MeasurementType,
+    mode: &'a VerificationMode,
+    auth: &'a AuthPolicy,
+    num_aggregators: &'a usize,
+    repetitions: &'a usize,
+    min_batch_size: &'a usize,
+    max_batch_size: &'a u64,
+    max_report_bytes: &'a usize,
+    plain_mod: &'a u64,
+    security_bits: &'a u32,
+    silent_batch_groups: &'a usize,
+    moments: &'a bool,
+    collectors: &'a Vec<CollectorPolicy>,
+}
+
+/// A task file written before `key_topology` and `min_cell_count`
+/// existed (postcard, field by field).
+#[derive(Deserialize)]
+struct LegacyTaskConfig {
+    task_id: [u8; 32],
+    measurement_type: MeasurementType,
+    mode: VerificationMode,
+    auth: AuthPolicy,
+    num_aggregators: usize,
+    repetitions: usize,
+    min_batch_size: usize,
+    max_batch_size: u64,
+    max_report_bytes: usize,
+    plain_mod: u64,
+    security_bits: u32,
+    silent_batch_groups: usize,
+    moments: bool,
+    collectors: Vec<CollectorPolicy>,
+}
+
+/// Separates the legacy binding from the extension in tasks that use it.
+const BINDING_EXTENSION: &[u8] = b"fhe-prio3/2 task extension";
 
 impl TaskConfig {
     /// Verdict mode with 128-bit soundness (`4 * 32 = 128` bits).
@@ -122,7 +197,90 @@ impl TaskConfig {
             silent_batch_groups: 1,
             moments: false,
             collectors: Vec::new(),
+            key_topology: KeyTopology::Aggregators,
+            min_cell_count: 0,
         }
+    }
+
+    /// Decodes a task file (postcard): the current format, or one written
+    /// before `key_topology` and `min_cell_count` existed (read with both
+    /// at their defaults, which keeps its digest).
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
+        if let Ok(c) = crate::messages::decode::<TaskConfig>(bytes) {
+            return Ok(c);
+        }
+        let l: LegacyTaskConfig = crate::messages::decode(bytes)?;
+        Ok(Self {
+            task_id: l.task_id,
+            measurement_type: l.measurement_type,
+            mode: l.mode,
+            auth: l.auth,
+            num_aggregators: l.num_aggregators,
+            repetitions: l.repetitions,
+            min_batch_size: l.min_batch_size,
+            max_batch_size: l.max_batch_size,
+            max_report_bytes: l.max_report_bytes,
+            plain_mod: l.plain_mod,
+            security_bits: l.security_bits,
+            silent_batch_groups: l.silent_batch_groups,
+            moments: l.moments,
+            collectors: l.collectors,
+            key_topology: KeyTopology::Aggregators,
+            min_cell_count: 0,
+        })
+    }
+
+    /// Silent mode with one aggregator and the collector holding the two
+    /// key shares ([`KeyTopology::AggregatorAndCollector`]).
+    pub fn new_split_key(task_id: [u8; 32], measurement_type: MeasurementType) -> Self {
+        let mut c = Self::new_silent(task_id, measurement_type, 1);
+        c.key_topology = KeyTopology::AggregatorAndCollector;
+        c
+    }
+
+    /// Parties holding key shares: the aggregators, plus the collector in
+    /// [`KeyTopology::AggregatorAndCollector`] (party index 1).
+    pub fn num_key_parties(&self) -> usize {
+        match self.key_topology {
+            KeyTopology::Aggregators => self.num_aggregators,
+            KeyTopology::AggregatorAndCollector => self.num_aggregators + 1,
+        }
+    }
+
+    /// Whether the collector holds a key share.
+    pub fn collector_holds_key(&self) -> bool {
+        self.key_topology == KeyTopology::AggregatorAndCollector
+    }
+
+    /// Party index of the key-holding collector.
+    pub fn collector_party(&self) -> Option<usize> {
+        self.collector_holds_key().then_some(self.num_aggregators)
+    }
+
+    /// Whether releases go through the gated pipeline (`gate.rs`): with a
+    /// key-holding collector (the batch-size gate runs under encryption),
+    /// or with small-cell suppression.
+    pub fn gated(&self) -> bool {
+        self.collector_holds_key() || self.min_cell_count > 0
+    }
+
+    /// Multiplicative depth of the gated release after the refresh (which
+    /// restarts every refreshed value at the top of the chain): the
+    /// product trees of the batch-size gate (`min_batch_size` linear
+    /// factors and one random factor per aggregator) and of the cell gate
+    /// (`min_cell_count` factors and the random factors), then the
+    /// release `X * Z_v * Z_c`.
+    pub fn gate_depth(&self) -> u32 {
+        let tree = |len: u64| if len <= 1 { 0 } else { 64 - (len - 1).leading_zeros() };
+        let factors = self.num_aggregators as u64;
+        let zv = if self.collector_holds_key() {
+            tree(self.min_batch_size as u64 + factors)
+        } else {
+            0
+        };
+        let zc = if self.min_cell_count > 0 { tree(self.min_cell_count + factors) } else { 0 };
+        let gates = [zv, zc].iter().filter(|&&d| d > 0).count() as u32;
+        zv.max(zc) + gates
     }
 
     /// Number of collectors a batch is released to.
@@ -277,8 +435,44 @@ impl TaskConfig {
 
     pub fn validate(&self) -> Result<Field> {
         self.measurement_type.validate()?;
-        if self.num_aggregators < 2 {
-            return Err(Error::Config("at least two aggregators are required".into()));
+        match self.key_topology {
+            KeyTopology::Aggregators if self.num_aggregators < 2 => {
+                return Err(Error::Config(
+                    "at least two aggregators are required (or one aggregator with KeyTopology::AggregatorAndCollector)".into(),
+                ));
+            }
+            KeyTopology::AggregatorAndCollector => {
+                if self.num_aggregators != 1 {
+                    return Err(Error::Config("KeyTopology::AggregatorAndCollector has exactly one aggregator".into()));
+                }
+                if self.mode != VerificationMode::Silent {
+                    return Err(Error::Config(
+                        "KeyTopology::AggregatorAndCollector requires silent mode (verdict mode decrypts per report)".into(),
+                    ));
+                }
+                if !self.collectors.is_empty() {
+                    return Err(Error::Config(
+                        "KeyTopology::AggregatorAndCollector has one collector: no release policies".into(),
+                    ));
+                }
+            }
+            _ => {}
+        }
+        if self.min_cell_count > 0 {
+            if self.mode != VerificationMode::Silent {
+                return Err(Error::Config("small-cell suppression requires silent mode".into()));
+            }
+            if self.measurement_type.cell_slots().is_none() {
+                return Err(Error::Config(
+                    "small-cell suppression is defined for Count, Histogram and MultihotCountVec (one slot per cell)".into(),
+                ));
+            }
+            if self.moments || !self.collectors.is_empty() {
+                return Err(Error::Config("small-cell suppression excludes moments and release policies".into()));
+            }
+            if self.min_cell_count < 2 || self.min_cell_count > self.max_batch_size {
+                return Err(Error::Config("min_cell_count must be 0 (off) or in 2..=max_batch_size".into()));
+            }
         }
         if self.repetitions == 0 || self.repetitions > 64 {
             return Err(Error::Config("repetitions must be in 1..=64".into()));
@@ -363,6 +557,13 @@ impl TaskConfig {
             // Chunks are cut wherever the visibility class changes, so any
             // policy set is expressible; interleaved policies simply cost one
             // chunk (one ciphertext per report) per run of equal visibility.
+        }
+        if self.gated() && self.gate_depth() > self.mult_depth() {
+            return Err(Error::Config(format!(
+                "the release gates need depth {} after the refresh, the chain has {}: lower min_batch_size or min_cell_count",
+                self.gate_depth(),
+                self.mult_depth()
+            )));
         }
         if self.mode == VerificationMode::Silent && self.mult_depth() > 28 {
             return Err(Error::Config(format!(
@@ -472,9 +673,33 @@ impl TaskConfig {
         self.repetitions as f64 * self.field().log2()
     }
 
-    /// Canonical bytes that every derived randomness commits to.
+    /// Canonical bytes that every derived randomness commits to. Tasks
+    /// that leave `key_topology` and `min_cell_count` at their defaults bind
+    /// exactly the bytes they bound before those fields existed; the others
+    /// append a separator and the new fields.
     pub fn binding(&self) -> Vec<u8> {
-        postcard::to_allocvec(self).expect("TaskConfig is serializable")
+        let legacy = LegacyBinding {
+            task_id: &self.task_id,
+            measurement_type: &self.measurement_type,
+            mode: &self.mode,
+            auth: &self.auth,
+            num_aggregators: &self.num_aggregators,
+            repetitions: &self.repetitions,
+            min_batch_size: &self.min_batch_size,
+            max_batch_size: &self.max_batch_size,
+            max_report_bytes: &self.max_report_bytes,
+            plain_mod: &self.plain_mod,
+            security_bits: &self.security_bits,
+            silent_batch_groups: &self.silent_batch_groups,
+            moments: &self.moments,
+            collectors: &self.collectors,
+        };
+        let mut out = postcard::to_allocvec(&legacy).expect("TaskConfig is serializable");
+        if self.key_topology != KeyTopology::default() || self.min_cell_count != 0 {
+            out.extend_from_slice(BINDING_EXTENSION);
+            out.extend_from_slice(&postcard::to_allocvec(&(self.key_topology, self.min_cell_count)).expect("serializable"));
+        }
+        out
     }
 
     /// Hash of the configuration, for logging and for peers to compare.
@@ -534,6 +759,122 @@ mod tests {
         let d = c.moment_digit_bits().unwrap();
         assert!(d < 7 && ((1u128 << d) - 1).pow(2) * former_cap as u128 <= (p - 1) as u128);
     }
+    /// A default task binds exactly the postcard encoding of the fields it
+    /// had before `key_topology` and `min_cell_count` (so its digest, and
+    /// every attestation and challenge derived from it, is unchanged); any
+    /// use of the new fields changes the binding; and task files without
+    /// the new fields still parse.
+    #[test]
+    fn binding_is_stable_for_legacy_tasks() {
+        #[derive(Serialize)]
+        struct Before {
+            task_id: [u8; 32],
+            measurement_type: MeasurementType,
+            mode: VerificationMode,
+            auth: AuthPolicy,
+            num_aggregators: usize,
+            repetitions: usize,
+            min_batch_size: usize,
+            max_batch_size: u64,
+            max_report_bytes: usize,
+            plain_mod: u64,
+            security_bits: u32,
+            silent_batch_groups: usize,
+            moments: bool,
+            collectors: Vec<CollectorPolicy>,
+        }
+        let c = TaskConfig::new_silent([7; 32], MeasurementType::Histogram { length: 5 }, 2);
+        let before = Before {
+            task_id: c.task_id,
+            measurement_type: c.measurement_type.clone(),
+            mode: c.mode,
+            auth: c.auth,
+            num_aggregators: c.num_aggregators,
+            repetitions: c.repetitions,
+            min_batch_size: c.min_batch_size,
+            max_batch_size: c.max_batch_size,
+            max_report_bytes: c.max_report_bytes,
+            plain_mod: c.plain_mod,
+            security_bits: c.security_bits,
+            silent_batch_groups: c.silent_batch_groups,
+            moments: c.moments,
+            collectors: c.collectors.clone(),
+        };
+        assert_eq!(c.binding(), postcard::to_allocvec(&before).unwrap());
+        let mut k = c.clone();
+        k.min_cell_count = 5;
+        let mut s = TaskConfig::new_split_key([7; 32], MeasurementType::Histogram { length: 5 });
+        assert_ne!(k.digest(), c.digest());
+        assert_ne!(s.digest(), c.digest());
+        s.min_cell_count = 5;
+        assert_ne!(s.digest(), k.digest());
+        // a task file written before the fields existed is its legacy binding
+        let old = postcard::to_allocvec(&before).unwrap();
+        assert_eq!(TaskConfig::decode(&old).unwrap(), c);
+        // current files round-trip, with and without the new fields
+        for t in [&c, &k, &s] {
+            assert_eq!(&TaskConfig::decode(&postcard::to_allocvec(t).unwrap()).unwrap(), t);
+        }
+        // neither format accepts a truncated or extended file
+        let cur = postcard::to_allocvec(&s).unwrap();
+        assert!(TaskConfig::decode(&cur[..cur.len() - 1]).is_err());
+        let mut longer = cur.clone();
+        longer.push(0);
+        assert!(TaskConfig::decode(&longer).is_err());
+    }
+
+    #[test]
+    fn topology_and_suppression_rules() {
+        let h = MeasurementType::Histogram { length: 8 };
+        let s = TaskConfig::new_split_key([0; 32], h.clone());
+        assert_eq!((s.num_key_parties(), s.collector_party(), s.gated()), (2, Some(1), true));
+        s.validate().unwrap();
+        let mut bad = s.clone();
+        bad.num_aggregators = 2;
+        assert!(bad.validate().is_err());
+        let mut bad = s.clone();
+        bad.mode = VerificationMode::Verdict;
+        assert!(bad.validate().is_err());
+        let mut one = TaskConfig::new_silent([0; 32], h.clone(), 1);
+        assert!(one.validate().is_err()); // one aggregator needs the collector's share
+        one.key_topology = KeyTopology::AggregatorAndCollector;
+        one.validate().unwrap();
+        let a = TaskConfig::new_silent([0; 32], h.clone(), 2);
+        assert!(!a.gated());
+        let mut k = a.clone();
+        k.min_cell_count = 5;
+        assert!(k.gated());
+        k.validate().unwrap();
+        assert_eq!(k.gate_depth(), 3 + 1); // product tree of 5 + 2 factors, then the release
+        for (t, ok) in [
+            (MeasurementType::Count, true),
+            (MeasurementType::MultihotCountVec { length: 6, max_weight: 3 }, true),
+            (MeasurementType::Sum { max_measurement: 9 }, false),
+            (MeasurementType::SumVec { length: 2, max_measurement: 3 }, false),
+        ] {
+            let mut c = TaskConfig::new_silent([0; 32], t, 2);
+            c.min_cell_count = 3;
+            assert_eq!(c.validate().is_ok(), ok);
+        }
+        for bad_k in [1u64, a.max_batch_size + 1] {
+            let mut c = a.clone();
+            c.min_cell_count = bad_k;
+            assert!(c.validate().is_err());
+        }
+        let mut v = TaskConfig::new([0; 32], h.clone(), 2);
+        v.min_cell_count = 3;
+        assert!(v.validate().is_err());
+        // the gates must fit the chain after the refresh
+        let mut deep = s.clone();
+        deep.min_batch_size = 1 << 14;
+        deep.validate().unwrap();
+        assert_eq!(deep.gate_depth(), 15 + 1);
+        deep.min_cell_count = 1 << 14;
+        assert_eq!(deep.gate_depth(), 15 + 2);
+        deep.validate().unwrap();
+        assert!(deep.gate_depth() <= deep.mult_depth());
+    }
+
     #[test]
     fn depths() {
         let v = TaskConfig::new([0; 32], MeasurementType::Count, 2);

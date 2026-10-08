@@ -17,7 +17,9 @@ because `p ≡ 1 (mod 2N)`. `w_s` is the value of the plaintext `X` in slot
 Parties: clients, `n` aggregators (each holding one additive share `s_i`
 of the joint BGV secret `s = Σ s_i`), collectors (no key share), and in a
 network deployment a leader (aggregator 0) that relays messages and a
-router (sharded deployments) that relays nothing secret.
+router (sharded deployments) that relays nothing secret. In a split-key
+task (`KeyTopology::AggregatorAndCollector`) there is one aggregator and
+the collector holds the second share; §6a states what changes.
 
 Adversary: static, may corrupt any set of clients, up to `n − 1`
 aggregators, any collectors, the leader's relay role and the router, and
@@ -446,6 +448,101 @@ of the design were each found insufficient by measurement and replaced:
   Received bytes never reach OpenFHE's deserializer (packed format, fuzzed
   in CI), but the shim is memory-unsafe code reviewed only by us.
 
+## 6a. Split key and small-cell suppression (`gate.rs`, `wfe.rs`)
+
+Two options take release decisions under encryption instead of on a
+decrypted count. Both use the **gated release**: the release
+accumulators `X` are refreshed (every key party adds a mask `M_p`, the
+key parties jointly and verifiably decrypt `Y = X + Σ M_p`, and
+`X' = y − Σ M_p` is an encryption of `x` at the top of the chain), then
+multiplied by gates:
+
+* batch-size gate `Z_v = Π_{j<min_batch_size}(count − j) · Π_a F_a`
+  (split-key tasks), zero exactly when fewer than `min_batch_size`
+  reports were valid;
+* cell gate `Z_c = Π_{j<k}(cell − j) · Π_a F_a` (`min_cell_count = k`),
+  zero exactly at cells below `k`;
+
+where `F_a` is aggregator `a`'s random factor, uniform and nonzero at the
+slots the gate covers. The collector fuses `R = X' · Z_v · Z_c`, `Z_v`
+and `Z_c` and divides. Measured: stacking the gates on the validity
+chain needs depth 32, which needs 12 key-switching digits at ring
+dimension 65536 and ran out of memory on the 15 GiB machine used, so the
+refresh is what makes the gates fit (base chain unchanged at depth 28).
+
+**Claims.**
+
+| Goal | Statement |
+|---|---|
+| **P2** split-key privacy | In a split-key task, a malicious aggregator alone, or a malicious collector alone, learns nothing about an honest client's input beyond what P1 allows the collector (released aggregates of batches with at least `min_batch_size` valid reports). The aggregator sees ciphertexts and `y`; the collector sees `y`, the gates and the gated release. |
+| **P3** suppression | The collector learns, for every released cell, its value if it is at least `k` and only the fact of its suppression otherwise; it does not learn the valid or admitted report counts. Holds against a coalition of the collector and up to `n − 1` aggregators (aggregator topology) or against the collector alone (split key). |
+| **R3** gate integrity | A key party cannot shift `y` (and so make a small batch or a small cell pass a gate) without the other key parties' checks aborting, except with probability `≤ 2^-80` (the joint decryption of `Y` is the count round's verifiable decryption, every party checking with its own blinded checks). |
+
+**Why each holds.**
+
+1. *`y` is uniform to every party but the coalition of all.* Each honest
+   party's mask is a fresh encryption of a uniform plaintext, committed
+   (round 0) before any contribution is revealed. The accumulators the
+   split-key collector refreshes are fixed by the aggregator's commitment
+   before the collector's mask is revealed, so they cannot depend on it.
+2. *No decryption oracle.* A key party partially decrypts, for others,
+   only the `Y` it formed itself (its own accumulators, or the
+   aggregator's committed ones, plus its own uniform mask) and the others'
+   checks of that `Y`, rebuilt from it before revealing anything. In a
+   split-key task the collector partially decrypts nothing else for the
+   aggregator: a raw report submitted as an accumulator comes back as
+   `report + m_a + m_c` (`tests/split_key.rs::a_raw_report_sent_to_be_refreshed_comes_back_masked`:
+   the aggregator recovers under 1% of the report's slots, chance level).
+   The collector fuses the release alone with its own partials and never
+   sends them.
+3. *Gates reveal one bit per slot.* `Z = P(value) · Π F_a` with `P` the
+   falling factorial: `P(v) = 0` iff `v < k` for `v < p` (counts are below
+   `max_batch_size < p`), and otherwise the product of a nonzero value
+   with at least one honest uniform nonzero factor, which is uniform on
+   the nonzero residues. A malicious factor of zero only over-suppresses.
+   The collector contributes no factor (it is the party the factors hide
+   the gates from).
+4. *Counts withheld.* With suppression the release carries no count and
+   the shares carry `report_count = 0` (refused otherwise); with the total
+   the collector would compute the suppressed sum by subtraction. Constraint
+   slots (MultihotCountVec's weight bits, which sum the weights) carry a
+   zero factor and are never released.
+5. *Noise of contributions is proven bounded.* A mask or factor with
+   oversized noise would make the noise of `R` depend on the plaintexts it
+   multiplies; the fuser reads noise above the honest parties' flooding,
+   and in a split-key task the fuser is the collector. The runtime
+   flooding check cannot help when the fuser is the adversary. Every
+   contribution therefore carries a zero-knowledge proof of a short
+   opening (`wfe.rs`: Σ-protocol with monomial challenges, `R = 5`
+   repetitions at `N = 65536`, soundness `2^-85`, rejection sampling for
+   zero knowledge, Fiat–Shamir bound to task, batch, party and position).
+   The protocol uses the effective contribution `2C`, whose randomness the
+   extractor bounds by `2N·B` (`B_U = 2^24`, `B_E = 2^29`); a prover that
+   does not guess the challenge stays within about `B` per coefficient.
+   `tests/gate_noise.rs` measures the release's noise margin with a mask at
+   `B` and requires 40 bits or more below the flooding after adding the
+   17 bits of the extraction bound.
+
+**What remains (stated, not hidden).**
+
+* *A malicious split-key aggregator controls correctness.* It does all
+  homomorphic computation; it can compute wrong gates or release any
+  ciphertext it wants to the collector, including a single report. That is
+  the aggregator leaking client data to the collector, which P2 excludes
+  only for a non-colluding pair: the split key protects each party from the
+  other, not clients from the two together, as any 2-of-2 key.
+* *A malicious split-key collector can refuse.* As any key party.
+* *The batch-size gate costs `min_batch_size` multiplications per batch*
+  (a product tree at the top of the chain); the validation bounds its
+  depth, not its time (spec §6b).
+* *Proof slack.* The proofs bound contributions to a multiple of honest
+  noise, measured to leave the margins above; they are not a proof that
+  keys are well formed (A3 is unchanged).
+* *`y` is revealed to every key party.* It is uniform to each, but the
+  joint decryption of `Y` adds partial decryptions of masked values to the
+  count in §5's list (one per refreshed accumulator plus `κ` checks per
+  verifier).
+
 ## 7. Evidence map
 
 | Claim | Tests |
@@ -462,3 +559,7 @@ of the design were each found insufficient by measurement and replaced:
 | A3 bound (runtime flooding check, deep key check) | `openfhe-tbgv-rs/tests/key_noise_gap.rs`, `tests/ceremony.rs::oversized_key_noise_is_stopped_at_the_ceremony_up_to_the_flooding_range`, `tests/key_noise_protocol.rs`, `tests/ceremony_sweep.rs` (on demand) |
 | A6 | `openfhe-tbgv-rs/src/selftest.rs` (fault injection), `build.rs` version gate |
 | wire format | `tests/wire.rs`, fuzz targets `fuzz/` |
+| P2 split key | `tests/split_key.rs` (each share alone decrypts noise, the refresh returns a raw report masked, below-minimum batches refused, exact aggregates), `fhe-prio3-node/tests/ceremony_node.rs::aggregator_and_collector_machines_generate_a_split_key`, `fhe-prio3-node/tests/e2e.rs::split_key_with_suppression_over_tls` |
+| P3 suppression | `tests/suppression.rs`, `tests/split_key.rs::small_cells_are_suppressed_with_the_split_key` |
+| R3 gate integrity | `tests/split_key.rs::a_shifted_partial_of_the_count_is_caught`, `tests/suppression.rs::a_shifted_partial_of_y_is_caught` |
+| contribution well-formedness | `tests/wfe.rs`, `tests/gate_noise.rs`, `tests/split_key.rs::malformed_or_replayed_contributions_are_refused`, `tests/suppression.rs::a_mask_cancelling_another_is_refused` |

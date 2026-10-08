@@ -72,6 +72,15 @@ pub struct BatchResult {
     pub valid_count: u64,
     /// Present when the task accumulates second moments.
     pub regression: Option<RegressionResult>,
+    /// Small-cell suppression: `report_count` and `valid_count` are not
+    /// released (both 0 here), because with them the collector would
+    /// recover the total of the suppressed cells.
+    #[serde(default)]
+    pub counts_withheld: bool,
+    /// Small-cell suppression: elements whose value was below
+    /// `min_cell_count` and was zeroed under encryption (0 in `aggregate`).
+    #[serde(default)]
+    pub suppressed: Vec<usize>,
 }
 
 /// Ordinary least squares from encrypted first and second moments. Values
@@ -434,6 +443,18 @@ impl MeasurementType {
             MeasurementType::Count | MeasurementType::Sum { .. } => 1,
             MeasurementType::SumVec { length, .. } | MeasurementType::Histogram { length } | MeasurementType::MultihotCountVec { length, .. } => *length,
             MeasurementType::BoundedSumVec { bounds } => bounds.len(),
+        }
+    }
+
+    /// Types whose every element is a single 0/1-summing slot (a *cell*),
+    /// so the aggregate is the slot sums: the slot of each element, in
+    /// element order. `None` for types with multi-slot elements.
+    pub fn cell_slots(&self) -> Option<Vec<usize>> {
+        match self {
+            MeasurementType::Count | MeasurementType::Histogram { .. } | MeasurementType::MultihotCountVec { .. } => {
+                Some((0..self.num_elements()).map(|e| self.element_slots(e).start).collect())
+            }
+            _ => None,
         }
     }
 

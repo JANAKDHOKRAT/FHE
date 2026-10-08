@@ -58,6 +58,24 @@ let agg = Aggregator::new(cfg.clone(), &material, 0, &shares[0], Some(registry))
 let client = Client::new(cfg, &material.context, &material.public_key)?.with_identity(identity);
 ```
 
+```rust
+// One aggregator and the collector holding the two key shares (silent mode):
+// the batch-size minimum is enforced under encryption, the aggregator only
+// ever sees values masked by the collector, the collector only what passes.
+let cfg = TaskConfig::new_split_key(task_id, MeasurementType::Histogram { length: 10 });
+let keys = keys::run_local_key_ceremony(&cfg)?;   // or ceremony::run with the collector as party 1
+let mut agg = Aggregator::new(cfg.clone(), &keys.material, 0, &keys.aggregator_secrets[0], None)?;
+let mut collector = Collector::with_key_share(cfg, &keys.material, keys.collector_secret.as_ref().unwrap())?;
+// ... reports ...
+let result = local::gated_release(std::slice::from_mut(&mut agg), &mut collector)?;
+
+// Small-cell suppression (either topology): cells below 10 are zeroed under
+// encryption before anyone decrypts; the result lists them in `suppressed`
+// and withholds the report counts.
+let mut cfg = TaskConfig::new_silent(task_id, MeasurementType::Histogram { length: 10 }, 2);
+cfg.min_cell_count = 10;
+```
+
 ```sh
 cargo run --release --bin simulate -- --type sum --max 100 --mode silent --reports 2   # ~2 min, ~10 GiB RAM
 cargo run --release --bin simulate -- --type count --auth --reports 4

@@ -49,6 +49,8 @@ struct Cluster {
     task: TaskConfig,
     material: PublicMaterial,
     shares: Vec<Vec<u8>>,
+    /// Split-key tasks: the collector's key share.
+    collector_share: Option<Vec<u8>>,
     agg_urls: Vec<String>,
     col_urls: Vec<String>,
     agg_ports: Vec<u16>,
@@ -67,7 +69,11 @@ impl Cluster {
     fn with_seal_keys(task: TaskConfig, seal_keys: Vec<CollectorSealKey>) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let tls = make_tls(dir.path());
-        let (material, shares) = keys::run_local_ceremony(&task).unwrap();
+        let keys::LocalKeys {
+            material,
+            aggregator_secrets: shares,
+            collector_secret: collector_share,
+        } = keys::run_local_key_ceremony(&task).unwrap();
         let n = task.num_aggregators;
         let agg_ports: Vec<u16> = (0..n).map(|_| free_port()).collect();
         let col_ports: Vec<u16> = (0..task.num_collectors()).map(|_| free_port()).collect();
@@ -79,6 +85,7 @@ impl Cluster {
             task,
             material,
             shares,
+            collector_share,
             agg_urls,
             col_urls,
             agg_ports,
@@ -134,6 +141,7 @@ impl Cluster {
             seal_key: self.seal_keys.get(c).map(|k| CollectorSealKey::from_secret_bytes(&k.secret_bytes())),
             token: self.token.clone(),
             db: self.dir.path().join(format!("collector{c}.db")),
+            key_share: self.collector_share.clone(),
         })
         .unwrap();
         let handle = ServerHandle::new();
@@ -411,6 +419,7 @@ async fn two_collectors_with_policies_over_tls() {
         seal_key: Some(CollectorSealKey::generate()),
         token: c.token.clone(),
         db: c.dir.path().join("bad.db"),
+        key_share: None,
     });
     assert!(bad.is_err());
     let none = CollectorNode::new(CollectorNodeConfig {
@@ -420,6 +429,7 @@ async fn two_collectors_with_policies_over_tls() {
         seal_key: None,
         token: c.token.clone(),
         db: c.dir.path().join("bad2.db"),
+        key_share: None,
     });
     assert!(none.is_err());
 }
@@ -502,5 +512,48 @@ async fn three_aggregators_verdict_over_tls() {
     assert_eq!(client.submit_report(&good).await.unwrap(), SubmitOutcome::Accepted);
     let r = c.close().await.unwrap();
     assert_eq!((r.aggregate, r.report_count, r.valid_count), (AggregateResult::Sum(47), 3, 3));
+    c.stop_all();
+}
+
+/// One aggregator and the collector holding the two key shares, with small
+/// cells suppressed: the gated release runs between the aggregator node and
+/// the collector node over TLS (`/v1/gate-*`), the collector restarts from
+/// its database and still serves the result, and a collector started
+/// without its share refuses to run.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn split_key_with_suppression_over_tls() {
+    let _g = SERIAL.lock().await;
+    let mut task = TaskConfig::new_split_key([31u8; 32], MeasurementType::Histogram { length: 4 });
+    task.silent_batch_groups = 1;
+    task.repetitions = 4;
+    task.min_batch_size = 2;
+    task.min_cell_count = 2;
+    let mut c = Cluster::new(task.clone());
+    // the collector of a split-key task needs its share
+    let no_share = CollectorNode::new(CollectorNodeConfig {
+        task: task.clone(),
+        material: c.material.clone(),
+        collector_id: 0,
+        seal_key: None,
+        token: c.token.clone(),
+        db: c.dir.path().join("noshare.db"),
+        key_share: None,
+    });
+    assert!(no_share.err().unwrap().to_string().contains("key share"));
+    c.start_all().await;
+    let client = c.client();
+    for b in [0usize, 0, 1, 3, 3, 3] {
+        assert_eq!(client.submit(&Measurement::Histogram(b)).await.unwrap(), SubmitOutcome::Accepted);
+    }
+    let r = c.close().await.unwrap();
+    assert_eq!(r.aggregate, AggregateResult::Histogram(vec![2, 0, 0, 3]));
+    assert_eq!(r.suppressed, vec![1, 2]);
+    assert!(r.counts_withheld);
+    c.stop_all();
+    // the collector restarts from its database
+    c.handles.clear();
+    c.start_collector(0).await;
+    let again = c.result_of(0).await.unwrap().expect("stored result");
+    assert_eq!(again, r);
     c.stop_all();
 }

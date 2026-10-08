@@ -3,7 +3,9 @@
 //! answers the last share with blinded checks, answers the aggregators'
 //! commitments with the opening, and accepts the batch only if every
 //! aggregator's partial decryptions pass. Serves the result. Holds no key
-//! material. The release in progress is persisted, so a restarted
+//! material, except in a split-key task, where it holds the second key
+//! share and takes part in the gated release (`/v1/gate-*`, persisted as
+//! the release is). The release in progress is persisted, so a restarted
 //! collector continues it.
 
 use crate::store::Store;
@@ -30,6 +32,8 @@ pub struct CollectorNodeConfig {
     pub seal_key: Option<CollectorSealKey>,
     pub token: String,
     pub db: PathBuf,
+    /// Split-key tasks: this collector's unsealed `CollectorSecret` bytes.
+    pub key_share: Option<Vec<u8>>,
 }
 
 struct Inner {
@@ -51,7 +55,12 @@ pub struct CollectorNode {
 
 impl CollectorNode {
     pub fn new(cfg: CollectorNodeConfig) -> anyhow::Result<Self> {
-        let collector = Collector::new(cfg.task.clone(), &cfg.material)?;
+        let mut collector = match (&cfg.key_share, cfg.task.collector_holds_key()) {
+            (Some(k), true) => Collector::with_key_share(cfg.task.clone(), &cfg.material, k)?,
+            (None, false) => Collector::new(cfg.task.clone(), &cfg.material)?,
+            (None, true) => anyhow::bail!("split-key task: this collector holds a key share; pass it (--key-share)"),
+            (Some(_), false) => anyhow::bail!("this task gives the collector no key share"),
+        };
         let c = cfg.collector_id as usize;
         if cfg.task.collectors.is_empty() {
             if c != 0 {
@@ -73,6 +82,9 @@ impl CollectorNode {
             }
         }
         let store = Store::open(&cfg.db)?;
+        if let Some(b) = store.get("gate")? {
+            collector.restore_gate_state(decode(&b)?);
+        }
         let mut shares = BTreeMap::new();
         for i in 0..cfg.task.num_aggregators {
             if let Some(b) = store.get(&format!("share:{i}"))? {
@@ -117,6 +129,14 @@ impl CollectorNode {
             .route("/v1/release-reveals", post(release_reveals))
             .route("/v1/result", get(result))
             .layer(DefaultBodyLimit::max(512 << 20))
+            .route("/v1/gate-start", post(gate_start))
+            .route("/v1/gate-contribute", post(gate_contribute))
+            .route("/v1/gate-share", post(gate_share))
+            .route("/v1/gate-check-commit", post(gate_check_commit))
+            .route("/v1/gate-open", post(gate_open))
+            .route("/v1/gate-reveal", post(gate_reveal))
+            .route("/v1/gate-finish", post(gate_finish))
+            .layer(DefaultBodyLimit::max(GATE_BODY_LIMIT))
             .with_state(self.clone())
     }
 
@@ -307,4 +327,58 @@ async fn result(State(node): State<CollectorNode>, headers: HeaderMap) -> std::r
     check_token(&headers, &node.inner.token)?;
     let r = guard(&node.inner.result, "result")?.clone();
     reply(&r)
+}
+
+// ---- gated release (split-key tasks) --------------------------------------
+
+/// Runs one round of the gated release on the collector and persists its
+/// gate state before answering.
+async fn gate_step<R: serde::Serialize + Send + 'static>(
+    node: CollectorNode,
+    headers: HeaderMap,
+    f: impl FnOnce(&mut Collector) -> fhe_prio3::Result<R> + Send + 'static,
+) -> std::result::Result<axum::response::Response, HttpError> {
+    check_token(&headers, &node.inner.token)?;
+    if !node.inner.task.collector_holds_key() {
+        return Err(HttpError(StatusCode::NOT_FOUND, "this task gives the collector no key share".into()));
+    }
+    let inner = node.inner.clone();
+    let out = tokio::task::spawn_blocking(move || -> std::result::Result<R, HttpError> {
+        let mut collector = guard(&inner.collector, "collector")?;
+        let r = f(&mut collector)?;
+        guard(&inner.store, "store")?.put("gate", &encode(collector.gate_state())?)?;
+        Ok(r)
+    })
+    .await
+    .map_err(|e| HttpError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+    reply(&out)
+}
+
+async fn gate_start(State(node): State<CollectorNode>, headers: HeaderMap, body: Bytes) -> std::result::Result<axum::response::Response, HttpError> {
+    let req: GateStartRequest = parse_body(&body)?;
+    gate_step(node, headers, move |c| c.gate_commit(&req.leader)).await
+}
+async fn gate_contribute(State(node): State<CollectorNode>, headers: HeaderMap, body: Bytes) -> std::result::Result<axum::response::Response, HttpError> {
+    let req: GateCommitsRequest = parse_body(&body)?;
+    gate_step(node, headers, move |c| c.gate_contribute(&req.commits)).await
+}
+async fn gate_share(State(node): State<CollectorNode>, headers: HeaderMap, body: Bytes) -> std::result::Result<axum::response::Response, HttpError> {
+    let req: GateContributionsRequest = parse_body(&body)?;
+    gate_step(node, headers, move |c| c.gate_share(&req.contributions)).await
+}
+async fn gate_check_commit(State(node): State<CollectorNode>, headers: HeaderMap, body: Bytes) -> std::result::Result<axum::response::Response, HttpError> {
+    let req: GateSharesRequest = parse_body(&body)?;
+    gate_step(node, headers, move |c| c.gate_check_commit(&req.shares)).await
+}
+async fn gate_open(State(node): State<CollectorNode>, headers: HeaderMap, body: Bytes) -> std::result::Result<axum::response::Response, HttpError> {
+    let req: GateCheckCommitsRequest = parse_body(&body)?;
+    gate_step(node, headers, move |c| c.gate_open(&req.commits)).await
+}
+async fn gate_reveal(State(node): State<CollectorNode>, headers: HeaderMap, body: Bytes) -> std::result::Result<axum::response::Response, HttpError> {
+    let req: GateOpeningsRequest = parse_body(&body)?;
+    gate_step(node, headers, move |c| c.gate_reveal(&req.openings)).await
+}
+async fn gate_finish(State(node): State<CollectorNode>, headers: HeaderMap, body: Bytes) -> std::result::Result<axum::response::Response, HttpError> {
+    let req: GateRevealsRequest = parse_body(&body)?;
+    gate_step(node, headers, move |c| c.gate_finish(&req.reveals)).await
 }

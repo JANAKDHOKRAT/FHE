@@ -5,7 +5,10 @@
 use crate::aggregator::{Aggregator, Verdict};
 use crate::collector::Collector;
 use crate::error::{Error, Result};
-use crate::messages::{AggregateShare, MaskCommit, MaskMessage, Report, VerifierCommit, VerifierMessage};
+use crate::messages::{
+    AggregateShare, GateCheckCommit, GateCommit, GateContribution, GateOpening, GateReveal, GateShare, MaskCommit, MaskMessage, Report, VerifierCommit,
+    VerifierMessage,
+};
 use crate::types::BatchResult;
 
 /// Verdict mode: mask commitments, masks, partial commitments, partials, verdicts.
@@ -65,10 +68,62 @@ pub fn finish_release(aggs: &mut [Aggregator], collector: &Collector, c: usize, 
 }
 
 /// Count round (silent mode), shares for collector `c`, verified release.
+/// Gated tasks use [`gated_release`].
 pub fn release(aggs: &mut [Aggregator], collector: &Collector, c: usize) -> Result<BatchResult> {
+    if aggs.first().is_some_and(|a| a.config().gated()) {
+        return Err(Error::Protocol("gated task: use local::gated_release".into()));
+    }
     if aggs.first().map(|a| a.is_silent()).unwrap_or(false) {
         count(aggs)?;
     }
     let shares: Vec<AggregateShare> = aggs.iter_mut().map(|a| a.aggregate_share_for(c)).collect::<Result<_>>()?;
     finish_release(aggs, collector, c, shares)
+}
+
+/// Gated release (`gate.rs`): the count round first when the aggregators
+/// hold every key share (suppression), then rounds 0 to 6 among the key
+/// parties (the aggregators, and the collector of a split-key task), then
+/// the verified release to the collector.
+pub fn gated_release(aggs: &mut [Aggregator], collector: &mut Collector) -> Result<BatchResult> {
+    let split = collector_holds_key(aggs);
+    if !split {
+        count(aggs)?;
+    }
+    let mut commits: Vec<GateCommit> = aggs.iter_mut().map(|a| a.gate_commit()).collect::<Result<_>>()?;
+    if split {
+        let c = collector.gate_commit(&commits[0])?;
+        commits.push(c);
+    }
+    let mut contributions: Vec<GateContribution> = aggs.iter_mut().map(|a| a.gate_contribute(&commits)).collect::<Result<_>>()?;
+    if split {
+        contributions.push(collector.gate_contribute(&commits)?);
+    }
+    let mut shares: Vec<GateShare> = aggs.iter_mut().map(|a| a.gate_share(&contributions)).collect::<Result<_>>()?;
+    if split {
+        shares.push(collector.gate_share(&contributions)?);
+    }
+    let mut check_commits: Vec<GateCheckCommit> = aggs.iter_mut().map(|a| a.gate_check_commit(&shares)).collect::<Result<_>>()?;
+    if split {
+        check_commits.push(collector.gate_check_commit(&shares)?);
+    }
+    let mut openings: Vec<GateOpening> = aggs.iter_mut().map(|a| a.gate_open(&check_commits)).collect::<Result<_>>()?;
+    if split {
+        openings.push(collector.gate_open(&check_commits)?);
+    }
+    let mut reveals: Vec<GateReveal> = aggs.iter_mut().map(|a| a.gate_reveal(&openings)).collect::<Result<_>>()?;
+    if split {
+        reveals.push(collector.gate_reveal(&openings)?);
+    }
+    for a in aggs.iter_mut() {
+        a.gate_finish(&reveals)?;
+    }
+    if split {
+        collector.gate_finish(&reveals)?;
+    }
+    let released: Vec<AggregateShare> = aggs.iter_mut().map(|a| a.aggregate_share_for(0)).collect::<Result<_>>()?;
+    finish_release(aggs, collector, 0, released)
+}
+
+fn collector_holds_key(aggs: &[Aggregator]) -> bool {
+    aggs.first().is_some_and(|a| a.config().collector_holds_key())
 }

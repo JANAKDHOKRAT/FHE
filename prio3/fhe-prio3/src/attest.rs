@@ -12,6 +12,11 @@
 //! same collusion that breaks the scheme anyway. The signed message binds
 //! the task (its digest), the context, the public key, the joint tag and
 //! the rotation indices, so a task or parameter substitution fails too.
+//!
+//! In a split-key task the collector holds the second key share, so it is a
+//! key party like an aggregator: it signs with its own identity (party
+//! index 1), and clients pin its key too. Otherwise the aggregator alone
+//! could hand clients a key it holds entirely.
 
 use crate::config::TaskConfig;
 use crate::error::{Error, Result};
@@ -90,22 +95,25 @@ pub fn attest(cfg: &TaskConfig, m: &PublicMaterial, index: usize, id: &Aggregato
     }
 }
 
-/// Verifies that the material carries a valid attestation from every
-/// aggregator, where `pinned[i]` is the identity key of aggregator `i`.
-/// Fails on a missing, duplicated or mismatched aggregator, a key that is
-/// not the pinned one, or a bad signature.
+/// Verifies that the material carries a valid attestation from every key
+/// party, where `pinned[i]` is the identity key of key party `i` (the
+/// aggregators, then the collector of a split-key task). Fails on a
+/// missing, duplicated or mismatched party, a key that is not the pinned
+/// one, or a bad signature.
 pub fn verify_material(cfg: &TaskConfig, m: &PublicMaterial, pinned: &[[u8; 32]]) -> Result<()> {
-    if pinned.len() != cfg.num_aggregators {
+    let n = cfg.num_key_parties();
+    if pinned.len() != n {
         return Err(Error::Config(format!(
-            "{} pinned aggregator keys for a task with {} aggregators",
+            "{} pinned keys for a task with {n} key parties ({} aggregators{})",
             pinned.len(),
-            cfg.num_aggregators
+            cfg.num_aggregators,
+            if cfg.collector_holds_key() { " and the collector" } else { "" }
         )));
     }
     let msg = material_message(cfg, m);
-    let mut seen = vec![false; cfg.num_aggregators];
+    let mut seen = vec![false; n];
     for a in &m.attestations {
-        if a.aggregator >= cfg.num_aggregators || std::mem::replace(&mut seen[a.aggregator], true) {
+        if a.aggregator >= n || std::mem::replace(&mut seen[a.aggregator], true) {
             return Err(Error::Protocol("attestation for an out-of-range or repeated aggregator".into()));
         }
         if a.aggregator_key != pinned[a.aggregator] {
@@ -124,7 +132,11 @@ pub fn verify_material(cfg: &TaskConfig, m: &PublicMaterial, pinned: &[[u8; 32]]
             .map_err(|_| Error::Protocol(format!("bad attestation from aggregator {}", a.aggregator)))?;
     }
     if let Some(i) = seen.iter().position(|s| !s) {
-        return Err(Error::Protocol(format!("material is not attested by aggregator {i}")));
+        return Err(Error::Protocol(if Some(i) == cfg.collector_party() {
+            "material is not attested by the collector (it holds a key share in this task)".into()
+        } else {
+            format!("material is not attested by aggregator {i}")
+        }));
     }
     Ok(())
 }
@@ -179,6 +191,15 @@ mod tests {
         let mut tag = m.clone();
         tag.joint_tag = "u".into();
         assert!(verify_material(&cfg, &tag, &pinned).is_err());
+        // a split-key task needs the collector's attestation, under its pinned key
+        let split = TaskConfig::new_split_key([1u8; 32], MeasurementType::Count);
+        let mut s = material("t");
+        s.attestations = vec![attest(&split, &s, 0, &ids[0])];
+        assert!(verify_material(&split, &s, &pinned[..1]).is_err()); // one pinned key for two parties
+        let e = verify_material(&split, &s, &pinned).err().unwrap().to_string();
+        assert!(e.contains("not attested by the collector"), "{e}");
+        s.attestations.push(attest(&split, &s, 1, &ids[1]));
+        verify_material(&split, &s, &pinned).unwrap();
         // attestations of one task do not carry to another task
         let other = TaskConfig::new([2u8; 32], MeasurementType::Count, 2);
         assert!(verify_material(&other, &m, &pinned).is_err());

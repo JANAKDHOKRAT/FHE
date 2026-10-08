@@ -246,3 +246,68 @@ fn a_machine_on_another_task_stops_every_party() {
         assert!(l.contains("another task or session") || l.contains("aborted"), "party {i}:\n{l}");
     }
 }
+
+/// A split-key task (`KeyTopology::AggregatorAndCollector`): the aggregator
+/// machine and the collector machine run the ceremony as two processes
+/// over TLS. Both attest the material (clients pin both keys); the
+/// aggregator's sealed secret carries the verify key, the collector's
+/// carries a key share and nothing else; the keys run the split-key
+/// protocol with small cells suppressed. Two silent-mode parties do not fit
+/// in one 15 GiB test process, which is why this runs as processes.
+#[test]
+fn aggregator_and_collector_machines_generate_a_split_key() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let m = machines(2);
+    let mut cfg = TaskConfig::new_split_key([0x3e; 32], MeasurementType::Histogram { length: 3 });
+    cfg.silent_batch_groups = 1;
+    cfg.repetitions = 4;
+    cfg.min_cell_count = 2;
+    let task = m.dir.path().join("task.bin");
+    std::fs::write(&task, encode(&cfg).unwrap()).unwrap();
+    let mut p = start(&m, &[task.clone(), task], &hex::encode([9u8; 32]), 1800);
+    let ok = wait_all(&mut p, Duration::from_secs(2400));
+    for (i, &ok_i) in ok.iter().enumerate() {
+        assert!(ok_i, "party {i} failed:\n{}", log(&m, i));
+    }
+    drop(p);
+    let read = |i: usize, f: &str| std::fs::read(m.dir.path().join(format!("m{i}/{f}"))).unwrap();
+    assert_eq!(read(1, "material.bin"), read(0, "material.bin"));
+    assert_eq!(read(1, "transcript.txt"), read(0, "transcript.txt"));
+    let material: PublicMaterial = decode(&read(0, "material.bin")).unwrap();
+    attest::verify_material(&cfg, &material, &m.pinned).unwrap();
+    assert!(attest::verify_material(&cfg, &material, &m.pinned[..1]).is_err());
+    let mut only_agg = material.clone();
+    only_agg.attestations.retain(|a| a.aggregator == 0);
+    assert!(
+        attest::verify_material(&cfg, &only_agg, &m.pinned)
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("collector")
+    );
+    let label = |i: usize| format!("share:{i}:{}", hex::encode(cfg.task_id));
+    let unseal = |i: usize| {
+        // SAFETY: tests in this file run serially
+        unsafe { std::env::set_var("FHE_PRIO3_SEAL_KEY", seal_key(i)) };
+        fhe_prio3_node::secret::unseal(label(i).as_bytes(), &read(i, &format!("share-{i}.sealed"))).unwrap()
+    };
+    let (agg_secret, col_secret) = (unseal(0), unseal(1));
+    let agg = keys::AggregatorSecret::decode(&agg_secret).unwrap();
+    assert!(keys::AggregatorSecret::decode(&col_secret).is_err());
+    let col = keys::CollectorSecret::decode(&col_secret).unwrap();
+    assert_ne!(col.share, agg.share);
+    assert!(
+        !col_secret.windows(32).any(|w| w == agg.verify_key.as_bytes()),
+        "the collector's secret carries the verify key"
+    );
+    // the keys run the split-key protocol, with suppression
+    let mut aggs = vec![Aggregator::new(cfg.clone(), &material, 0, &agg_secret, None).unwrap()];
+    let mut collector = Collector::with_key_share(cfg.clone(), &material, &col_secret).unwrap();
+    let client = Client::new(cfg.clone(), &material.context, &material.public_key).unwrap();
+    for b in [0usize, 2, 2, 2] {
+        aggs[0].process_silent(&client.shard(&Measurement::Histogram(b)).unwrap()).unwrap();
+    }
+    let r = fhe_prio3::local::gated_release(&mut aggs, &mut collector).unwrap();
+    assert_eq!(r.aggregate, AggregateResult::Histogram(vec![0, 0, 3]));
+    assert_eq!(r.suppressed, vec![0, 1]);
+}

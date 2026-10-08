@@ -945,3 +945,129 @@ pub fn ungate(cfg: &TaskConfig, layout: &Layout, p: u64, fused: &[Vec<u64>]) -> 
     }
     Ok(Ungated { values, suppressed })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::MeasurementType;
+    use rand::{Rng, SeedableRng};
+
+    /// Row slots of the silent-mode ring (dimension 65536).
+    const ROW: usize = 32768;
+
+    fn task(t: MeasurementType, split: bool, k: u64) -> (TaskConfig, Layout) {
+        let mut c = if split {
+            TaskConfig::new_split_key([3; 32], t)
+        } else {
+            TaskConfig::new_silent([3; 32], t, 2)
+        };
+        c.min_cell_count = k;
+        c.validate().unwrap();
+        let l = c.layout(ROW).unwrap();
+        (c, l)
+    }
+
+    #[test]
+    fn plans_follow_the_topology_and_the_suppression() {
+        let h = MeasurementType::Histogram { length: 8 };
+        // ungated tasks have no plan
+        let (plain, l) = task(h.clone(), false, 0);
+        assert!(GatePlan::new(&plain, &l).is_err());
+        // split key without suppression: chunks and the count refreshed and released
+        let (c, l) = task(h.clone(), true, 0);
+        let p = GatePlan::new(&c, &l).unwrap();
+        assert_eq!(p.refreshed, vec![Refreshed::Chunk(0), Refreshed::SpreadCount]);
+        assert_eq!(p.outputs, vec![Output::Gated(0), Output::Gated(1), Output::CountGate]);
+        assert!((p.count_gate, p.cell_gate) == (true, false));
+        assert_eq!((p.num_masks(), p.num_factors()), (2, 1));
+        assert_eq!(p.factor_slots(0), &p.spread_slots[..]);
+        assert_eq!(p.spread_slots.len(), l.block);
+        // with suppression the count is refreshed (the gate needs it) but withheld
+        let (c, l) = task(h.clone(), true, 3);
+        let p = GatePlan::new(&c, &l).unwrap();
+        assert_eq!(p.outputs, vec![Output::Gated(0), Output::CountGate, Output::CellGate(0)]);
+        assert_eq!(p.num_factors(), 2);
+        assert_eq!(p.factor_slots(1), &(0..8).map(|i| l.client_slot(i)).collect::<Vec<_>>()[..]);
+        // aggregators with suppression: chunks only, cell gates only
+        let (c, l) = task(h, false, 3);
+        let p = GatePlan::new(&c, &l).unwrap();
+        assert_eq!(p.refreshed, vec![Refreshed::Chunk(0)]);
+        assert_eq!(p.outputs, vec![Output::Gated(0), Output::CellGate(0)]);
+        assert_eq!((p.num_factors(), p.factor_slots(0).len()), (1, 8));
+        // multihot: the weight's range-check slots are not cells, their factor is zero
+        let (c, l) = task(MeasurementType::MultihotCountVec { length: 5, max_weight: 3 }, false, 2);
+        let p = GatePlan::new(&c, &l).unwrap();
+        assert_eq!(c.measurement_type.input_len(), 7);
+        assert_eq!(p.cell_slots[0], (0..5).map(|i| l.client_slot(i)).collect::<Vec<_>>());
+    }
+
+    /// Honest gated outputs for a split-key task with suppression: what the
+    /// collector fuses when the batch passes, with gate factors drawn at random.
+    fn honest(cfg: &TaskConfig, l: &Layout, cells: &[u64], rng: &mut impl Rng) -> Vec<Vec<u64>> {
+        let p = cfg.plain_mod;
+        let plan = GatePlan::new(cfg, l).unwrap();
+        let n = 2 * ROW;
+        let mul = |a: u64, b: u64| ((a as u128 * b as u128) % p as u128) as u64;
+        let mut zv = vec![0u64; n];
+        for &s in &plan.spread_slots {
+            zv[s] = rng.gen_range(1..p);
+        }
+        let mut zc = vec![0u64; n];
+        let mut x = vec![0u64; n];
+        for (e, &s) in plan.cell_slots[0].iter().enumerate() {
+            x[s] = cells[e];
+            if cells[e] >= cfg.min_cell_count {
+                zc[s] = rng.gen_range(1..p);
+            }
+        }
+        let r: Vec<u64> = (0..n).map(|s| mul(x[s], mul(zv[s], zc[s]))).collect();
+        vec![r, zv, zc]
+    }
+
+    #[test]
+    fn ungate_recovers_released_cells_and_flags_suppressed_ones() {
+        let (c, l) = task(MeasurementType::Histogram { length: 6 }, true, 3);
+        let mut rng = rand::rngs::StdRng::seed_from_u64(11);
+        let cells = [2u64, 3, 4, 0, 1, 9];
+        let fused = honest(&c, &l, &cells, &mut rng);
+        let u = ungate(&c, &l, c.plain_mod, &fused).unwrap();
+        let slots = &GatePlan::new(&c, &l).unwrap().cell_slots[0];
+        let released: Vec<u64> = slots.iter().map(|&s| u.values[0][s]).collect();
+        assert_eq!(released, vec![0, 3, 4, 0, 0, 9]);
+        assert_eq!(u.suppressed[0], vec![true, false, false, true, true, false]);
+        assert!(u.values[1].is_empty(), "the count is not released with suppression");
+    }
+
+    #[test]
+    fn ungate_refuses_outputs_no_honest_gate_produces() {
+        let (c, l) = task(MeasurementType::Histogram { length: 6 }, true, 3);
+        let p = c.plain_mod;
+        let mut rng = rand::rngs::StdRng::seed_from_u64(12);
+        let fused = honest(&c, &l, &[5, 5, 0, 5, 5, 5], &mut rng);
+        let plan = GatePlan::new(&c, &l).unwrap();
+        let err = |f: &[Vec<u64>]| ungate(&c, &l, p, f).err().unwrap().to_string();
+        // a batch below the minimum: the batch-size gate is zero everywhere
+        let mut below = fused.clone();
+        below[1] = vec![0; 2 * ROW];
+        below[0] = vec![0; 2 * ROW];
+        assert!(err(&below).contains("batch below minimum size"));
+        // zero at some of its slots only
+        let mut partial = fused.clone();
+        partial[1][plan.spread_slots[3]] = 0;
+        assert!(err(&partial).contains("zero at some of its slots only"));
+        // a gate nonzero outside its slots (it would release a constraint or
+        // another group's slot)
+        let mut outside = fused.clone();
+        outside[2][1] = 7;
+        assert!(err(&outside).contains("nonzero outside its slots"));
+        let mut outside_v = fused.clone();
+        outside_v[1][1] = 7;
+        assert!(err(&outside_v).contains("nonzero outside its slots"));
+        // a released value where the cell gate is zero (a suppressed cell leaking)
+        let mut leak = fused.clone();
+        leak[0][plan.cell_slots[0][2]] = 1;
+        assert!(err(&leak).contains("nonzero where its gate is zero"));
+        // the wrong number of outputs
+        assert!(err(&fused[..2]).contains("expected 3"));
+    }
+}

@@ -86,6 +86,7 @@ jobs:
           - { name: protocol-malicious-aggregator, dir: prio3/fhe-prio3, args: "--test malicious_aggregator" }
           - { name: protocol-key-noise, dir: prio3/fhe-prio3, args: "--test key_noise_protocol" }
           - { name: protocol-wfe, dir: prio3/fhe-prio3, args: "--test wfe" }
+          - { name: protocol-gate-rounds, dir: prio3/fhe-prio3, args: "--test gate_rounds" }
           - { name: protocol-gate-noise, dir: prio3/fhe-prio3, args: "--test gate_noise" }
           - { name: protocol-split-key, dir: prio3/fhe-prio3, args: "--test split_key" }
           - { name: protocol-suppression, dir: prio3/fhe-prio3, args: "--test suppression" }
@@ -250,7 +251,7 @@ jobs:
         working-directory: prio3/fhe-prio3
         run: |
           cargo llvm-cov --manifest-path Cargo.toml --release --locked \
-            --lib --bins --test wire --test protocol --test policy --test bounds --test upgrade \
+            --lib --bins --test wire --test protocol --test policy --test bounds --test upgrade --test wfe --test gate_rounds \
             --lcov --output-path lcov.info -- --test-threads=1
           cargo llvm-cov report --manifest-path Cargo.toml --release --summary-only | tee coverage-summary.txt
       - name: enforce floor

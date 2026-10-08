@@ -1143,6 +1143,90 @@ four chunks; policy validation (coverage, ordering, moments, digest);
 silent batched mode with an invalid report contributing to neither
 collector; and the same over TLS with two collector processes.
 
+### Split key and small-cell suppression (`gate.rs`, `wfe.rs`)
+
+Two task options take release decisions under encryption.
+
+* `key_topology = AggregatorAndCollector`: **one aggregator and the
+  collector** hold the two key shares (silent mode, one collector, no
+  policies). The collector is a key party (index 1) in the ceremony: it
+  contributes to every key, runs the joint and deep checks, attests the
+  material (clients pin its key too) and receives a `CollectorSecret`
+  without the verify key. There is no count round; the batch size is gated
+  under encryption.
+* `min_cell_count = k`: **small-cell suppression** (silent mode; `Count`,
+  `Histogram`, `MultihotCountVec`; no moments, no policies; either
+  topology). Cells below `k` are zeroed under encryption; the collector
+  learns only that they were suppressed, and the counts are withheld.
+
+*Gated release.* After the batch closes (and, with the aggregators holding
+every share, after the verified count round has found at least
+`min_batch_size` valid reports):
+
+```text
+round 0  every key party commits to its contribution (and the split-key
+         aggregator to the accumulators X it asks the collector to refresh)
+round 1  contributions: per refreshed value a mask M_p (fresh encryption of
+         a uniform plaintext); aggregators also a factor F_a per gate input
+         (uniform nonzero at the gate's slots, zero elsewhere); each with a
+         proof of well-formedness (wfe.rs); effective contribution 2C
+rounds 2-5  Y = X + Σ M_p, decrypted jointly with the count round's
+         verifiable decryption (shares + blinded checks, commitments,
+         openings, reveals): every party learns y and checks it itself
+round 6  aggregators: X' = y - Σ M_p (top of the chain),
+         Z_v = Π_{j<min_batch_size} (count' - j) · Π F_v,a   (split key)
+         Z_c = Π_{j<k} (cell' - j) · Π F_c,a                  (suppression)
+         R   = X' · Z_v · Z_c
+release  R, Z_v, Z_c through the ordinary verified release (vdec); the
+         split-key collector adds its own partials and fuses alone
+```
+
+Refreshed values: the chunk sums, and for a split-key task the valid
+count at every element slot of group 0 (`Circuit::spread_of_groups`, one
+plaintext multiplication of the validity ciphertext per flush and the same
+fold and mask at the close as the chunks: the gate must reach every slot a
+released value uses) and the moment accumulators. The collector divides
+the gates out (`gate::ungate`) and refuses outputs inconsistent with honest
+gates (a gate nonzero outside its slots, a batch-size gate zero at some
+slots only, a gated value nonzero where its gate is zero).
+
+*Depth.* The validity chain is unchanged (depth 28 batched). The gates
+start at the top: `gate_depth = max(⌈log2(min_batch_size + n)⌉,
+⌈log2(k + n)⌉) + (number of gates)`, validated against the chain.
+
+*Proofs of well-formed contributions (`wfe.rs`).* Statement: `C = (b u + t
+e0 + m, a u + t e1)` with short `u, e`. Five parallel repetitions (at
+`N = 65536`) of a Σ-protocol with challenges `X^k`, `k ∈ [0, 2N)`;
+masking `u'` uniform on `±2^24`, `e'` on `±2^29`; responses rejection
+sampled to their range (zero knowledge); Fiat–Shamir over the context, the
+statement and every commitment. Two answers to one commitment give
+`2C = Enc(·)` with randomness at most `2N` times the masking range, which
+is why the protocol uses `2C`.
+
+*Measured* (4 vCPUs, release build). One proof at ring dimension 32768
+(six repetitions): prove 0.21 s, verify 0.24 s, 2.6 MiB; at 65536 there are
+five repetitions over twice the coefficients, so about twice that per
+proof. A split-key gated release with `min_batch_size = 3` takes 60 s
+(rounds 0 to 6, the gates and the verified release, one aggregator and the
+collector, single-group layout); with `k = 3` suppression added, 65 s;
+the two-aggregator count round plus gated release with `k = 3`, 68 s.
+Gate cost grows linearly with `min_batch_size` and `k` (one ciphertext
+multiplication per factor of the product trees). Noise of the released
+ciphertexts (`tests/gate_noise.rs`, `min_batch_size = 100`, `k = 10`):
+808 bits or more below the flooding with honest contributions, 401.7 bits
+with a contribution whose randomness sits at the proof's masking range
+(`R`; `Z_v` 480.6, `Z_c` 985.6), against the 57 required (40 plus the
+17 bits of the extraction bound).
+
+*Messages* (`messages.rs`): `GateCommit`, `GateContribution`, `GateShare`,
+`GateCheckCommit`, `GateOpening`, `GateReveal`; node endpoints
+`/v1/gate-start` … `/v1/gate-finish` on helpers and on the split-key
+collector, driven by the leader. Every step is persisted and idempotent.
+
+*Tests.* `tests/split_key.rs`, `tests/suppression.rs`, `tests/wfe.rs`,
+`tests/gate_noise.rs`, node `ceremony_node.rs` (distributed split-key
+ceremony, two processes over TLS), node `e2e.rs::split_key_with_suppression_over_tls`.
+
 ### Horizontal sharding (`sharding.rs`, node `router`)
 
 Throughput beyond one aggregator set comes from running several sets in

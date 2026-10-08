@@ -120,6 +120,16 @@ enum Cmd {
         /// `<hex sealing public key>:<e0,e1,...>[:moments]`.
         #[arg(long = "collector")]
         collectors: Vec<String>,
+        /// Who holds key shares: `aggregators` (n-of-n among
+        /// `--aggregators`), or `split` (one aggregator and the collector,
+        /// silent mode; the batch size is gated under encryption).
+        #[arg(long, default_value = "aggregators")]
+        topology: String,
+        /// Small-cell suppression: cells below this are zeroed under
+        /// encryption before release (0 = off; silent mode, count,
+        /// histogram and multihot).
+        #[arg(long, default_value_t = 0)]
+        min_cell: u64,
     },
     Aggregator {
         #[arg(long)]
@@ -163,6 +173,10 @@ enum Cmd {
         /// Sealing secret file from `collector-identity` (required with policies).
         #[arg(long)]
         seal_secret: Option<PathBuf>,
+        /// Split-key tasks: the collector's sealed key share
+        /// (`share-<n>.sealed` from the ceremony, `n` = number of aggregators).
+        #[arg(long)]
+        key_share: Option<PathBuf>,
         #[arg(long)]
         db: PathBuf,
         #[arg(long)]
@@ -336,7 +350,7 @@ fn share_label(i: usize, cfg: &TaskConfig) -> String {
 /// Writes `aggregator-keys.txt`: the public identity keys, one per line,
 /// line `i` for aggregator `i`. This file is what clients pin.
 fn write_aggregator_keys(out_dir: &std::path::Path, ids: &[AggregatorIdentity]) -> anyhow::Result<()> {
-    let mut text = String::from("# fhe-prio3 aggregator identity keys, line i = aggregator i\n");
+    let mut text = String::from("# fhe-prio3 key party identity keys, line i = aggregator i (then the collector of a split-key task)\n");
     for id in ids {
         text.push_str(&hex::encode(id.public_key()));
         text.push('\n');
@@ -387,6 +401,12 @@ fn read<T: serde::de::DeserializeOwned>(p: &PathBuf) -> anyhow::Result<T> {
     Ok(decode(&std::fs::read(p)?)?)
 }
 
+/// A task file, in the current format or one written before
+/// `key_topology` and `min_cell_count` existed.
+fn read_task(p: &PathBuf) -> anyhow::Result<TaskConfig> {
+    Ok(TaskConfig::decode(&std::fs::read(p)?)?)
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().init();
@@ -417,7 +437,7 @@ async fn main() -> anyhow::Result<()> {
             out_dir,
             timeout_secs,
         } => {
-            let cfg: TaskConfig = read(&task)?;
+            let cfg = read_task(&task)?;
             let label = format!("aggregator-identity:{index}");
             let secret_bytes = secret::unseal(label.as_bytes(), &std::fs::read(&identity)?)?;
             let identity = AggregatorIdentity::from_secret_bytes(secret_bytes.as_slice().try_into().map_err(|_| anyhow::anyhow!("identity must be 32 bytes"))?);
@@ -456,9 +476,9 @@ async fn main() -> anyhow::Result<()> {
             )?;
             std::fs::write(out_dir.join("transcript.txt"), format!("{}\n", hex::encode(out.transcript)))?;
             println!(
-                "ceremony complete in {:.1} s: material.bin (attested by all {} aggregators), share-{index}.sealed, transcript {}",
+                "ceremony complete in {:.1} s: material.bin (attested by all {} key parties), share-{index}.sealed, transcript {}",
                 started.elapsed().as_secs_f64(),
-                cfg.num_aggregators,
+                cfg.num_key_parties(),
                 hex::encode(out.transcript)
             );
         }
@@ -473,6 +493,8 @@ async fn main() -> anyhow::Result<()> {
             moments,
             max_batch,
             collectors,
+            topology,
+            min_cell,
         } => {
             let ty = parse_type(&r#type)?;
             let id: [u8; 32] = match task_id {
@@ -502,6 +524,12 @@ async fn main() -> anyhow::Result<()> {
             for spec in &collectors {
                 cfg.collectors.push(parse_policy(spec)?);
             }
+            cfg.key_topology = match topology.as_str() {
+                "aggregators" => KeyTopology::Aggregators,
+                "split" => KeyTopology::AggregatorAndCollector,
+                other => anyhow::bail!("topology must be aggregators or split, got {other}"),
+            };
+            cfg.min_cell_count = min_cell;
             cfg.validate()?;
             std::fs::write(&out, encode(&cfg)?)?;
             println!("wrote {} (digest {})", out.display(), hex::encode(cfg.digest()));
@@ -510,11 +538,15 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Cmd::Keygen { task, out_dir, identities_dir } => {
-            let cfg: TaskConfig = read(&task)?;
+            let cfg = read_task(&task)?;
             std::fs::create_dir_all(&out_dir)?;
-            let ids = load_or_create_identities(&identities_dir.unwrap_or_else(|| out_dir.join("identities")), cfg.num_aggregators)?;
+            let ids = load_or_create_identities(&identities_dir.unwrap_or_else(|| out_dir.join("identities")), cfg.num_key_parties())?;
             write_aggregator_keys(&out_dir, &ids)?;
-            let (mut material, shares) = keys::run_local_ceremony(&cfg)?;
+            let k = keys::run_local_key_ceremony(&cfg)?;
+            let mut material = k.material;
+            let mut shares = k.aggregator_secrets;
+            // the collector's share of a split-key task is key party n's
+            shares.extend(k.collector_secret);
             material.attestations = ids.iter().enumerate().map(|(i, id)| attest::attest(&cfg, &material, i, id)).collect();
             std::fs::write(out_dir.join("material.bin"), encode(&material)?)?;
             for (i, s) in shares.iter().enumerate() {
@@ -548,7 +580,7 @@ async fn main() -> anyhow::Result<()> {
             ca,
             clients,
         } => {
-            let cfg: TaskConfig = read(&task)?;
+            let cfg = read_task(&task)?;
             let material: PublicMaterial = read(&material)?;
             let sealed = std::fs::read(&share)?;
             let share = secret::unseal(format!("share:{index}:{}", hex::encode(cfg.task_id)).as_bytes(), &sealed)?;
@@ -595,13 +627,14 @@ async fn main() -> anyhow::Result<()> {
             material,
             id,
             seal_secret,
+            key_share,
             db,
             listen,
             token,
             tls_cert,
             tls_key,
         } => {
-            let cfg: TaskConfig = read(&task)?;
+            let cfg = read_task(&task)?;
             let material: PublicMaterial = read(&material)?;
             let seal_key = match seal_secret {
                 Some(p) => {
@@ -612,6 +645,12 @@ async fn main() -> anyhow::Result<()> {
                 }
                 None => None,
             };
+            let key_share = match (key_share, cfg.collector_party()) {
+                (Some(p), Some(party)) => Some(secret::unseal(share_label(party, &cfg).as_bytes(), &std::fs::read(&p)?)?),
+                (None, None) => None,
+                (None, Some(_)) => anyhow::bail!("split-key task: pass the collector's key share (--key-share)"),
+                (Some(_), None) => anyhow::bail!("this task gives the collector no key share"),
+            };
             let node = CollectorNode::new(CollectorNodeConfig {
                 task: cfg,
                 material,
@@ -619,6 +658,7 @@ async fn main() -> anyhow::Result<()> {
                 seal_key,
                 token,
                 db,
+                key_share,
             })?;
             let handle = ServerHandle::new();
             tracing::info!(%listen, "collector listening");
@@ -634,7 +674,7 @@ async fn main() -> anyhow::Result<()> {
             identity,
             aggregator_keys,
         } => {
-            let cfg: TaskConfig = read(&task)?;
+            let cfg = read_task(&task)?;
             let material: PublicMaterial = read(&material)?;
             let id = match identity {
                 Some(p) => {
@@ -667,7 +707,7 @@ async fn main() -> anyhow::Result<()> {
             out_dir,
             identities_dir,
         } => {
-            let base: TaskConfig = read(&task)?;
+            let base = read_task(&task)?;
             let cfgs = fhe_prio3::sharding::shard_configs(&base, shards)?;
             std::fs::create_dir_all(&out_dir)?;
             let ids = load_or_create_identities(&identities_dir.unwrap_or_else(|| out_dir.join("identities")), base.num_aggregators)?;
@@ -687,7 +727,7 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Cmd::ShardTasks { task, shards, out_dir } => {
-            let base: TaskConfig = read(&task)?;
+            let base = read_task(&task)?;
             for (i, cfg) in fhe_prio3::sharding::shard_configs(&base, shards)?.iter().enumerate() {
                 let dir = out_dir.join(format!("shard-{i}"));
                 std::fs::create_dir_all(&dir)?;
@@ -708,7 +748,7 @@ async fn main() -> anyhow::Result<()> {
             let mut shards = Vec::with_capacity(leaders.len());
             for (i, leader) in leaders.iter().enumerate() {
                 let dir = shards_dir.join(format!("shard-{i}"));
-                let task: TaskConfig = read(&dir.join("task.bin"))?;
+                let task = read_task(&dir.join("task.bin"))?;
                 let material: PublicMaterial = read(&dir.join("material.bin"))?;
                 shards.push(fhe_prio3_node::router::ShardInfo {
                     task,

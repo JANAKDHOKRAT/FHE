@@ -64,6 +64,11 @@ Severity is the impact before the fix. Status is as of this document.
 | F-13 | **`vdec`'s `q0/4` bound did not bound noise against the flooding.** Partial decryptions are revealed at full precision. The bound looked only after the reduction to `q0`, and allowed noise up to 2^13 times the flooding range. | High (with F-10) | **Fixed.** Every fusion now checks the full-precision value against the exact support of `n` flooded partials (`vdec::check_flooding`): count, release and ceremony abort; the per-report verdict rejects the report (a client's malformed ciphertext is indistinguishable there, and must not make aggregators abort). No false rejection is possible. Every inflation that lets the fuser read the randomness is refused. Tests: `openfhe-tbgv-rs/tests/key_noise_gap.rs`. |
 | F-14 | **The ceremony checked keys only at depth 1.** Public-key noise that passed its joint key check exceeded the flooding by 2^13 at the depth-3 verdict check value, the per-report decryption. A first deep check (a squaring chain) still let the check value come within 7 bits of the flooding. | High (with F-10) | **Fixed.** The ceremony runs the protocol's own circuit on the test ciphertexts to each decryption point, amplifies the noise by 2^64 and checks it against the flooding. It also checks a full-depth squaring chain slot by slot. Accepted inflations: public key 2^59, eval-mult 2^116/2^123, rotations 2^130. With those keys the margin is 65.0 bits or more at every point, singly or all together. Tests: `tests/ceremony.rs`, `tests/key_noise_protocol.rs`, `tests/ceremony_sweep.rs`. Silent-mode thresholds are not measured (memory); an honest silent ceremony passes. |
 | F-15 | **Offline grinding of the validity challenge.** The challenge was an XOF of public data (task configuration and a hash of the ciphertexts). A client could compute it for any candidate report and re-encrypt until an invalid measurement passed, without contacting anyone: about `(p/2)^k` encryptions, `2^124` in verdict mode but only `2^78` in silent mode. Prio3 avoids this by deriving its query randomness from a verify key only aggregators hold. | Medium (silent-mode robustness below 128 bits against offline work) | **Fixed.** The challenge is keyed with a 32-byte verify key the ceremony generates jointly (contributions exchanged under pairwise X25519, agreement signed in round 9) and stores with each key share. Each submitted report is now one attempt. An aggregator colluding with a client can still hand over the key (as in Prio3). Tests: `challenge_is_bound_to_report_task_and_verify_key`, `aggregators_with_different_verify_keys_accept_nothing`, `tests/ceremony.rs` (split key, key never on the wire), `keys::tests`. |
+| F-16 | **Split key: a count round with the collector is a decryption oracle.** With one aggregator and the collector holding the shares, a count round in which the collector partially decrypts the aggregator's "count" ciphertext lets the aggregator decrypt any ciphertext, a client's report included. | Critical (design, found while designing the split key) | **Prevented by design.** No count round in split-key tasks; the batch size is a gate computed under encryption (`gate.rs`), and the collector partially decrypts for the aggregator only `Y = X + M_a + M_c` with its own uniform mask, `X` committed before `M_c` is revealed. Test: `split_key.rs::a_raw_report_sent_to_be_refreshed_comes_back_masked`. |
+| F-17 | **Noise-malformed refresh masks and gate factors.** A contribution with oversized noise makes the noise of the gated release depend on the plaintexts it multiplies (the suppressed cells, a batch below the minimum); the fuser reads it above the honest flooding. The runtime flooding check does not help when the fuser is the adversary (the split-key collector). | High | **Fixed.** Every contribution carries a zero-knowledge proof of a short opening (`wfe.rs`), bound to task, batch, party and position; the protocol uses the extractable form `2C`. Tests: `tests/wfe.rs`, `tests/gate_noise.rs` (margins with a mask at the proof's masking range), `split_key.rs::malformed_or_replayed_contributions_are_refused`, `suppression.rs::a_mask_cancelling_another_is_refused`. |
+| F-18 | **Shifting the refresh to pass a gate.** A key party that shifts its partial of `Y` shifts `X'`: a small cell or a small batch would pass. | High | **Fixed.** `Y` is decrypted with the count round's verifiable decryption; every key party checks with its own blinded checks before using `y`. Tests: `split_key.rs::a_shifted_partial_of_the_count_is_caught`, `suppression.rs::a_shifted_partial_of_y_is_caught`. |
+| F-19 | **Subtraction attack on suppression.** With the valid count (or the admitted count when all reports are valid, or the multihot weight slots) the collector computes the total of the suppressed cells. | High | **Fixed.** Counts are withheld (`report_count = 0` required in shares; no count output), constraint slots carry zero gate factors. Tests: `suppression.rs::diverging_outputs_and_released_counts_are_refused`, `::multihot_weight_slots_are_never_released`. |
+| F-20 | **Shim: coefficients wider than a tower.** `tbgv_encryption_with` first wrote `q − |c|` for negative coefficients; OpenFHE's chains carry 16-bit towers, so `|c| ≥ q` produced a wrong residue (found by `openfhe-tbgv-rs/tests/encryption_with.rs`). | High (for the proofs) | **Fixed** before use: coefficients are reduced into each tower. The existing `tbgv_zero_encryption` takes `|c| ≤ 127`, below every tower. |
 | F-12 | **Samples per ciphertext grow with `n`.** In the count round, each aggregator decrypts `(n − 1)·κ` checks of the count ciphertext. | Informational | Bounded and fixed per task (SECURITY.md §5). Flooding parameters must cover it (A2). |
 
 ## 4. Decision: zero-knowledge proofs of key noise (F-10)
@@ -121,7 +126,15 @@ does not exist yet. One reference proof was built and measured there
    expected shape before it reaches OpenFHE.
 5. Verification randomness (`vdec::draw`) comes from `OsRng` and is never
    revealed before every commitment it opens is in.
-6. `min_batch_size` is enforced on a **verified** valid count.
+6. `min_batch_size` is enforced on a **verified** valid count, or, in a
+   split-key task, by a gate computed under encryption that no party
+   decrypts before the release.
+7. In the gated release a key party partially decrypts for others only
+   the `Y` it formed itself (accumulators fixed by commitment before its
+   own mask was revealed, plus its own mask) and checks rebuilt from it;
+   every contribution it uses carries a verified `wfe` proof bound to its
+   party and position; the split-key collector sends no partial of a
+   released value to anyone.
 
 ## 6. Where to spend audit time
 
@@ -136,6 +149,11 @@ does not exist yet. One reference proof was built and measured there
    reveal under retries and restarts.
 4. `ceremony.rs`: commit-before-reveal, the CRS, the joint key check.
 5. The node's handlers: authentication of each route, and body limits.
+6. `wfe.rs`: the challenge expansion, the carry into `e0`, the rejection
+   bounds (prover and verifier must agree), and that the protocol uses
+   `2C` everywhere; `tbgv_encryption_with` (reduction into narrow towers).
+7. `gate.rs`: who supplies which ciphertext in each round, and
+   `ungate`'s consistency checks.
 
 ## 6a. Internal audit of the shim, 2026-09-30
 

@@ -105,6 +105,16 @@ unsafe extern "C" {
         e1: *const i8,
         n: usize,
     ) -> TbgvCiphertext;
+    pub fn tbgv_encryption_with(
+        ctx: TbgvContext,
+        pk: TbgvPublicKey,
+        reference: TbgvCiphertext,
+        m: *const u64,
+        u: *const i32,
+        e0: *const i32,
+        e1: *const i32,
+        n: usize,
+    ) -> TbgvCiphertext;
     pub fn tbgv_monomial_slots(ctx: TbgvContext, out: *mut u64, out_len: usize) -> c_int;
     pub fn tbgv_fuse_magnitude(ctx: TbgvContext, partials: *const TbgvCiphertext, n: usize, max_abs: *mut u64, q0: *mut u64) -> c_int;
 

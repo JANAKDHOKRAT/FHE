@@ -56,6 +56,14 @@
 //!   ([`crate::attest`]); a party that showed different messages to
 //!   different peers, or computed different keys, is caught there.
 //!
+//! * **Split-key tasks.** The collector of a
+//!   [`crate::config::KeyTopology::AggregatorAndCollector`] task is a key
+//!   party (index 1): it contributes to every key and to the joint and deep
+//!   checks, signs and attests like an aggregator, and receives a
+//!   [`crate::keys::CollectorSecret`]. It never takes part in the verify
+//!   key: no contribution is sealed to it, it seals none, and its round-9
+//!   check is not compared, so it cannot compute any report's challenge.
+//!
 //! What it does not do: it does not tolerate an aborting party (n-of-n: any
 //! party can stop the ceremony, as it can stop decryption later), and it
 //! proves nothing about a party's noise distribution beyond what the joint
@@ -65,7 +73,7 @@
 use crate::attest::{self, AggregatorIdentity, MaterialAttestation};
 use crate::config::TaskConfig;
 use crate::error::{Error, Result};
-use crate::keys::{AggregatorSecret, VerifyKey, make_context};
+use crate::keys::{AggregatorSecret, CollectorSecret, VerifyKey, make_context};
 use crate::messages::{PublicMaterial, encode};
 use crate::packed::{Codec, Expect};
 use crate::xof::Xof;
@@ -235,10 +243,12 @@ pub trait Transport {
 }
 
 pub struct CeremonyOutput {
-    /// Joint material with every aggregator's attestation.
+    /// Joint material with every key party's attestation.
     pub material: PublicMaterial,
     /// This party's encoded [`AggregatorSecret`]: its secret key share and
     /// the task's verify key (keep it sealed; `Aggregator::new` takes it).
+    /// For the collector of a split-key task, its encoded
+    /// [`CollectorSecret`] (`Collector::with_key_share` takes it).
     pub secret: Vec<u8>,
     /// The digest every party signed in round 9.
     pub transcript: [u8; 32],
@@ -422,6 +432,18 @@ fn protocol_decryption_points(
                 && let Some((p, t)) = circuit.moment_products(&masked, 0)?.into_iter().zip(layout.moment_terms()).next()
             {
                 out.push(circuit.finalize_moment(&ctx.mult(&p, &g)?, t)?);
+            }
+            if cfg.gated() {
+                // the gated release (`gate.rs`) restarts refreshed values at
+                // the top of the chain and multiplies them by independent
+                // fresh ciphertexts (factors) through product trees of
+                // depth `gate_depth`: the same path, with the parties'
+                // test ciphertexts as the factors
+                let mut v = x.try_clone()?;
+                for i in 0..cfg.gate_depth() as usize {
+                    v = ctx.mult(&v, &masks[i % masks.len()])?;
+                }
+                out.push(v);
             }
         }
     }
@@ -666,9 +688,10 @@ fn material_digest(m: &PublicMaterial) -> [u8; 32] {
     ])
 }
 
-/// Runs the ceremony as aggregator `index`. `pinned[j]` is aggregator `j`'s
-/// identity key (this party's own included); `session` is a fresh value all
-/// parties agreed on for this run.
+/// Runs the ceremony as key party `index` (aggregators `0..n`, then the
+/// collector of a split-key task). `pinned[j]` is key party `j`'s identity
+/// key (this party's own included); `session` is a fresh value all parties
+/// agreed on for this run.
 pub fn run(
     cfg: &TaskConfig,
     index: usize,
@@ -706,13 +729,15 @@ fn run_inner(
     t: &mut dyn Transport,
     dev: Deviation,
 ) -> Result<CeremonyOutput> {
-    let n = cfg.num_aggregators;
+    let n = cfg.num_key_parties();
     if pinned.len() != n || index >= n {
         return Err(Error::Config(format!(
-            "ceremony: {} pinned keys and index {index} for {n} aggregators",
+            "ceremony: {} pinned keys and index {index} for {n} key parties",
             pinned.len()
         )));
     }
+    // only aggregators hold the verify key (a split-key collector does not)
+    let holds_vk = |j: usize| j < cfg.num_aggregators;
     if pinned[index] != identity.public_key() {
         return Err(Error::Config(format!("ceremony: this identity is not the pinned key of aggregator {index}")));
     }
@@ -782,7 +807,7 @@ fn run_inner(
     };
     let mut vk_sealed = Vec::with_capacity(n);
     for j in 0..n {
-        if j == index {
+        if j == index || !holds_vk(index) || !holds_vk(j) {
             vk_sealed.push(Vec::new());
             continue;
         }
@@ -805,6 +830,18 @@ fn run_inner(
                 vk_sealed.len()
             )));
         }
+        if !holds_vk(j) || !holds_vk(index) {
+            // nothing is sealed by or to a party outside the verify key
+            if vk_sealed.iter().any(|v| !v.is_empty()) && !holds_vk(j) {
+                return Err(Error::Protocol(format!("ceremony: party {j} holds no verify key but sent contributions to it")));
+            }
+            if !holds_vk(index) && !vk_sealed[index].is_empty() {
+                return Err(Error::Protocol(format!(
+                    "ceremony: party {j} sealed a verify-key contribution to the collector"
+                )));
+            }
+            continue;
+        }
         if j == index {
             vk_parts.push(vk_contribution);
         } else {
@@ -820,11 +857,11 @@ fn run_inner(
     }
     drop(vk_secret);
     zeroize::Zeroize::zeroize(&mut vk_contribution);
-    let verify_key = {
+    let verify_key = holds_vk(index).then(|| {
         let mut parts: Vec<&[u8]> = vec![b"verify key", &me.task_digest, &session];
         parts.extend(vk_parts.iter().map(|p| p.as_slice()));
         VerifyKey::from_bytes(h(&parts))
-    };
+    });
     for p in vk_parts.iter_mut() {
         zeroize::Zeroize::zeroize(p);
     }
@@ -1192,7 +1229,10 @@ fn run_inner(
     let transcript = h(&[b"transcript", &digest_parts]);
     let signed = if dev == Deviation::WrongTranscript { h(&[b"other"]) } else { transcript };
     let attestation = attest::attest(cfg, &material, index, identity);
-    let vk_check = verify_key_check(&session, &verify_key);
+    let vk_check = match &verify_key {
+        Some(k) => verify_key_check(&session, k),
+        None => [0u8; 32],
+    };
     let confirms = me.exchange(
         t,
         Round::Confirm,
@@ -1215,7 +1255,7 @@ fn run_inner(
         if d != transcript {
             return Err(Error::Protocol(format!("ceremony: party {j} saw another transcript or computed other keys")));
         }
-        if v != vk_check {
+        if holds_vk(index) && holds_vk(j) && v != vk_check {
             return Err(Error::Protocol(format!(
                 "ceremony: party {j} derived another verify key (some party sent different verify-key contributions to different peers)"
             )));
@@ -1223,11 +1263,14 @@ fn run_inner(
         material.attestations.push(attestation);
     }
     attest::verify_material(cfg, &material, pinned)?;
-    let secret = AggregatorSecret {
-        verify_key,
-        share: share.serialize()?,
-    }
-    .encode();
+    let secret = match verify_key {
+        Some(verify_key) => AggregatorSecret {
+            verify_key,
+            share: share.serialize()?,
+        }
+        .encode(),
+        None => CollectorSecret { share: share.serialize()? }.encode(),
+    };
     Ok(CeremonyOutput { material, secret, transcript })
 }
 

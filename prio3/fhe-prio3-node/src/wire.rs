@@ -147,6 +147,50 @@ pub enum ShareReply {
     Sealed(SealedShare),
 }
 
+/// Gated release (`fhe_prio3::gate`), leader -> every other key party (the
+/// helpers, and the collector of a split-key task), in order. Round 0:
+/// commit; the collector needs the leader's commitment, which names the
+/// batch (helpers ignore it).
+#[derive(Serialize, Deserialize)]
+pub struct GateStartRequest {
+    pub leader: fhe_prio3::GateCommit,
+}
+/// Round 1: every commitment (reply: the party's `GateContribution`).
+#[derive(Serialize, Deserialize)]
+pub struct GateCommitsRequest {
+    pub commits: Vec<fhe_prio3::GateCommit>,
+}
+/// Round 2: every contribution (reply: `GateShare`).
+#[derive(Serialize, Deserialize)]
+pub struct GateContributionsRequest {
+    pub contributions: Vec<fhe_prio3::GateContribution>,
+}
+/// Round 3: every share (reply: `GateCheckCommit`).
+#[derive(Serialize, Deserialize)]
+pub struct GateSharesRequest {
+    pub shares: Vec<fhe_prio3::GateShare>,
+}
+/// Round 4: every check commitment (reply: `GateOpening`).
+#[derive(Serialize, Deserialize)]
+pub struct GateCheckCommitsRequest {
+    pub commits: Vec<fhe_prio3::GateCheckCommit>,
+}
+/// Round 5: every opening (reply: `GateReveal`).
+#[derive(Serialize, Deserialize)]
+pub struct GateOpeningsRequest {
+    pub openings: Vec<fhe_prio3::GateOpening>,
+}
+/// Round 6: every reveal (reply: `()`, once the party verified `y`).
+#[derive(Serialize, Deserialize)]
+pub struct GateRevealsRequest {
+    pub reveals: Vec<fhe_prio3::GateReveal>,
+}
+
+/// Body limit of the gated release's rounds: a round carries every key
+/// party's contribution (fresh ciphertexts, their proofs and, from a
+/// split-key aggregator, its accumulators).
+pub const GATE_BODY_LIMIT: usize = 2 << 30;
+
 /// Answer to `/v1/close`.
 #[derive(Serialize, Deserialize)]
 pub struct CloseReply {

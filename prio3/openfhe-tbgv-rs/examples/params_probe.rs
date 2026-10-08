@@ -12,12 +12,19 @@
 use openfhe_tbgv_rs::*;
 use std::time::Instant;
 
+/// `PROBE_DNUM` selects OpenFHE's hybrid key-switching digit count (0 or
+/// unset: OpenFHE's default), as `TaskConfig::key_switch_digits` does.
 fn context(p: u64, depth: u32) -> Context {
-    Context::new(Params {
-        plain_mod: p,
-        mult_depth: depth,
-        security_bits: 128,
-    })
+    let dnum: u32 = std::env::var("PROBE_DNUM").ok().map(|v| v.parse().expect("PROBE_DNUM")).unwrap_or(0);
+    Context::new_tuned(
+        Params {
+            plain_mod: p,
+            mult_depth: depth,
+            security_bits: 128,
+        },
+        dnum,
+        0,
+    )
     .expect("context")
 }
 
@@ -70,12 +77,21 @@ fn setup(p: u64, depth: u32, indices: &[i32]) -> (Context, PublicKey) {
             Some(acc) => EvalMultKey::round2_add(&ctx, &acc, &c, &tag).unwrap(),
         });
     }
-    ctx.install_eval_mult_key(&r2_sum.unwrap(), &tag).unwrap();
+    ctx.install_eval_mult_key(r2_sum.as_ref().unwrap(), &tag).unwrap();
     let acc = RotationKeys::first(&ctx, &shares[0], indices).unwrap();
     let prev = ctx.deserialize_rotation_keys(&acc.serialize().unwrap()).unwrap();
     let contrib = RotationKeys::next(&ctx, &shares[1], &prev, indices, &tag).unwrap();
     let contrib = ctx.deserialize_rotation_keys(&contrib.serialize().unwrap()).unwrap();
     let acc = RotationKeys::add(&ctx, &prev, &contrib, &tag).unwrap();
+    let rot_bytes = acc.serialize().unwrap().len();
+    let mult_bytes = r2_sum.as_ref().map(|k| k.serialize().unwrap().len()).unwrap_or(0);
+    println!(
+        "keys: eval-mult {:.1} MiB, rotation keys {:.1} MiB for {} indices ({:.1} MiB each)",
+        mult_bytes as f64 / 1048576.0,
+        rot_bytes as f64 / 1048576.0,
+        indices.len(),
+        rot_bytes as f64 / 1048576.0 / indices.len() as f64
+    );
     ctx.install_rotation_keys(&acc, &tag).unwrap();
     (ctx, pk)
 }
@@ -161,8 +177,21 @@ fn part_b(p: u64, depth: u32) {
 fn part_c() {
     println!("== C. silent depths at p = 786433 with tuned key switching / scaling");
     println!("{:>6} {:>6} {:>8} {:>9} {:>7} {:>8}", "depth", "dnum", "scaling", "ring_dim", "towers", "log2Q");
-    for depth in [26u32, 27, 28] {
-        for (dnum, scaling) in [(0u32, 0u32), (4, 0), (5, 0), (6, 0), (8, 0), (0, 40), (4, 40), (6, 40)] {
+    let depths: Vec<u32> = std::env::var("PROBE_DEPTHS")
+        .ok()
+        .map(|s| s.split(',').map(|d| d.trim().parse().expect("PROBE_DEPTHS: comma-separated depths")).collect())
+        .unwrap_or_else(|| vec![26, 27, 28]);
+    let dnums: Vec<u32> = std::env::var("PROBE_DNUMS")
+        .ok()
+        .map(|s| {
+            s.split(',')
+                .map(|d| d.trim().parse().expect("PROBE_DNUMS: comma-separated digit counts"))
+                .collect()
+        })
+        .unwrap_or_else(|| vec![0, 4, 5, 6, 8]);
+    for &depth in &depths {
+        for &dnum in &dnums {
+            let scaling = 0u32;
             match Context::new_tuned(
                 Params {
                     plain_mod: 786_433,
@@ -189,6 +218,15 @@ fn part_c() {
 
 fn main() {
     let ops = std::env::args().any(|a| a == "--ops");
+    // `--ops-at P DEPTH`: primitive timings and key sizes at one setting
+    // (with `PROBE_DNUM` for the digit count).
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(i) = args.iter().position(|a| a == "--ops-at") {
+        let p: u64 = args[i + 1].parse().expect("--ops-at P DEPTH");
+        let depth: u32 = args[i + 2].parse().expect("--ops-at P DEPTH");
+        part_b(p, depth);
+        return;
+    }
     if std::env::args().any(|a| a == "--tuned") {
         part_c();
         return;

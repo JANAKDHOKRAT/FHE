@@ -81,6 +81,46 @@ char* dup_string(const std::string& s) {
         return ret;                                       \
     }
 
+// A DCRTPoly over `params` from signed 32-bit coefficients, reduced into
+// each tower (towers can be narrower than the coefficients: OpenFHE's
+// chains carry 16-bit towers).
+DCRTPoly wide_poly(const std::shared_ptr<DCRTPoly::Params>& params, const int32_t* c) {
+    DCRTPoly x(params, Format::COEFFICIENT, true);
+    const size_t n = params->GetRingDimension();
+    for (size_t t = 0; t < x.GetNumOfElements(); ++t) {
+        auto tower = x.GetElementAtIndex(t);
+        const NativeInteger q = tower.GetModulus();
+        const uint64_t qq = q.ConvertToInt<uint64_t>();
+        NativeVector vec(n, q);
+        for (size_t i = 0; i < n; ++i) {
+            const int64_t a = static_cast<int64_t>(c[i]);
+            const uint64_t r = static_cast<uint64_t>(a >= 0 ? a : -a) % qq;
+            vec[i] = NativeInteger(a >= 0 || r == 0 ? r : qq - r);
+        }
+        tower.SetValues(std::move(vec), Format::COEFFICIENT);
+        x.SetElementAtIndex(t, std::move(tower));
+    }
+    x.SetFormat(Format::EVALUATION);
+    return x;
+}
+
+// A DCRTPoly over `params` from plaintext coefficients in [0, t), lifted as
+// non-negative integers and reduced into each tower.
+DCRTPoly plain_poly(const std::shared_ptr<DCRTPoly::Params>& params, const uint64_t* m) {
+    DCRTPoly x(params, Format::COEFFICIENT, true);
+    const size_t n = params->GetRingDimension();
+    for (size_t t = 0; t < x.GetNumOfElements(); ++t) {
+        auto tower = x.GetElementAtIndex(t);
+        const uint64_t qq = tower.GetModulus().ConvertToInt<uint64_t>();
+        NativeVector vec(n, tower.GetModulus());
+        for (size_t i = 0; i < n; ++i) vec[i] = NativeInteger(m[i] % qq);
+        tower.SetValues(std::move(vec), Format::COEFFICIENT);
+        x.SetElementAtIndex(t, std::move(tower));
+    }
+    x.SetFormat(Format::EVALUATION);
+    return x;
+}
+
 }  // namespace
 
 extern "C" {
@@ -748,6 +788,50 @@ TbgvCiphertext tbgv_zero_encryption(TbgvContext ctx, TbgvPublicKey pk, TbgvCiphe
     // (b u + t e0, a u + t e1): an encryption of zero, BGV noise a multiple of t
     DCRTPoly c0 = b * up + t.Times(pt);
     DCRTPoly c1 = a * up + s.Times(pt);
+    CT r = ref->Clone();
+    r->SetElements({std::move(c0), std::move(c1)});
+    return new CT(r);
+    TBGV_CATCH(nullptr)
+}
+
+TbgvCiphertext tbgv_encryption_with(TbgvContext ctx, TbgvPublicKey pk, TbgvCiphertext reference, const uint64_t* m,
+                                    const int32_t* u, const int32_t* e0, const int32_t* e1, size_t n) {
+    TBGV_TRY
+    if (u == nullptr || e0 == nullptr || e1 == nullptr) { set_error("null argument"); return nullptr; }
+    const CT& ref = ct_of(reference);
+    if (ref->GetCryptoContext().get() != cc_of(ctx).get()) { set_error("reference belongs to a different context"); return nullptr; }
+    const auto& rel = ref->GetElements();
+    if (rel.size() != 2) { set_error("reference must have two elements"); return nullptr; }
+    if (n != rel[0].GetRingDimension()) { set_error("coefficient vectors must have the ring dimension"); return nullptr; }
+    const auto& pke = pk_of(pk)->GetPublicElements();
+    if (pke.size() != 2) { set_error("not a public key"); return nullptr; }
+    const size_t towers = rel[0].GetNumOfElements();
+    if (pke[0].GetNumOfElements() < towers) { set_error("public key has fewer towers than the reference"); return nullptr; }
+    for (size_t t = 0; t < towers; ++t)
+        if (pke[0].GetElementAtIndex(t).GetModulus() != rel[0].GetElementAtIndex(t).GetModulus()) {
+            set_error("public key towers do not match the reference's");
+            return nullptr;
+        }
+    const uint64_t ptm = cc_of(ctx)->GetCryptoParameters()->GetPlaintextModulus();
+    for (size_t i = 0; i < n; ++i) {
+        if (u[i] == INT32_MIN || e0[i] == INT32_MIN || e1[i] == INT32_MIN) { set_error("coefficient out of range"); return nullptr; }
+        if (m != nullptr && m[i] >= ptm) { set_error("plaintext coefficient not below t"); return nullptr; }
+    }
+    DCRTPoly b = pke[0];
+    DCRTPoly a = pke[1];
+    if (b.GetNumOfElements() > towers) {
+        b.DropLastElements(b.GetNumOfElements() - towers);
+        a.DropLastElements(a.GetNumOfElements() - towers);
+    }
+    const auto params = rel[0].GetParams();
+    const DCRTPoly up = wide_poly(params, u);
+    const DCRTPoly f0 = wide_poly(params, e0);
+    const DCRTPoly f1 = wide_poly(params, e1);
+    const NativeInteger pt(ptm);
+    // (b u + t e0 + m, a u + t e1)
+    DCRTPoly c0 = b * up + f0.Times(pt);
+    if (m != nullptr) c0 += plain_poly(params, m);
+    DCRTPoly c1 = a * up + f1.Times(pt);
     CT r = ref->Clone();
     r->SetElements({std::move(c0), std::move(c1)});
     return new CT(r);

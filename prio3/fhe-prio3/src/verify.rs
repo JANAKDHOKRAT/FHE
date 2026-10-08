@@ -129,6 +129,8 @@ pub struct Circuit {
     group0_masks: Vec<Plaintext>,
     /// 1 at slot `group_slot(0, 0)` only.
     count0_mask: Plaintext,
+    /// 1 at every element slot of group 0 (`group_slot(0, i)`, `i < block`).
+    spread0_mask: Plaintext,
 }
 
 impl Circuit {
@@ -160,6 +162,10 @@ impl Circuit {
         }
         let mut count0 = vec![0u64; layout.row];
         count0[layout.group_slot(0, 0)] = 1;
+        let mut spread0 = vec![0u64; layout.row];
+        for i in 0..layout.block {
+            spread0[layout.group_slot(0, i)] = 1;
+        }
         Ok(Self {
             ctx: ctx.clone(),
             layout: layout.clone(),
@@ -169,6 +175,7 @@ impl Circuit {
             group_masks,
             group0_masks,
             count0_mask: ctx.plaintext(&count0)?,
+            spread0_mask: ctx.plaintext(&spread0)?,
         })
     }
 
@@ -199,6 +206,28 @@ impl Circuit {
     /// level. The other groups' slots then hold partial sums over subsets
     /// of the reports and must never be decrypted: [`Self::finalize_chunk`]
     /// and its siblings zero them.
+    /// The validity bits of `groups` at every element slot of each group
+    /// (`G` holds report `r`'s bit at every slot of group `r`). After the
+    /// fold at the close ([`Self::finalize_spread`]) every element slot of
+    /// group 0 holds the valid count: the input of the gated release's
+    /// batch-size gate, which must reach every slot a released value uses.
+    pub fn spread_of_groups(&self, g: &Ciphertext, groups: &[usize]) -> Result<Ciphertext> {
+        let l = &self.layout;
+        let mut ind = vec![0u64; l.row];
+        for &r in groups {
+            for i in 0..l.block {
+                ind[l.group_slot(r, i)] = 1;
+            }
+        }
+        Ok(self.ctx.mult_plain(g, &self.ctx.plaintext(&ind)?)?)
+    }
+    /// Fold and group-0 mask of the spread count (see [`Self::spread_of_groups`]).
+    pub fn finalize_spread(&self, ct: &Ciphertext) -> Result<Ciphertext> {
+        if self.layout.groups == 1 {
+            return ct.try_clone().map_err(Into::into);
+        }
+        Ok(self.ctx.mult_plain(&self.fold_all_groups(ct)?, &self.spread0_mask)?)
+    }
     pub fn fold_all_groups(&self, ct: &Ciphertext) -> Result<Ciphertext> {
         let mut out = ct.try_clone()?;
         for d in self.layout.group_fold_keys() {

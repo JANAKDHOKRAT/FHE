@@ -12,7 +12,10 @@
 //!   in two message rounds (verdict mode) or with no messages at all (silent
 //!   mode), and accumulates accepted reports.
 //! * [`collector::Collector`] fuses the aggregators' partial decryptions of
-//!   the batch sums; it holds no key.
+//!   the batch sums; it holds no key, except in a split-key task
+//!   ([`config::KeyTopology::AggregatorAndCollector`]: one aggregator and
+//!   the collector), where it holds the second share and takes part in the
+//!   gated release (`gate.rs`).
 
 pub mod aggregator;
 pub mod attest;
@@ -23,6 +26,7 @@ pub mod collector;
 pub mod config;
 pub mod error;
 pub mod field;
+pub mod gate;
 pub mod keys;
 pub mod layout;
 pub mod local;
@@ -33,6 +37,7 @@ pub mod sharding;
 pub mod types;
 pub mod vdec;
 pub mod verify;
+pub mod wfe;
 pub mod xof;
 
 pub use aggregator::{Aggregator, AggregatorState, Verdict};
@@ -41,11 +46,11 @@ pub use auth::{ClientIdentity, ClientRegistry, StaticRegistry};
 pub use client::Client;
 pub use collector::Collector;
 pub use collector::PendingRelease;
-pub use config::{AuthPolicy, CollectorPolicy, TaskConfig, VerificationMode};
+pub use config::{AuthPolicy, CollectorPolicy, KeyTopology, TaskConfig, VerificationMode};
 pub use error::{Error, RejectReason, Result};
 pub use messages::{
-    AggregateShare, CountCommit, CountOpening, CountReveal, CountShare, MaskCommit, MaskMessage, PublicMaterial, ReleaseChallenge, ReleaseCommit,
-    ReleaseOpening, ReleaseReveal, Report, VerifierCommit, VerifierMessage,
+    AggregateShare, CountCommit, CountOpening, CountReveal, CountShare, GateCheckCommit, GateCommit, GateContribution, GateOpening, GateReveal, GateShare,
+    MaskCommit, MaskMessage, PublicMaterial, ReleaseChallenge, ReleaseCommit, ReleaseOpening, ReleaseReveal, Report, VerifierCommit, VerifierMessage,
 };
 pub use seal::{CollectorSealKey, SealedShare};
 pub use types::{AggregateResult, BatchResult, Measurement, MeasurementType, RegressionResult};

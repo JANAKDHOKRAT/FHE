@@ -72,7 +72,9 @@ impl AggregatorNode {
         let mut store = Store::open(&cfg.db)?;
         match store.get(K_TASK)? {
             Some(bytes) => {
-                if bytes != encode(&cfg.task)? {
+                // a database from before the task's last format change holds
+                // the older encoding of the same task
+                if TaskConfig::decode(&bytes).ok().as_ref() != Some(&cfg.task) {
                     anyhow::bail!("database {} belongs to a different task configuration", cfg.db.display());
                 }
             }
@@ -135,6 +137,7 @@ impl AggregatorNode {
         // verifiable decryption: check ciphertexts of every aggregator (count
         // round) or of every released accumulator group (release)
         let verify = DefaultBodyLimit::max(256 << 20);
+        let gate = DefaultBodyLimit::max(GATE_BODY_LIMIT);
         Router::new()
             .route("/v1/status", get(status))
             .route("/v1/group", get(group_ticket))
@@ -153,6 +156,13 @@ impl AggregatorNode {
             .route("/v1/release-commit", post(internal_release_commit).layer(verify))
             .route("/v1/release-reveal", post(internal_release_reveal).layer(verify))
             .route("/v1/aggregate-share", post(internal_aggregate_share).layer(internal))
+            .route("/v1/gate-start", post(internal_gate_start).layer(gate))
+            .route("/v1/gate-contribute", post(internal_gate_contribute).layer(gate))
+            .route("/v1/gate-share", post(internal_gate_share).layer(gate))
+            .route("/v1/gate-check-commit", post(internal_gate_check_commit).layer(gate))
+            .route("/v1/gate-open", post(internal_gate_open).layer(gate))
+            .route("/v1/gate-reveal", post(internal_gate_reveal).layer(gate))
+            .route("/v1/gate-finish", post(internal_gate_finish).layer(gate))
             .with_state(self.clone())
     }
 
@@ -458,11 +468,89 @@ impl AggregatorNode {
         Ok(done.result)
     }
 
+    /// The other key parties of the gated release: the helpers, then the
+    /// collector of a split-key task.
+    fn gate_peers(&self) -> Vec<String> {
+        let mut v: Vec<String> = self.helpers().into_iter().map(|(_, u)| u).collect();
+        if self.inner.task.collector_holds_key() {
+            v.push(self.inner.collectors[0].clone());
+        }
+        v
+    }
+
+    /// Posts one round's request to every other key party; their replies.
+    async fn gate_round<R: serde::de::DeserializeOwned>(&self, path: &str, body: Vec<u8>) -> std::result::Result<Vec<R>, HttpError> {
+        let mut out = Vec::new();
+        for url in self.gate_peers() {
+            out.push(decode(
+                &http_post_raw(&self.inner.http, &format!("{url}{path}"), Some(&self.inner.token), body.clone()).await?,
+            )?);
+        }
+        Ok(out)
+    }
+
+    /// The gated release (`fhe_prio3::gate`) among the key parties, relayed
+    /// by the leader: commitments, contributions, the verified joint
+    /// decryption of the masked accumulators, then every aggregator
+    /// computes the gates. Each party persists every step.
+    async fn drive_gate(&self) -> std::result::Result<(), HttpError> {
+        let mine = self
+            .with_agg("gate_commit", String::new(), vec![], |agg| Ok((agg.gate_commit()?, true)))
+            .await?;
+        let mut commits = vec![mine.clone()];
+        commits.extend(
+            self.gate_round::<GateCommit>("/v1/gate-start", encode(&GateStartRequest { leader: mine })?)
+                .await?,
+        );
+        let req = encode(&GateCommitsRequest { commits: commits.clone() })?;
+        let mut contributions = vec![
+            self.with_agg("gate_contribute", String::new(), vec![], move |agg| Ok((agg.gate_contribute(&commits)?, true)))
+                .await?,
+        ];
+        contributions.extend(self.gate_round::<GateContribution>("/v1/gate-contribute", req).await?);
+        let req = encode(&GateContributionsRequest {
+            contributions: contributions.clone(),
+        })?;
+        let mut shares = vec![
+            self.with_agg("gate_share", String::new(), vec![], move |agg| Ok((agg.gate_share(&contributions)?, true)))
+                .await?,
+        ];
+        shares.extend(self.gate_round::<GateShare>("/v1/gate-share", req).await?);
+        let req = encode(&GateSharesRequest { shares: shares.clone() })?;
+        let mut cc = vec![
+            self.with_agg("gate_check_commit", String::new(), vec![], move |agg| {
+                Ok((agg.gate_check_commit(&shares)?, true))
+            })
+            .await?,
+        ];
+        cc.extend(self.gate_round::<GateCheckCommit>("/v1/gate-check-commit", req).await?);
+        let req = encode(&GateCheckCommitsRequest { commits: cc.clone() })?;
+        let mut openings = vec![
+            self.with_agg("gate_open", String::new(), vec![], move |agg| Ok((agg.gate_open(&cc)?, true)))
+                .await?,
+        ];
+        openings.extend(self.gate_round::<GateOpening>("/v1/gate-open", req).await?);
+        let req = encode(&GateOpeningsRequest { openings: openings.clone() })?;
+        let mut reveals = vec![
+            self.with_agg("gate_reveal", String::new(), vec![], move |agg| Ok((agg.gate_reveal(&openings)?, true)))
+                .await?,
+        ];
+        reveals.extend(self.gate_round::<GateReveal>("/v1/gate-reveal", req).await?);
+        let req = encode(&GateRevealsRequest { reveals: reveals.clone() })?;
+        self.with_agg("gate_finish", String::new(), vec![], move |agg| Ok((agg.gate_finish(&reveals)?, true)))
+            .await?;
+        self.gate_round::<()>("/v1/gate-finish", req).await?;
+        Ok(())
+    }
+
     /// Closes the batch on every aggregator, delivers the shares to the
     /// collector(s) and runs the verified release.
     async fn drive_close(&self) -> std::result::Result<CloseReply, HttpError> {
-        if self.inner.task.mode == VerificationMode::Silent {
+        if self.inner.task.mode == VerificationMode::Silent && !self.inner.task.collector_holds_key() {
             self.drive_count().await?;
+        }
+        if self.inner.task.gated() {
+            self.drive_gate().await?;
         }
         if self.inner.task.collectors.is_empty() {
             // single collector, plain shares relayed by the leader
@@ -816,4 +904,80 @@ async fn internal_aggregate_share(
         .with_agg("sealed_share_for", format!("{c}"), vec![], move |agg| Ok((agg.sealed_share_for(c)?, true)))
         .await?;
     reply(&ShareReply::Sealed(s))
+}
+
+// ---- gated release, helper side ------------------------------------------
+
+async fn internal_gate_start(State(node): State<AggregatorNode>, headers: HeaderMap, body: Bytes) -> std::result::Result<axum::response::Response, HttpError> {
+    check_token(&headers, &node.inner.token)?;
+    let _req: GateStartRequest = parse_body(&body)?;
+    reply(
+        &node
+            .with_agg("gate_commit", String::new(), vec![], |agg| Ok((agg.gate_commit()?, true)))
+            .await?,
+    )
+}
+async fn internal_gate_contribute(
+    State(node): State<AggregatorNode>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> std::result::Result<axum::response::Response, HttpError> {
+    check_token(&headers, &node.inner.token)?;
+    let req: GateCommitsRequest = parse_body(&body)?;
+    reply(
+        &node
+            .with_agg("gate_contribute", String::new(), vec![], move |agg| {
+                Ok((agg.gate_contribute(&req.commits)?, true))
+            })
+            .await?,
+    )
+}
+async fn internal_gate_share(State(node): State<AggregatorNode>, headers: HeaderMap, body: Bytes) -> std::result::Result<axum::response::Response, HttpError> {
+    check_token(&headers, &node.inner.token)?;
+    let req: GateContributionsRequest = parse_body(&body)?;
+    reply(
+        &node
+            .with_agg("gate_share", String::new(), vec![], move |agg| Ok((agg.gate_share(&req.contributions)?, true)))
+            .await?,
+    )
+}
+async fn internal_gate_check_commit(
+    State(node): State<AggregatorNode>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> std::result::Result<axum::response::Response, HttpError> {
+    check_token(&headers, &node.inner.token)?;
+    let req: GateSharesRequest = parse_body(&body)?;
+    reply(
+        &node
+            .with_agg("gate_check_commit", String::new(), vec![], move |agg| {
+                Ok((agg.gate_check_commit(&req.shares)?, true))
+            })
+            .await?,
+    )
+}
+async fn internal_gate_open(State(node): State<AggregatorNode>, headers: HeaderMap, body: Bytes) -> std::result::Result<axum::response::Response, HttpError> {
+    check_token(&headers, &node.inner.token)?;
+    let req: GateCheckCommitsRequest = parse_body(&body)?;
+    reply(
+        &node
+            .with_agg("gate_open", String::new(), vec![], move |agg| Ok((agg.gate_open(&req.commits)?, true)))
+            .await?,
+    )
+}
+async fn internal_gate_reveal(State(node): State<AggregatorNode>, headers: HeaderMap, body: Bytes) -> std::result::Result<axum::response::Response, HttpError> {
+    check_token(&headers, &node.inner.token)?;
+    let req: GateOpeningsRequest = parse_body(&body)?;
+    reply(
+        &node
+            .with_agg("gate_reveal", String::new(), vec![], move |agg| Ok((agg.gate_reveal(&req.openings)?, true)))
+            .await?,
+    )
+}
+async fn internal_gate_finish(State(node): State<AggregatorNode>, headers: HeaderMap, body: Bytes) -> std::result::Result<axum::response::Response, HttpError> {
+    check_token(&headers, &node.inner.token)?;
+    let req: GateRevealsRequest = parse_body(&body)?;
+    node.with_agg("gate_finish", String::new(), vec![], move |agg| Ok((agg.gate_finish(&req.reveals)?, true)))
+        .await?;
+    reply(&())
 }

@@ -1211,7 +1211,15 @@ proof. A split-key gated release with `min_batch_size = 3` takes 60 s
 collector, single-group layout); with `k = 3` suppression added, 65 s;
 the two-aggregator count round plus gated release with `k = 3`, 68 s.
 Gate cost grows linearly with `min_batch_size` and `k` (one ciphertext
-multiplication per factor of the product trees). Noise of the released
+multiplication per factor of the product trees). The product consumes its
+factors as they are made, holding at most `⌊log2(len)⌋ + 1` partial
+products at the same depth `⌈log2(len)⌉` (building every factor first took
+33 MiB per factor at depth 28). At the production parameters (64 groups,
+over the network, `fhe-prio3-node loadtest`): the close of a split-key
+batch with `min_batch_size = 3`, `k = 3` takes 226 s (gate 132 s, release
+69 s); with `min_batch_size = 1000`, `k = 100`, 1158 s, of which the gates'
+products take 957 s (1001 and 101 factors, about 0.9 s each), at a resident
+peak of about 6 GiB during the gate. Noise of the released
 ciphertexts (`tests/gate_noise.rs`, `min_batch_size = 100`, `k = 10`):
 808 bits or more below the flooding with honest contributions, 401.7 bits
 with a contribution whose randomness sits at the proof's masking range

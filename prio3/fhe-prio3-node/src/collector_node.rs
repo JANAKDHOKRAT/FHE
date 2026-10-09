@@ -8,6 +8,7 @@
 //! the release is). The release in progress is persisted, so a restarted
 //! collector continues it.
 
+use crate::metrics::{BuildInfo, NodeMetrics};
 use crate::store::Store;
 use crate::wire::*;
 use axum::Router;
@@ -46,6 +47,52 @@ struct Inner {
     pending: Mutex<Option<PendingRelease>>,
     result: Mutex<Option<BatchResult>>,
     token: String,
+    metrics: Arc<NodeMetrics>,
+}
+
+impl Inner {
+    /// Locks one of this node's states; a poisoned lock (a panic in an
+    /// earlier step) also marks the node not ready.
+    fn lock<'a, T>(&self, m: &'a Mutex<T>, what: &str) -> std::result::Result<std::sync::MutexGuard<'a, T>, HttpError> {
+        guard(m, what).inspect_err(|_| self.metrics.set_ready(false))
+    }
+
+    /// Writes entries to the store, recording the commit.
+    fn put(&self, entries: &[(&str, Vec<u8>)]) -> std::result::Result<(), HttpError> {
+        let mut store = self.lock(&self.store, "store")?;
+        let t = std::time::Instant::now();
+        for (k, v) in entries {
+            store.put(k, v)?;
+        }
+        let bytes = entries.iter().map(|(_, v)| v.len()).sum();
+        self.metrics.committed(bytes, t.elapsed(), store.size_bytes().ok());
+        Ok(())
+    }
+}
+
+/// Runs a collector step on the blocking pool: timed (lock wait and step),
+/// counted as failed on an error or a panic, and a panic marks the node not
+/// ready (its locks are poisoned).
+async fn blocking_step<R: Send + 'static>(
+    inner: Arc<Inner>,
+    step: &'static str,
+    f: impl FnOnce(&Inner, &mut crate::metrics::StepTimer) -> std::result::Result<R, HttpError> + Send + 'static,
+) -> std::result::Result<R, HttpError> {
+    let metrics = inner.metrics.clone();
+    let joined = tokio::task::spawn_blocking(move || {
+        let mut timer = inner.metrics.step(step);
+        let r = f(&inner, &mut timer)?;
+        timer.succeeded();
+        Ok(r)
+    })
+    .await;
+    match joined {
+        Ok(r) => r,
+        Err(e) => {
+            metrics.set_ready(false);
+            Err(HttpError(StatusCode::INTERNAL_SERVER_ERROR, format!("task join: {e}")))
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -107,6 +154,15 @@ impl CollectorNode {
                 collector.check_stored_share(share)?;
             }
         }
+        let metrics = NodeMetrics::new(BuildInfo {
+            role: "collector",
+            index: cfg.collector_id as usize,
+            task: Some(&cfg.task),
+        })?;
+        metrics.set_batch_field("shares_received", shares.len() as i64);
+        metrics.set_batch_field("result_ready", result.is_some() as i64);
+        metrics.set_db_size(store.size_bytes()?);
+        metrics.set_ready(true);
         Ok(Self {
             inner: Arc::new(Inner {
                 task: cfg.task,
@@ -118,6 +174,7 @@ impl CollectorNode {
                 pending: Mutex::new(pending),
                 result: Mutex::new(result),
                 token: cfg.token,
+                metrics,
             }),
         })
     }
@@ -138,6 +195,13 @@ impl CollectorNode {
             .route("/v1/gate-finish", post(gate_finish))
             .layer(DefaultBodyLimit::max(GATE_BODY_LIMIT))
             .with_state(self.clone())
+            .merge(crate::metrics::health_routes(self.inner.metrics.clone()))
+            .layer(axum::middleware::from_fn_with_state(self.inner.metrics.clone(), crate::metrics::track))
+    }
+
+    /// This node's metrics (served by [`crate::metrics::serve_metrics`]).
+    pub fn metrics(&self) -> Arc<NodeMetrics> {
+        self.inner.metrics.clone()
     }
 
     pub async fn tls_config(cert: PathBuf, key: PathBuf) -> anyhow::Result<axum_server::tls_rustls::RustlsConfig> {
@@ -188,7 +252,7 @@ async fn receive_share(State(node): State<CollectorNode>, headers: HeaderMap, bo
     if share.collector != inner.collector_id {
         return Err(HttpError(StatusCode::BAD_REQUEST, "share released to another collector".into()));
     }
-    let out: ShareReceipt = tokio::task::spawn_blocking(move || -> std::result::Result<ShareReceipt, HttpError> {
+    let out: ShareReceipt = blocking_step(inner, "receive_share", move |inner, timer| {
         let n = inner.task.num_aggregators;
         if share.aggregator >= n {
             return Err(HttpError(StatusCode::BAD_REQUEST, "aggregator index out of range".into()));
@@ -197,8 +261,9 @@ async fn receive_share(State(node): State<CollectorNode>, headers: HeaderMap, bo
         // store, result. `release_commits` and `release_reveals` take
         // pending then collector then store; taking store before pending
         // here could deadlock against a concurrent release round.
-        let mut pending = guard(&inner.pending, "release")?;
-        let mut shares = guard(&inner.shares, "shares")?;
+        let mut pending = inner.lock(&inner.pending, "release")?;
+        let mut shares = inner.lock(&inner.shares, "shares")?;
+        timer.acquired();
         if let Some(p) = pending.as_ref() {
             // a retried delivery of the same batch: the same checks again
             if p.shares
@@ -218,8 +283,9 @@ async fn receive_share(State(node): State<CollectorNode>, headers: HeaderMap, bo
         let complete = shares.len() + usize::from(!shares.contains_key(&idx)) >= n;
         if !complete {
             // persist first: a share the store does not hold is not held
-            guard(&inner.store, "store")?.put(&share_key, &share_bytes)?;
+            inner.put(&[(share_key.as_str(), share_bytes)])?;
             shares.insert(idx, share);
+            inner.metrics.set_batch_field("shares_received", shares.len() as i64);
             return Ok(ShareReceipt {
                 complete: false,
                 challenge: None,
@@ -232,11 +298,9 @@ async fn receive_share(State(node): State<CollectorNode>, headers: HeaderMap, bo
         let previous = shares.insert(idx, share);
         let built = (|| -> std::result::Result<PendingRelease, HttpError> {
             let all: Vec<AggregateShare> = shares.values().cloned().collect();
-            let collector = guard(&inner.collector, "collector")?;
+            let collector = inner.lock(&inner.collector, "collector")?;
             let p = collector.release_challenge(inner.collector_id as usize, all)?;
-            let mut store = guard(&inner.store, "store")?;
-            store.put(&share_key, &share_bytes)?;
-            store.put("pending", &encode(&p)?)?;
+            inner.put(&[(share_key.as_str(), share_bytes.clone()), ("pending", encode(&p)?)])?;
             Ok(p)
         })();
         let p = match built {
@@ -251,13 +315,13 @@ async fn receive_share(State(node): State<CollectorNode>, headers: HeaderMap, bo
         };
         let challenge = p.challenge.clone();
         *pending = Some(p);
+        inner.metrics.set_batch_field("shares_received", shares.len() as i64);
         Ok(ShareReceipt {
             complete: true,
             challenge: Some(challenge),
         })
     })
-    .await
-    .map_err(|e| HttpError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+    .await?;
     reply(&out)
 }
 
@@ -266,18 +330,18 @@ async fn release_commits(State(node): State<CollectorNode>, headers: HeaderMap, 
     check_token(&headers, &node.inner.token)?;
     let req: ReleaseCommitsRequest = parse_body(&body)?;
     let inner = node.inner.clone();
-    let out = tokio::task::spawn_blocking(move || -> std::result::Result<ReleaseOpening, HttpError> {
-        let mut pending = guard(&inner.pending, "release")?;
+    let out = blocking_step(inner, "release_open", move |inner, timer| {
+        let mut pending = inner.lock(&inner.pending, "release")?;
         let p = pending
             .as_mut()
             .ok_or_else(|| HttpError(StatusCode::CONFLICT, "no release in progress".into()))?;
-        let collector = guard(&inner.collector, "collector")?;
+        let collector = inner.lock(&inner.collector, "collector")?;
+        timer.acquired();
         let opening = collector.release_open(p, req.commits)?;
-        guard(&inner.store, "store")?.put("pending", &encode(&*p)?)?;
+        inner.put(&[("pending", encode(&*p)?)])?;
         Ok(opening)
     })
-    .await
-    .map_err(|e| HttpError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+    .await?;
     reply(&out)
 }
 
@@ -288,8 +352,9 @@ async fn release_reveals(State(node): State<CollectorNode>, headers: HeaderMap, 
     check_token(&headers, &node.inner.token)?;
     let req: ReleaseRevealsRequest = parse_body(&body)?;
     let inner = node.inner.clone();
-    let out = tokio::task::spawn_blocking(move || -> std::result::Result<FinishReceipt, HttpError> {
-        let pending = guard(&inner.pending, "release")?;
+    let out = blocking_step(inner, "release_finish", move |inner, timer| {
+        let pending = inner.lock(&inner.pending, "release")?;
+        timer.acquired();
         let p = pending
             .as_ref()
             .ok_or_else(|| HttpError(StatusCode::CONFLICT, "no release in progress".into()))?;
@@ -311,21 +376,21 @@ async fn release_reveals(State(node): State<CollectorNode>, headers: HeaderMap, 
                 }
             });
         }
-        let r = guard(&inner.collector, "collector")?.release_finish(p, &reveals)?;
-        guard(&inner.store, "store")?.put("result", &encode(&r)?)?;
-        *guard(&inner.result, "result")? = Some(r.clone());
+        let r = inner.lock(&inner.collector, "collector")?.release_finish(p, &reveals)?;
+        inner.put(&[("result", encode(&r)?)])?;
+        *inner.lock(&inner.result, "result")? = Some(r.clone());
+        inner.metrics.set_batch_field("result_ready", 1);
         Ok(FinishReceipt {
             result: if inner.task.collectors.is_empty() { Some(r) } else { None },
         })
     })
-    .await
-    .map_err(|e| HttpError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+    .await?;
     reply(&out)
 }
 
 async fn result(State(node): State<CollectorNode>, headers: HeaderMap) -> std::result::Result<axum::response::Response, HttpError> {
     check_token(&headers, &node.inner.token)?;
-    let r = guard(&node.inner.result, "result")?.clone();
+    let r = node.inner.lock(&node.inner.result, "result")?.clone();
     reply(&r)
 }
 
@@ -336,6 +401,7 @@ async fn result(State(node): State<CollectorNode>, headers: HeaderMap) -> std::r
 async fn gate_step<R: serde::Serialize + Send + 'static>(
     node: CollectorNode,
     headers: HeaderMap,
+    step: &'static str,
     f: impl FnOnce(&mut Collector) -> fhe_prio3::Result<R> + Send + 'static,
 ) -> std::result::Result<axum::response::Response, HttpError> {
     check_token(&headers, &node.inner.token)?;
@@ -343,42 +409,42 @@ async fn gate_step<R: serde::Serialize + Send + 'static>(
         return Err(HttpError(StatusCode::NOT_FOUND, "this task gives the collector no key share".into()));
     }
     let inner = node.inner.clone();
-    let out = tokio::task::spawn_blocking(move || -> std::result::Result<R, HttpError> {
-        let mut collector = guard(&inner.collector, "collector")?;
+    let out = blocking_step(inner, step, move |inner, timer| {
+        let mut collector = inner.lock(&inner.collector, "collector")?;
+        timer.acquired();
         let r = f(&mut collector)?;
-        guard(&inner.store, "store")?.put("gate", &encode(collector.gate_state())?)?;
+        inner.put(&[("gate", encode(collector.gate_state())?)])?;
         Ok(r)
     })
-    .await
-    .map_err(|e| HttpError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+    .await?;
     reply(&out)
 }
 
 async fn gate_start(State(node): State<CollectorNode>, headers: HeaderMap, body: Bytes) -> std::result::Result<axum::response::Response, HttpError> {
     let req: GateStartRequest = parse_body(&body)?;
-    gate_step(node, headers, move |c| c.gate_commit(&req.leader)).await
+    gate_step(node, headers, "gate_commit", move |c| c.gate_commit(&req.leader)).await
 }
 async fn gate_contribute(State(node): State<CollectorNode>, headers: HeaderMap, body: Bytes) -> std::result::Result<axum::response::Response, HttpError> {
     let req: GateCommitsRequest = parse_body(&body)?;
-    gate_step(node, headers, move |c| c.gate_contribute(&req.commits)).await
+    gate_step(node, headers, "gate_contribute", move |c| c.gate_contribute(&req.commits)).await
 }
 async fn gate_share(State(node): State<CollectorNode>, headers: HeaderMap, body: Bytes) -> std::result::Result<axum::response::Response, HttpError> {
     let req: GateContributionsRequest = parse_body(&body)?;
-    gate_step(node, headers, move |c| c.gate_share(&req.contributions)).await
+    gate_step(node, headers, "gate_share", move |c| c.gate_share(&req.contributions)).await
 }
 async fn gate_check_commit(State(node): State<CollectorNode>, headers: HeaderMap, body: Bytes) -> std::result::Result<axum::response::Response, HttpError> {
     let req: GateSharesRequest = parse_body(&body)?;
-    gate_step(node, headers, move |c| c.gate_check_commit(&req.shares)).await
+    gate_step(node, headers, "gate_check_commit", move |c| c.gate_check_commit(&req.shares)).await
 }
 async fn gate_open(State(node): State<CollectorNode>, headers: HeaderMap, body: Bytes) -> std::result::Result<axum::response::Response, HttpError> {
     let req: GateCheckCommitsRequest = parse_body(&body)?;
-    gate_step(node, headers, move |c| c.gate_open(&req.commits)).await
+    gate_step(node, headers, "gate_open", move |c| c.gate_open(&req.commits)).await
 }
 async fn gate_reveal(State(node): State<CollectorNode>, headers: HeaderMap, body: Bytes) -> std::result::Result<axum::response::Response, HttpError> {
     let req: GateOpeningsRequest = parse_body(&body)?;
-    gate_step(node, headers, move |c| c.gate_reveal(&req.openings)).await
+    gate_step(node, headers, "gate_reveal", move |c| c.gate_reveal(&req.openings)).await
 }
 async fn gate_finish(State(node): State<CollectorNode>, headers: HeaderMap, body: Bytes) -> std::result::Result<axum::response::Response, HttpError> {
     let req: GateRevealsRequest = parse_body(&body)?;
-    gate_step(node, headers, move |c| c.gate_finish(&req.reveals)).await
+    gate_step(node, headers, "gate_finish", move |c| c.gate_finish(&req.reveals)).await
 }

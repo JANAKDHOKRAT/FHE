@@ -40,7 +40,7 @@ pub mod verify;
 pub mod wfe;
 pub mod xof;
 
-pub use aggregator::{Aggregator, AggregatorState, Verdict};
+pub use aggregator::{AccumulatorState, Aggregator, AggregatorState, Verdict};
 pub use attest::{AggregatorIdentity, MaterialAttestation};
 pub use auth::{ClientIdentity, ClientRegistry, StaticRegistry};
 pub use client::Client;

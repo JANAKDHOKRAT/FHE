@@ -11,6 +11,8 @@ pub mod aggregator_node;
 pub mod ceremony_node;
 pub mod client;
 pub mod collector_node;
+pub mod loadtest;
+pub mod metrics;
 pub mod router;
 pub mod secret;
 pub mod store;

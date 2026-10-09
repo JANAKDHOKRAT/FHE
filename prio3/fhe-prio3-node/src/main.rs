@@ -89,6 +89,16 @@ enum Cmd {
         #[arg(long)]
         identities_dir: Option<PathBuf>,
     },
+    /// Write the public material a client needs (context, joint public key,
+    /// attestations) without the evaluation keys, which only the
+    /// aggregators use (gigabytes in silent mode). Clients verify the
+    /// attestations of this file as of the full one.
+    ClientMaterial {
+        #[arg(long)]
+        material: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// Write a task configuration file.
     TaskConfig {
         #[arg(long)]
@@ -161,6 +171,10 @@ enum Cmd {
         /// File with one hex-encoded client public key per line (required with auth).
         #[arg(long)]
         clients: Option<PathBuf>,
+        /// Serve Prometheus metrics (`/metrics`) and `/healthz`, `/readyz` on
+        /// this address over plain HTTP. Bind it to a private interface.
+        #[arg(long)]
+        metrics_listen: Option<std::net::SocketAddr>,
     },
     Collector {
         #[arg(long)]
@@ -187,6 +201,55 @@ enum Cmd {
         tls_cert: PathBuf,
         #[arg(long)]
         tls_key: PathBuf,
+        /// Serve Prometheus metrics (`/metrics`) and `/healthz`, `/readyz` on
+        /// this address over plain HTTP. Bind it to a private interface.
+        #[arg(long)]
+        metrics_listen: Option<std::net::SocketAddr>,
+    },
+    /// Load test of a running deployment: `--workers` client threads
+    /// encrypt and submit `--reports` deterministic measurements, the batch
+    /// is closed and the released result compared with the expected one;
+    /// the nodes' metrics are scraped throughout. Writes a JSON report and
+    /// exits non-zero unless the result is exactly the expected one.
+    Loadtest {
+        #[arg(long)]
+        task: PathBuf,
+        #[arg(long)]
+        material: PathBuf,
+        #[arg(long)]
+        leader: String,
+        #[arg(long)]
+        ca: PathBuf,
+        /// Operator token (for the close).
+        #[arg(long)]
+        token: String,
+        #[arg(long)]
+        reports: u64,
+        /// Client threads, one OpenFHE context each (set OMP_NUM_THREADS=1
+        /// for one core per thread). Default: the available cores.
+        #[arg(long)]
+        workers: Option<usize>,
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
+        /// Every n-th report is invalid (a non-bit slot); 0 = none.
+        #[arg(long, default_value_t = 0)]
+        invalid_every: u64,
+        /// A node's metrics listener, `name=http://host:port`, repeatable.
+        #[arg(long = "metrics")]
+        metrics: Vec<String>,
+        #[arg(long, default_value_t = 5)]
+        scrape_every_secs: u64,
+        /// JSON lines of the scrapes.
+        #[arg(long)]
+        timeline: Option<PathBuf>,
+        /// The JSON report.
+        #[arg(long)]
+        out: PathBuf,
+        /// Submit only; leave the batch open.
+        #[arg(long, default_value_t = false)]
+        no_close: bool,
+        #[arg(long, default_value_t = 4 * 3600)]
+        close_timeout_secs: u64,
     },
     /// Submit one measurement to the leader.
     Submit {
@@ -271,6 +334,10 @@ enum Cmd {
         tls_key: PathBuf,
         #[arg(long)]
         ca: PathBuf,
+        /// Serve Prometheus metrics (`/metrics`) and `/healthz`, `/readyz` on
+        /// this address over plain HTTP. Bind it to a private interface.
+        #[arg(long)]
+        metrics_listen: Option<std::net::SocketAddr>,
     },
     /// Submit one measurement through a router.
     SubmitSharded {
@@ -537,6 +604,13 @@ async fn main() -> anyhow::Result<()> {
                 println!("moments: {d}-bit digits for batches of up to {}", cfg.max_batch_size);
             }
         }
+        Cmd::ClientMaterial { material, out } => {
+            let m: PublicMaterial = read(&material)?;
+            let stripped = fhe_prio3_node::router::client_material(&m);
+            drop(m);
+            std::fs::write(&out, encode(&stripped)?)?;
+            println!("wrote {} ({} bytes)", out.display(), std::fs::metadata(&out)?.len());
+        }
         Cmd::Keygen { task, out_dir, identities_dir } => {
             let cfg = read_task(&task)?;
             std::fs::create_dir_all(&out_dir)?;
@@ -579,6 +653,7 @@ async fn main() -> anyhow::Result<()> {
             tls_key,
             ca,
             clients,
+            metrics_listen,
         } => {
             let cfg = read_task(&task)?;
             let material: PublicMaterial = read(&material)?;
@@ -613,11 +688,8 @@ async fn main() -> anyhow::Result<()> {
                 ca_pem: std::fs::read(&ca)?,
             })?;
             let handle = ServerHandle::new();
-            let h2 = handle.clone();
-            tokio::spawn(async move {
-                let _ = tokio::signal::ctrl_c().await;
-                h2.graceful_shutdown(Some(std::time::Duration::from_secs(30)));
-            });
+            run_metrics(node.metrics(), metrics_listen)?;
+            shutdown_on_signal(handle.clone());
             tracing::info!(%listen, index, "aggregator listening");
             let tls = AggregatorNode::tls_config(tls_cert, tls_key).await?;
             node.serve(listen, Some(tls), handle).await?;
@@ -633,9 +705,15 @@ async fn main() -> anyhow::Result<()> {
             token,
             tls_cert,
             tls_key,
+            metrics_listen,
         } => {
             let cfg = read_task(&task)?;
-            let material: PublicMaterial = read(&material)?;
+            // the collector uses the context and the joint public key only:
+            // drop the evaluation keys at once (gigabytes in silent mode) if
+            // it was given the full material instead of `client-material`'s
+            let full: PublicMaterial = read(&material)?;
+            let material = fhe_prio3_node::router::client_material(&full);
+            drop(full);
             let seal_key = match seal_secret {
                 Some(p) => {
                     let b = secret::unseal(b"collector-identity", &std::fs::read(&p)?)?;
@@ -661,9 +739,93 @@ async fn main() -> anyhow::Result<()> {
                 key_share,
             })?;
             let handle = ServerHandle::new();
+            run_metrics(node.metrics(), metrics_listen)?;
+            shutdown_on_signal(handle.clone());
             tracing::info!(%listen, "collector listening");
             let tls = CollectorNode::tls_config(tls_cert, tls_key).await?;
             node.serve(listen, Some(tls), handle).await?;
+        }
+        Cmd::Loadtest {
+            task,
+            material,
+            leader,
+            ca,
+            token,
+            reports,
+            workers,
+            seed,
+            invalid_every,
+            metrics,
+            scrape_every_secs,
+            timeline,
+            out,
+            no_close,
+            close_timeout_secs,
+        } => {
+            let metrics = metrics
+                .iter()
+                .map(|m| {
+                    m.split_once('=')
+                        .map(|(n, u)| (n.to_string(), u.trim_end_matches('/').to_string()))
+                        .ok_or_else(|| anyhow::anyhow!("--metrics takes name=url, got {m}"))
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            let workers = workers.unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1));
+            let report = fhe_prio3_node::loadtest::run(fhe_prio3_node::loadtest::LoadConfig {
+                task: read_task(&task)?,
+                material: read(&material)?,
+                leader,
+                ca_pem: std::fs::read(&ca)?,
+                token,
+                reports,
+                workers,
+                seed,
+                invalid_every,
+                metrics,
+                scrape_every: std::time::Duration::from_secs(scrape_every_secs),
+                timeline,
+                close: !no_close,
+                close_timeout: std::time::Duration::from_secs(close_timeout_secs),
+            })
+            .await?;
+            std::fs::write(&out, serde_json::to_vec_pretty(&report)?)?;
+            println!(
+                "{} reports ({} bytes each) by {} workers in {:.1} s: {:.3} reports/s; accepted {}, rejected {:?}, failed {}, retries {}",
+                report.reports,
+                report.report_bytes,
+                report.workers,
+                report.submit_wall_seconds,
+                report.reports_per_second,
+                report.outcomes.accepted,
+                report.outcomes.rejected,
+                report.outcomes.failed,
+                report.outcomes.retries
+            );
+            for (name, s) in [("encrypt", &report.encrypt), ("submit", &report.submit), ("group", &report.group_ticket)] {
+                println!(
+                    "{name:>8}: mean {:.3} s, p50 {:.3}, p90 {:.3}, p99 {:.3}, p99.9 {:.3}, max {:.3}",
+                    s.mean, s.p50, s.p90, s.p99, s.p999, s.max
+                );
+            }
+            if let Some(c) = report.close_seconds {
+                println!("   close: {c:.1} s");
+            }
+            for (node, p) in &report.peaks {
+                println!(
+                    "{node:>10}: peak resident {:.2} GiB, peak database {:.1} MiB, peak lock waiters {}",
+                    p.resident_memory_bytes / (1u64 << 30) as f64,
+                    p.db_size_bytes / (1u64 << 20) as f64,
+                    p.lock_waiters
+                );
+            }
+            println!("report: {}", out.display());
+            match &report.verdict {
+                Ok(()) => println!("PASS: the released result is exactly the expected one"),
+                Err(e) => {
+                    println!("FAIL: {e}");
+                    std::process::exit(1);
+                }
+            }
         }
         Cmd::Submit {
             task,
@@ -743,6 +905,7 @@ async fn main() -> anyhow::Result<()> {
             tls_cert,
             tls_key,
             ca,
+            metrics_listen,
         } => {
             let leaders: Vec<String> = leaders.split(',').map(|s| s.trim().to_string()).collect();
             let mut shards = Vec::with_capacity(leaders.len());
@@ -763,6 +926,8 @@ async fn main() -> anyhow::Result<()> {
             })?;
             node.verify_leaders(std::time::Duration::from_secs(120)).await?;
             let handle = ServerHandle::new();
+            run_metrics(node.metrics(), metrics_listen)?;
+            shutdown_on_signal(handle.clone());
             tracing::info!(%listen, "router listening");
             let tls = fhe_prio3_node::router::RouterNode::tls_config(tls_cert, tls_key).await?;
             node.serve(listen, Some(tls), handle).await?;
@@ -795,4 +960,42 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Serves the node's metrics on `addr` when given; a listener that cannot
+/// bind stops the node from starting.
+fn run_metrics(m: Arc<fhe_prio3_node::metrics::NodeMetrics>, addr: Option<std::net::SocketAddr>) -> anyhow::Result<()> {
+    if let Some(addr) = addr {
+        let bound = fhe_prio3_node::metrics::spawn_metrics_server(m, addr)?;
+        tracing::info!(%bound, "metrics listening");
+    }
+    Ok(())
+}
+
+/// Graceful shutdown on SIGINT or SIGTERM (what a container runtime sends):
+/// requests in flight get 30 s to finish; every step is committed before it
+/// answers, so an interrupted one is redone after the restart.
+fn shutdown_on_signal(handle: ServerHandle) {
+    tokio::spawn(async move {
+        #[cfg(unix)]
+        {
+            let mut term = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+                Ok(t) => t,
+                Err(e) => {
+                    tracing::error!(error = %e, "cannot listen for SIGTERM; stopping on SIGINT only");
+                    let _ = tokio::signal::ctrl_c().await;
+                    handle.graceful_shutdown(Some(std::time::Duration::from_secs(30)));
+                    return;
+                }
+            };
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = term.recv() => {}
+            }
+        }
+        #[cfg(not(unix))]
+        let _ = tokio::signal::ctrl_c().await;
+        tracing::info!("shutting down");
+        handle.graceful_shutdown(Some(std::time::Duration::from_secs(30)));
+    });
 }

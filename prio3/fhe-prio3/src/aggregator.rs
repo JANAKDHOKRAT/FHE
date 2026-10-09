@@ -186,12 +186,12 @@ pub struct Aggregator {
     admitted: u64,
     pending: HashMap<ReportId, Pending>,
     accepted_ids: Vec<ReportId>,
-    sums: Option<Vec<Ciphertext>>,
+    sums: Tracked<Option<Vec<Ciphertext>>>,
     /// Silent mode: encrypted number of valid reports (slot 0).
-    valid_count_sum: Option<Ciphertext>,
+    valid_count_sum: Tracked<Option<Ciphertext>>,
     /// Post-validation moments: one accumulator per `Layout::moment_terms`
     /// entry, digit products at group 0's element slots `i*D`.
-    moment_sums: Option<Vec<Ciphertext>>,
+    moment_sums: Tracked<Option<Vec<Ciphertext>>>,
     silent_batch: SilentBatch,
     /// See `AggregatorState::silent_finalized`.
     silent_finalized: bool,
@@ -202,9 +202,76 @@ pub struct Aggregator {
     released_aggregate_shares: BTreeMap<u32, AggregateShare>,
     verification: VerificationState,
     /// See `AggregatorState::valid_spread_sum`.
-    valid_spread_sum: Option<Ciphertext>,
+    valid_spread_sum: Tracked<Option<Ciphertext>>,
     gate: crate::gate::GateState,
     rng: OsRng,
+}
+
+/// An accumulator field: every mutable access counts as a change (bumps
+/// `generation`), so [`Aggregator::accumulator_generation`] moves whenever
+/// an accumulator may have changed and a caller persisting them can skip
+/// the write otherwise. Conservative by construction: the compiler routes
+/// every mutation through `DerefMut`.
+struct Tracked<T> {
+    value: T,
+    generation: u64,
+}
+
+impl<T> Tracked<T> {
+    fn new(value: T) -> Self {
+        Self { value, generation: 0 }
+    }
+}
+
+impl<T> std::ops::Deref for Tracked<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.value
+    }
+}
+
+impl<T> std::ops::DerefMut for Tracked<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        self.generation += 1;
+        &mut self.value
+    }
+}
+
+/// The encrypted accumulators of an [`AggregatorState`], which change only
+/// when a verification ciphertext is folded in (silent mode: once per
+/// `silent_batch_groups` reports) or a report is accepted (verdict mode). A
+/// node persists them apart from the rest of the state and only when
+/// [`Aggregator::accumulator_generation`] moved: they are tens of MiB,
+/// the rest is bookkeeping.
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct AccumulatorState {
+    pub sums: Option<Vec<Vec<u8>>>,
+    pub valid_count_sum: Option<Vec<u8>>,
+    pub moment_sums: Option<Vec<Vec<u8>>>,
+    pub valid_spread_sum: Option<Vec<u8>>,
+}
+
+impl AggregatorState {
+    /// Moves the accumulators out: the bookkeeping (accumulators `None`) and
+    /// the accumulators.
+    pub fn split(mut self) -> (AggregatorState, AccumulatorState) {
+        let acc = AccumulatorState {
+            sums: self.sums.take(),
+            valid_count_sum: self.valid_count_sum.take(),
+            moment_sums: self.moment_sums.take(),
+            valid_spread_sum: self.valid_spread_sum.take(),
+        };
+        (self, acc)
+    }
+
+    /// Puts accumulators stored apart back (the inverse of [`Self::split`]).
+    pub fn with_accumulators(mut self, acc: AccumulatorState) -> Self {
+        self.sums = acc.sums;
+        self.valid_count_sum = acc.valid_count_sum;
+        self.moment_sums = acc.moment_sums;
+        self.valid_spread_sum = acc.valid_spread_sum;
+        self
+    }
 }
 
 impl Aggregator {
@@ -261,9 +328,9 @@ impl Aggregator {
             admitted: 0,
             pending: HashMap::new(),
             accepted_ids: Vec::new(),
-            sums: None,
-            valid_count_sum: None,
-            moment_sums: None,
+            sums: Tracked::new(None),
+            valid_count_sum: Tracked::new(None),
+            moment_sums: Tracked::new(None),
             silent_batch: SilentBatch::new(),
             silent_finalized: false,
             valid_count: None,
@@ -271,15 +338,15 @@ impl Aggregator {
             released_count_share: None,
             released_aggregate_shares: BTreeMap::new(),
             verification: VerificationState::default(),
-            valid_spread_sum: None,
+            valid_spread_sum: Tracked::new(None),
             gate: crate::gate::GateState::default(),
             rng: OsRng,
         })
     }
 
     fn add_to_moments(&mut self, products: Vec<Ciphertext>) -> Result<()> {
-        match &mut self.moment_sums {
-            None => self.moment_sums = Some(products),
+        match &mut *self.moment_sums {
+            None => *self.moment_sums = Some(products),
             Some(acc) => {
                 for (a, p) in acc.iter_mut().zip(&products) {
                     *a = self.ctx.add(a, p)?;
@@ -421,8 +488,8 @@ impl Aggregator {
     }
 
     fn add_to_sums(&mut self, chunks: Vec<Ciphertext>) -> Result<()> {
-        match &mut self.sums {
-            None => self.sums = Some(chunks),
+        match &mut *self.sums {
+            None => *self.sums = Some(chunks),
             Some(sums) => {
                 for (acc, ct) in sums.iter_mut().zip(&chunks) {
                     *acc = self.ctx.add(acc, ct)?;
@@ -811,13 +878,13 @@ impl Aggregator {
         self.add_to_sums(y)?;
         if self.cfg.collector_holds_key() {
             let spread = self.circuit.spread_of_groups(&g, &groups)?;
-            self.valid_spread_sum = Some(match self.valid_spread_sum.take() {
+            *self.valid_spread_sum = Some(match self.valid_spread_sum.take() {
                 None => spread,
                 Some(acc) => self.ctx.add(&acc, &spread)?,
             });
         }
         let cnt = self.circuit.count_of_groups(&g, &groups)?;
-        self.valid_count_sum = Some(match self.valid_count_sum.take() {
+        *self.valid_count_sum = Some(match self.valid_count_sum.take() {
             None => cnt,
             Some(acc) => self.ctx.add(&acc, &cnt)?,
         });
@@ -833,18 +900,20 @@ impl Aggregator {
             self.silent_finalized = true;
             return Ok(());
         }
-        if let Some(sums) = &mut self.sums {
+        if let Some(sums) = &mut *self.sums {
             for (c, ct) in sums.iter_mut().enumerate() {
                 *ct = self.circuit.finalize_chunk(ct, c)?;
             }
         }
-        if let Some(ct) = &self.valid_count_sum {
-            self.valid_count_sum = Some(self.circuit.finalize_count(ct)?);
+        if let Some(ct) = &*self.valid_count_sum {
+            let f = self.circuit.finalize_count(ct)?;
+            *self.valid_count_sum = Some(f);
         }
-        if let Some(ct) = &self.valid_spread_sum {
-            self.valid_spread_sum = Some(self.circuit.finalize_spread(ct)?);
+        if let Some(ct) = &*self.valid_spread_sum {
+            let f = self.circuit.finalize_spread(ct)?;
+            *self.valid_spread_sum = Some(f);
         }
-        if let Some(m) = &mut self.moment_sums {
+        if let Some(m) = &mut *self.moment_sums {
             for (ct, t) in m.iter_mut().zip(self.layout.moment_terms()) {
                 *ct = self.circuit.finalize_moment(ct, t)?;
             }
@@ -859,26 +928,61 @@ impl Aggregator {
         self.silent_batch.reports.len()
     }
 
+    /// Ids of the reports in the current, not yet flushed, verification
+    /// ciphertext: the only client reports a restart needs
+    /// ([`AggregatorState::silent_pending`]). Once flushed, a report lives
+    /// on only inside the accumulators and its bytes can be discarded.
+    pub fn silent_pending_ids(&self) -> impl Iterator<Item = &ReportId> {
+        self.silent_batch.reports.iter().map(|(_, id)| id)
+    }
+
     /// Serializes the resumable state (see [`AggregatorState`]).
     /// The accumulators are this aggregator's own objects, written to and
     /// read back from its own database, so they keep OpenFHE's format;
     /// nothing in the snapshot comes from another party except the stored
     /// client reports, which `restore` decodes through the packed codec.
     pub fn snapshot(&self) -> Result<AggregatorState> {
+        Ok(self.snapshot_bookkeeping()?.with_accumulators(self.snapshot_accumulators()?))
+    }
+
+    /// Changes whenever an accumulator may have changed (every mutable
+    /// access counts). A node that persisted the accumulators at generation
+    /// `g` need not write them again while this returns `g`.
+    pub fn accumulator_generation(&self) -> u64 {
+        self.sums.generation + self.valid_count_sum.generation + self.moment_sums.generation + self.valid_spread_sum.generation
+    }
+
+    /// The accumulators of [`Self::snapshot`] alone.
+    pub fn snapshot_accumulators(&self) -> Result<AccumulatorState> {
         let ser = |v: &Vec<Ciphertext>| -> Result<Vec<Vec<u8>>> { v.iter().map(|c| c.serialize().map_err(Into::into)).collect() };
-        Ok(AggregatorState {
-            sums: match &self.sums {
+        Ok(AccumulatorState {
+            sums: match &*self.sums {
                 Some(v) => Some(ser(v)?),
                 None => None,
             },
-            valid_count_sum: match &self.valid_count_sum {
+            valid_count_sum: match &*self.valid_count_sum {
                 Some(c) => Some(c.serialize()?),
                 None => None,
             },
-            moment_sums: match &self.moment_sums {
+            moment_sums: match &*self.moment_sums {
                 Some(v) => Some(ser(v)?),
                 None => None,
             },
+            valid_spread_sum: match &*self.valid_spread_sum {
+                Some(c) => Some(c.serialize()?),
+                None => None,
+            },
+        })
+    }
+
+    /// [`Self::snapshot`] without the accumulators (`None`): what changes
+    /// with every report. Restore it with the accumulators stored apart
+    /// ([`AggregatorState::with_accumulators`]).
+    pub fn snapshot_bookkeeping(&self) -> Result<AggregatorState> {
+        Ok(AggregatorState {
+            sums: None,
+            valid_count_sum: None,
+            moment_sums: None,
             silent_pending: self.silent_batch.reports.clone(),
             silent_finalized: self.silent_finalized,
             accepted_ids: self.accepted_ids.clone(),
@@ -890,10 +994,7 @@ impl Aggregator {
             released_count_share: self.released_count_share.clone(),
             released_aggregate_shares: self.released_aggregate_shares.clone(),
             verification: self.verification.clone(),
-            valid_spread_sum: match &self.valid_spread_sum {
-                Some(c) => Some(c.serialize()?),
-                None => None,
-            },
+            valid_spread_sum: None,
             gate: self.gate.clone(),
         })
     }
@@ -931,15 +1032,15 @@ impl Aggregator {
             }
         }
         let de = |v: &Vec<Vec<u8>>| -> Result<Vec<Ciphertext>> { v.iter().map(|b| self.ctx.deserialize_ciphertext(b).map_err(Into::into)).collect() };
-        self.sums = match &st.sums {
+        *self.sums = match &st.sums {
             Some(v) => Some(de(v)?),
             None => None,
         };
-        self.valid_count_sum = match &st.valid_count_sum {
+        *self.valid_count_sum = match &st.valid_count_sum {
             Some(b) => Some(self.ctx.deserialize_ciphertext(b)?),
             None => None,
         };
-        self.moment_sums = match &st.moment_sums {
+        *self.moment_sums = match &st.moment_sums {
             // the accumulator count follows the task's digit width; a state
             // written under another decomposition cannot be continued
             Some(v) if v.len() != self.layout.moment_terms().len() => {
@@ -982,7 +1083,7 @@ impl Aggregator {
         self.released_count_share = st.released_count_share;
         self.released_aggregate_shares = st.released_aggregate_shares;
         self.verification = st.verification;
-        self.valid_spread_sum = match &st.valid_spread_sum {
+        *self.valid_spread_sum = match &st.valid_spread_sum {
             Some(b) => Some(self.ctx.deserialize_ciphertext(b)?),
             None => None,
         };
@@ -1448,7 +1549,7 @@ impl Aggregator {
         for k in self.cfg.collector_chunks(&self.layout, collector) {
             out.push(sums[k].try_clone()?);
         }
-        if let Some(ct) = &self.valid_count_sum {
+        if let Some(ct) = &*self.valid_count_sum {
             out.push(ct.try_clone()?);
         }
         let pairs = self.cfg.collector_moment_pairs(collector)?;

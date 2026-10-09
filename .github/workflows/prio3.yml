@@ -6,8 +6,9 @@ name: prio3
 # format parser (5 minutes per target on each change, one hour per target
 # nightly). Gates on every change: rustfmt (prio3/rustfmt.toml), clippy with
 # warnings denied on every target, cargo-deny (RustSec advisories, licenses,
-# duplicate and wildcard versions, sources; prio3/deny.toml), and line
-# coverage of the protocol crate's fast suites above a measured floor.
+# duplicate and wildcard versions, sources; prio3/deny.toml), line
+# coverage of the protocol crate's fast suites above a measured floor, and
+# the nodes' Prometheus alerting rules (checked and unit-tested by promtool).
 # Nightly and on demand: the OpenFHE pin is checked against upstream (tag
 # still at the pinned commit, no advisory published after the pinned
 # release, pin is the latest release; .github/scripts/openfhe-pin-check.sh).
@@ -193,6 +194,33 @@ jobs:
       - name: clippy
         working-directory: prio3/${{ matrix.crate }}
         run: cargo clippy --release --locked --all-targets -- -D warnings
+
+  # The nodes' alerting rules: syntax (`promtool check rules`, and the
+  # example scrape configuration), and every rule against series that must
+  # fire it and series that must not (`promtool test rules`). promtool is
+  # the release binary, checked against the release's published SHA-256.
+  alert-rules:
+    name: alert rules
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      PROMETHEUS_VERSION: "3.5.0"
+    steps:
+      - uses: actions/checkout@v4
+      - name: install promtool
+        run: |
+          base="https://github.com/prometheus/prometheus/releases/download/v${PROMETHEUS_VERSION}"
+          tarball="prometheus-${PROMETHEUS_VERSION}.linux-amd64.tar.gz"
+          curl -fsSLO "$base/$tarball"
+          curl -fsSL "$base/sha256sums.txt" | grep " ${tarball}\$" | sha256sum -c -
+          tar xzf "$tarball"
+          echo "$PWD/prometheus-${PROMETHEUS_VERSION}.linux-amd64" >> "$GITHUB_PATH"
+      - name: check
+        working-directory: prio3/fhe-prio3-node/deploy/prometheus
+        run: |
+          promtool check rules alerts.yml
+          promtool check config prometheus.yml
+          promtool test rules alerts.test.yml
 
   # RustSec advisories, licenses, duplicate and wildcard versions, sources,
   # against prio3/deny.toml, for each crate's own lockfile.

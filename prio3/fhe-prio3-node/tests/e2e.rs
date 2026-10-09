@@ -6,6 +6,8 @@ use fhe_prio3::*;
 use fhe_prio3_node::aggregator_node::{AggregatorNode, AggregatorNodeConfig};
 use fhe_prio3_node::client::NetworkClient;
 use fhe_prio3_node::collector_node::{CollectorNode, CollectorNodeConfig};
+use fhe_prio3_node::metrics::spawn_metrics_server;
+use fhe_prio3_node::store::Store;
 use fhe_prio3_node::wire::{ServerHandle, SubmitOutcome, http_get, http_post, https_client};
 use std::net::{SocketAddr, TcpListener};
 use std::path::PathBuf;
@@ -59,6 +61,54 @@ struct Cluster {
     seal_keys: Vec<CollectorSealKey>,
     token: String,
     handles: Vec<ServerHandle>,
+    /// Metrics listener of each node's latest start.
+    agg_metrics: Vec<Option<SocketAddr>>,
+    col_metrics: Vec<Option<SocketAddr>>,
+}
+
+/// One scrape of a node's `/metrics`: (series name, labels, value).
+struct Scrape(Vec<(String, std::collections::BTreeMap<String, String>, f64)>);
+
+impl Scrape {
+    async fn of(addr: SocketAddr) -> Self {
+        let text = reqwest::get(format!("http://{addr}/metrics")).await.unwrap().text().await.unwrap();
+        let mut out = Vec::new();
+        for line in text.lines().filter(|l| !l.starts_with('#') && !l.is_empty()) {
+            let (series, value) = line.rsplit_once(' ').unwrap();
+            let value: f64 = value.parse().unwrap();
+            let (name, labels) = match series.split_once('{') {
+                None => (series.to_string(), Default::default()),
+                Some((n, rest)) => {
+                    let mut labels = std::collections::BTreeMap::new();
+                    let body = rest.strip_suffix('}').unwrap();
+                    // label values here never contain `",`
+                    for pair in body.split("\",").filter(|p| !p.is_empty()) {
+                        let (k, v) = pair.split_once("=\"").unwrap();
+                        labels.insert(k.to_string(), v.trim_end_matches('"').to_string());
+                    }
+                    (n.to_string(), labels)
+                }
+            };
+            out.push((name, labels, value));
+        }
+        Scrape(out)
+    }
+
+    /// The value of the series with exactly these labels (0 when absent:
+    /// a labelled counter has no series until its first increment).
+    fn get(&self, name: &str, labels: &[(&str, &str)]) -> f64 {
+        let want: std::collections::BTreeMap<String, String> = labels.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        self.0.iter().find(|(n, l, _)| n == name && *l == want).map(|(_, _, v)| *v).unwrap_or(0.0)
+    }
+
+    /// Sum over every series of `name` whose labels include these.
+    fn sum(&self, name: &str, labels: &[(&str, &str)]) -> f64 {
+        self.0
+            .iter()
+            .filter(|(n, l, _)| n == name && labels.iter().all(|(k, v)| l.get(*k).map(String::as_str) == Some(*v)))
+            .map(|(_, _, v)| *v)
+            .sum()
+    }
 }
 
 impl Cluster {
@@ -79,6 +129,7 @@ impl Cluster {
         let col_ports: Vec<u16> = (0..task.num_collectors()).map(|_| free_port()).collect();
         let agg_urls = agg_ports.iter().map(|p| format!("https://localhost:{p}")).collect();
         let col_urls = col_ports.iter().map(|p| format!("https://localhost:{p}")).collect();
+        let num_collectors = task.num_collectors();
         Self {
             dir,
             tls,
@@ -93,6 +144,8 @@ impl Cluster {
             seal_keys,
             token: "t0k3n".into(),
             handles: Vec::new(),
+            agg_metrics: vec![None; n],
+            col_metrics: vec![None; num_collectors],
         }
     }
 
@@ -111,8 +164,22 @@ impl Cluster {
         }
     }
 
+    /// Client reports stored in each aggregator's database.
+    fn stored_reports(&self) -> Vec<usize> {
+        (0..self.task.num_aggregators)
+            .map(|i| {
+                Store::open(&self.dir.path().join(format!("agg{i}.db")))
+                    .unwrap()
+                    .names_with_prefix("report:")
+                    .unwrap()
+                    .len()
+            })
+            .collect()
+    }
+
     async fn start_aggregator(&mut self, i: usize) {
         let node = AggregatorNode::new(self.agg_config(i)).unwrap();
+        self.agg_metrics[i] = Some(spawn_metrics_server(node.metrics(), "127.0.0.1:0".parse().unwrap()).unwrap());
         let handle = ServerHandle::new();
         let addr: SocketAddr = format!("127.0.0.1:{}", self.agg_ports[i]).parse().unwrap();
         let tls = AggregatorNode::tls_config(self.tls.cert.clone(), self.tls.key.clone())
@@ -144,6 +211,7 @@ impl Cluster {
             key_share: self.collector_share.clone(),
         })
         .unwrap();
+        self.col_metrics[c] = Some(spawn_metrics_server(node.metrics(), "127.0.0.1:0".parse().unwrap()).unwrap());
         let handle = ServerHandle::new();
         let addr: SocketAddr = format!("127.0.0.1:{}", self.col_ports[c]).parse().unwrap();
         let tls = CollectorNode::tls_config(self.tls.cert.clone(), self.tls.key.clone())
@@ -275,11 +343,56 @@ async fn verdict_count_over_tls_with_leader_restart() {
         Ok(_) => panic!("internal endpoint accepted a wrong token"),
     }
 
+    // The leader's and the helper's metrics count each outcome above.
+    let leader = Scrape::of(c.agg_metrics[0].unwrap()).await;
+    let helper = Scrape::of(c.agg_metrics[1].unwrap()).await;
+    assert_eq!(leader.get("fhe_prio3_reports_total", &[("outcome", "accepted"), ("reason", "none")]), 3.0);
+    for reason in ["ValidityCheckFailed", "Replay", "WrongTask"] {
+        assert_eq!(
+            leader.get("fhe_prio3_reports_total", &[("outcome", "rejected"), ("reason", reason)]),
+            1.0,
+            "{reason}"
+        );
+    }
+    // the undecodable body and the one with a trailing byte
+    assert_eq!(leader.get("fhe_prio3_reports_total", &[("outcome", "error"), ("reason", "Undecodable")]), 2.0);
+    assert_eq!(leader.get("fhe_prio3_http_requests_total", &[("route", "/v1/submit"), ("status", "400")]), 2.0);
+    assert_eq!(leader.get("fhe_prio3_http_requests_total", &[("route", "/v1/close"), ("status", "401")]), 1.0);
+    assert_eq!(helper.get("fhe_prio3_http_requests_total", &[("route", "/v1/group"), ("status", "404")]), 1.0);
+    assert_eq!(
+        helper.get("fhe_prio3_http_requests_total", &[("route", "/v1/count-share"), ("status", "401")]),
+        1.0
+    );
+    // a verdict-mode report is five rounds with the helper
+    for (route, n) in [
+        ("/v1/report", 4.0),
+        ("/v1/mask-commits", 4.0),
+        ("/v1/masks", 4.0),
+        ("/v1/commits", 4.0),
+        ("/v1/verifiers", 4.0),
+    ] {
+        assert_eq!(
+            helper.get("fhe_prio3_http_requests_total", &[("route", route), ("status", "200")]),
+            n,
+            "{route}"
+        );
+    }
+
     // Restart the leader from its database: three accepted reports so far.
     // (handles: [collector, aggregator 0, aggregator 1])
+    // Verdict mode adds an accepted report to the sums at once, so no
+    // report is stored. A report row no restore needs (an earlier build
+    // stored every accepted report) is deleted when the node starts.
     c.handles[1].shutdown();
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    assert_eq!(c.stored_reports(), vec![0, 0]);
+    Store::open(&c.dir.path().join("agg0.db"))
+        .unwrap()
+        .put(&format!("report:{}", hex::encode([7u8; 32])), &[1, 2, 3])
+        .unwrap();
+    assert_eq!(c.stored_reports(), vec![1, 0]);
     c.start_aggregator(0).await;
+    assert_eq!(c.stored_reports(), vec![0, 0]);
     let st: fhe_prio3_node::wire::StatusReply = http_get(&http, &format!("{}/v1/status", c.agg_urls[0]), None).await.unwrap();
     assert_eq!((st.accepted, st.closed), (3, false));
 
@@ -302,15 +415,97 @@ async fn silent_batched_sum_over_tls() {
     let mut c = Cluster::new(task);
     c.start_all().await;
     let client = c.client();
-    for v in [51u64, 49, 100] {
+    // A stored report is kept only while its verification ciphertext is
+    // open (restore rebuilds that ciphertext from it); two groups, so every
+    // second report flushes the pair and both rows go, on every aggregator.
+    for (v, kept) in [(51u64, 1usize), (49, 0), (100, 1)] {
         assert_eq!(client.submit(&Measurement::Sum(v)).await.unwrap(), SubmitOutcome::Accepted);
+        assert_eq!(c.stored_reports(), vec![kept; 2], "after submitting {v}");
     }
     // invalid (a non-bit slot claiming 101) report is admitted and contributes zero
     let bad = vec![0u64, 0, 0, 0, 0, 2, 1];
     let r = client.inner().shard_raw_elements_in_group(&[bad], 1).unwrap();
     assert_eq!(client.submit_report(&r).await.unwrap(), SubmitOutcome::Accepted);
+    assert_eq!(c.stored_reports(), vec![0, 0]);
     let r = c.close().await.unwrap();
     assert_eq!((r.aggregate, r.report_count, r.valid_count), (AggregateResult::Sum(200), 4, 3));
+
+    // What each node's /metrics says about this batch, exactly.
+    let leader = Scrape::of(c.agg_metrics[0].unwrap()).await;
+    let helper = Scrape::of(c.agg_metrics[1].unwrap()).await;
+    let collector = Scrape::of(c.col_metrics[0].unwrap()).await;
+    let h = c.agg_urls[1].as_str();
+    // silent mode admits the invalid report too (it is zeroed under encryption)
+    assert_eq!(leader.get("fhe_prio3_reports_total", &[("outcome", "accepted"), ("reason", "none")]), 4.0);
+    assert_eq!(leader.sum("fhe_prio3_reports_total", &[("outcome", "rejected")]), 0.0);
+    assert_eq!(leader.get("fhe_prio3_http_requests_total", &[("route", "/v1/submit"), ("status", "200")]), 4.0);
+    assert_eq!(leader.get("fhe_prio3_http_requests_total", &[("route", "/v1/group"), ("status", "200")]), 3.0);
+    assert_eq!(leader.get("fhe_prio3_http_requests_total", &[("route", "/v1/close"), ("status", "200")]), 1.0);
+    assert_eq!(leader.get("fhe_prio3_step_duration_seconds_count", &[("step", "silent_admit")]), 4.0);
+    assert_eq!(helper.get("fhe_prio3_step_duration_seconds_count", &[("step", "silent_admit")]), 4.0);
+    assert_eq!(
+        leader.get("fhe_prio3_peer_requests_total", &[("outcome", "ok"), ("peer", h), ("route", "/v1/report")]),
+        4.0
+    );
+    assert_eq!(leader.sum("fhe_prio3_peer_requests_total", &[("outcome", "error")]), 0.0);
+    assert_eq!(helper.get("fhe_prio3_http_requests_total", &[("route", "/v1/report"), ("status", "200")]), 4.0);
+    for route in ["/v1/count-share", "/v1/count-commit", "/v1/count-open", "/v1/count-reveal", "/v1/count-finish"] {
+        assert_eq!(
+            helper.get("fhe_prio3_http_requests_total", &[("route", route), ("status", "200")]),
+            1.0,
+            "{route}"
+        );
+    }
+    for phase in ["close", "count", "release"] {
+        assert_eq!(leader.get("fhe_prio3_phase_duration_seconds_count", &[("phase", phase)]), 1.0, "{phase}");
+    }
+    assert_eq!(leader.sum("fhe_prio3_phase_failures_total", &[]), 0.0);
+    assert_eq!(leader.get("fhe_prio3_batch", &[("field", "accepted")]), 4.0);
+    assert_eq!(leader.get("fhe_prio3_batch", &[("field", "pending")]), 0.0);
+    assert_eq!(leader.get("fhe_prio3_batch", &[("field", "closed")]), 1.0);
+    for node in [&leader, &helper, &collector] {
+        assert_eq!(node.sum("fhe_prio3_step_failures_total", &[]), 0.0);
+        assert_eq!(node.get("fhe_prio3_lock_waiters", &[]), 0.0);
+        assert_eq!(node.get("fhe_prio3_step_active_since_timestamp_seconds", &[]), 0.0);
+        assert_eq!(node.get("fhe_prio3_http_requests_in_flight", &[]), 0.0);
+        assert!(node.get("fhe_prio3_db_written_bytes_total", &[]) > 0.0);
+        assert!(node.get("fhe_prio3_db_size_bytes", &[]) > 0.0);
+        assert!(node.get("fhe_prio3_last_progress_timestamp_seconds", &[]) >= node.get("fhe_prio3_start_time_seconds", &[]));
+        assert!(node.get("process_resident_memory_bytes", &[]) > 0.0);
+    }
+    assert_eq!(collector.get("fhe_prio3_batch", &[("field", "shares_received")]), 2.0);
+    assert_eq!(collector.get("fhe_prio3_batch", &[("field", "result_ready")]), 1.0);
+    assert_eq!(
+        collector.get("fhe_prio3_http_requests_total", &[("route", "/v1/aggregate-share"), ("status", "200")]),
+        2.0
+    );
+    assert_eq!(
+        collector.get("fhe_prio3_http_requests_total", &[("route", "/v1/release-reveals"), ("status", "200")]),
+        1.0
+    );
+    assert_eq!(
+        collector.get(
+            "fhe_prio3_build_info",
+            &[
+                ("version", env!("CARGO_PKG_VERSION")),
+                ("role", "collector"),
+                ("index", "0"),
+                ("task_id", &hex::encode([10u8; 32])),
+                ("mode", "Silent"),
+                ("topology", "Aggregators"),
+            ]
+        ),
+        1.0
+    );
+    // health on the public listener and on the metrics listener
+    let http = https_client(&c.tls.ca_pem).unwrap();
+    for url in [&c.agg_urls[0], &c.agg_urls[1], &c.col_urls[0]] {
+        for path in ["/healthz", "/readyz"] {
+            assert_eq!(http.get(format!("{url}{path}")).send().await.unwrap().status().as_u16(), 200, "{url}{path}");
+        }
+    }
+    let ready = reqwest::get(format!("http://{}/readyz", c.agg_metrics[0].unwrap())).await.unwrap();
+    assert_eq!(ready.status().as_u16(), 200);
     c.stop_all();
 }
 

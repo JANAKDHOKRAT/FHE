@@ -4,6 +4,7 @@
 //! combines their results for the operator. It holds no key material and
 //! never sees a ciphertext.
 
+use crate::metrics::{BuildInfo, NodeMetrics};
 use crate::wire::*;
 use axum::Router;
 use axum::body::Bytes;
@@ -45,6 +46,7 @@ struct Inner {
     token: String,
     http: reqwest::Client,
     next: AtomicU64,
+    metrics: Arc<NodeMetrics>,
 }
 
 #[derive(Clone)]
@@ -84,6 +86,15 @@ impl RouterNode {
                 token: cfg.token,
                 http: https_client(&cfg.ca_pem)?,
                 next: AtomicU64::new(0),
+                metrics: {
+                    let m = NodeMetrics::new(BuildInfo {
+                        role: "router",
+                        index: 0,
+                        task: None,
+                    })?;
+                    m.set_ready(true);
+                    m
+                },
             }),
         })
     }
@@ -132,6 +143,13 @@ impl RouterNode {
             .route("/v1/close-all", post(close_all))
             .layer(DefaultBodyLimit::max(1 << 20))
             .with_state(self.clone())
+            .merge(crate::metrics::health_routes(self.inner.metrics.clone()))
+            .layer(axum::middleware::from_fn_with_state(self.inner.metrics.clone(), crate::metrics::track))
+    }
+
+    /// This node's metrics (served by [`crate::metrics::serve_metrics`]).
+    pub fn metrics(&self) -> Arc<NodeMetrics> {
+        self.inner.metrics.clone()
     }
 
     pub async fn tls_config(cert: PathBuf, key: PathBuf) -> anyhow::Result<axum_server::tls_rustls::RustlsConfig> {
@@ -202,9 +220,21 @@ async fn shard_material(State(node): State<RouterNode>, Path(i): Path<u32>) -> s
 /// whole call; nothing partial is returned.
 async fn close_all(State(node): State<RouterNode>, headers: HeaderMap, _body: Bytes) -> std::result::Result<axum::response::Response, HttpError> {
     check_token(&headers, &node.inner.token)?;
+    let m = &node.inner.metrics;
+    let started = std::time::Instant::now();
+    let r = close_shards(&node).await;
+    m.phase("close_all", started.elapsed(), r.is_ok());
+    reply(&r?)
+}
+
+async fn close_shards(node: &RouterNode) -> std::result::Result<BatchResult, HttpError> {
+    let m = &node.inner.metrics;
     let mut results = Vec::with_capacity(node.inner.shards.len());
     for s in &node.inner.shards {
-        let r: CloseReply = http_post(&node.inner.http, &format!("{}/v1/close", s.leader), Some(&node.inner.token), &()).await?;
+        let t = std::time::Instant::now();
+        let r: anyhow::Result<CloseReply> = http_post(&node.inner.http, &format!("{}/v1/close", s.leader), Some(&node.inner.token), &()).await;
+        m.peer(&s.leader, "/v1/close", t.elapsed(), r.is_ok());
+        let r = r?;
         let r = r.result.ok_or_else(|| {
             HttpError(
                 StatusCode::BAD_REQUEST,
@@ -213,6 +243,5 @@ async fn close_all(State(node): State<RouterNode>, headers: HeaderMap, _body: By
         })?;
         results.push(r);
     }
-    let combined = combine_results(&results)?;
-    reply(&combined)
+    Ok(combine_results(&results)?)
 }

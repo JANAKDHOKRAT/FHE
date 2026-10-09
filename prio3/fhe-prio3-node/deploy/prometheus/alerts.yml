@@ -1,0 +1,222 @@
+# Alerting rules for fhe-prio3 nodes (aggregators, collectors, routers).
+#
+# Scrape every node's metrics listener (`--metrics-listen`) in a job whose
+# name starts with `fhe-prio3-` (see prometheus.yml next to this file).
+# Every series is described in src/metrics.rs; `promtool test rules
+# alerts.test.yml` checks each rule against synthetic series, and a unit
+# test checks that every series a rule names is one the nodes export.
+#
+# Thresholds come from the measured runs in README.md ("Load test", one
+# 4-vCPU machine): a silent-mode admission averages 0.80 s of state-lock
+# time, a database commit 0.18 s, a node's resident memory peaks at 9.2 GiB
+# (key loading), and the longest single step, the release gates' products
+# at min_batch_size 1000, took 957 s; it grows linearly with the
+# thresholds. The thresholds leave a wide margin above those measurements;
+# tune them to your hardware from your own `loadtest` run.
+
+groups:
+  - name: fhe-prio3-availability
+    rules:
+      - alert: FhePrio3NodeDown
+        expr: up{job=~"fhe-prio3-.*"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.job }} {{ $labels.instance }} is not answering scrapes"
+          description: >-
+            The metrics listener has not answered for 2 minutes. Clients
+            cannot submit to a down leader, and a down helper or key-holding
+            collector stops every close.
+
+      - alert: FhePrio3NodeNotReady
+        expr: fhe_prio3_ready == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.instance }} is up but not ready"
+          description: >-
+            A panic poisoned the node's state; it refuses every protocol step
+            until restarted. Restart it: it resumes from its last committed
+            step (SQLite snapshot).
+
+  - name: fhe-prio3-progress
+    rules:
+      - alert: FhePrio3StepStuck
+        expr: >-
+          fhe_prio3_step_active_since_timestamp_seconds > 0
+          and (time() - fhe_prio3_step_active_since_timestamp_seconds) > 3600
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.instance }}: one protocol step has held the state lock for over an hour"
+          description: >-
+            The longest step measured, the release gates' products at
+            min_batch_size 1000, took 16 minutes on 4 vCPUs (it grows
+            linearly with the thresholds: raise this alert's threshold for
+            larger ones). The node is stuck inside a homomorphic step or a
+            database commit; every other request queues behind it.
+
+      - alert: FhePrio3QueueNoProgress
+        expr: >-
+          fhe_prio3_lock_waiters > 0
+          and (time() - fhe_prio3_last_progress_timestamp_seconds) > 1800
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.instance }}: requests are queued but nothing was committed for 30 minutes"
+          description: >-
+            {{ $value }} request(s) wait for the state lock and the node has
+            committed no state change for 30 minutes.
+
+      - alert: FhePrio3QueueBacklog
+        expr: fhe_prio3_lock_waiters > 32
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.instance }}: {{ $value }} requests waiting for the state lock"
+          description: >-
+            Clients submit faster than the node admits reports (one at a
+            time per node). Add aggregator sets (sharding) or slow clients
+            down; submissions will start timing out.
+
+      - alert: FhePrio3CollectorReleaseStalled
+        expr: >-
+          fhe_prio3_batch{field="shares_received"} > 0
+          and on(instance) fhe_prio3_batch{field="result_ready"} == 0
+          and on(instance) (time() - fhe_prio3_last_progress_timestamp_seconds) > 3600
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.instance }}: a release started but no result for an hour"
+          description: >-
+            The collector holds aggregate shares but has not finished the
+            verified release. Check the leader's close (phase failures) and
+            the peers' errors.
+
+  - name: fhe-prio3-latency
+    rules:
+      - alert: FhePrio3SlowReportAdmission
+        expr: >-
+          (
+            rate(fhe_prio3_step_duration_seconds_sum{step="silent_admit"}[15m])
+            / rate(fhe_prio3_step_duration_seconds_count{step="silent_admit"}[15m])
+          ) > 5
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.instance }}: report admission averages {{ $value | humanizeDuration }}"
+          description: >-
+            The mean time of a silent-mode admission (including the batch
+            verification every `silent_batch_groups` reports) is far above
+            the measured one. The machine is overloaded (CPU, memory
+            pressure) or its disk is slow (see
+            fhe_prio3_db_commit_duration_seconds).
+
+      - alert: FhePrio3SlowDatabaseCommits
+        expr: >-
+          (
+            rate(fhe_prio3_db_commit_duration_seconds_sum[15m])
+            / rate(fhe_prio3_db_commit_duration_seconds_count[15m])
+          ) > 1
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.instance }}: database commits average {{ $value | humanizeDuration }}"
+          description: >-
+            Every step is committed with synchronous=FULL before it answers;
+            slow commits slow every step.
+
+  - name: fhe-prio3-errors
+    rules:
+      - alert: FhePrio3PhaseFailed
+        expr: increase(fhe_prio3_phase_failures_total[1h]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.instance }}: the {{ $labels.phase }} phase failed"
+          description: >-
+            A close, count round, gated release or release to a collector
+            failed. A batch below its minimum size fails here by design; any
+            other failure (a verification check, a peer error) needs a look
+            at the leader's log before the close is retried.
+
+      - alert: FhePrio3StepFailures
+        expr: sum by (instance, step) (increase(fhe_prio3_step_failures_total[15m])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.instance }}: protocol step {{ $labels.step }} failed"
+          description: >-
+            A protocol step returned an error (rejected client reports are
+            not step failures). Look for the step in the node's log.
+
+      - alert: FhePrio3PeerErrors
+        expr: sum by (instance, peer, route) (increase(fhe_prio3_peer_requests_total{outcome="error"}[15m])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.instance }}: calls to {{ $labels.peer }}{{ $labels.route }} fail"
+          description: >-
+            Calls from this node to another node failed (network, TLS, token,
+            or the peer refused). Reports or closes depending on that peer
+            fail with them.
+
+      - alert: FhePrio3SubmitErrors
+        expr: sum by (instance) (increase(fhe_prio3_reports_total{outcome="error",reason!="Undecodable"}[15m])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.instance }}: client submissions fail with a server error"
+          description: >-
+            The leader answered client reports with an error (not a
+            rejection): a helper disagreed, a peer failed, or a step failed.
+
+      - alert: FhePrio3HighRejectRate
+        expr: >-
+          (
+            sum by (instance) (rate(fhe_prio3_reports_total{outcome="rejected"}[15m]))
+            / sum by (instance) (rate(fhe_prio3_reports_total[15m]))
+          ) > 0.05
+          and sum by (instance) (rate(fhe_prio3_reports_total[15m])) > 0.01
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.instance }}: {{ $value | humanizePercentage }} of reports rejected"
+          description: >-
+            More than 5% of reports are rejected (see the reason label of
+            fhe_prio3_reports_total): clients on another task or parameters
+            (WrongTask, WrongParameters), replays, or an attempt to submit
+            malformed reports.
+
+  - name: fhe-prio3-capacity
+    rules:
+      - alert: FhePrio3DatabaseGrowing
+        expr: predict_linear(fhe_prio3_db_size_bytes[6h], 24 * 3600) > 20 * 1024 * 1024 * 1024
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.instance }}: database on course to pass 20 GiB within a day"
+          description: >-
+            The database holds the state snapshot and the reports of the one
+            open verification ciphertext; it does not grow with the batch.
+            Growth means reports are not being released from the store.
+
+      - alert: FhePrio3MemoryHigh
+        expr: process_resident_memory_bytes{job=~"fhe-prio3-.*"} > 14 * 1024 * 1024 * 1024
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.instance }}: resident memory {{ $value | humanize1024 }}B"
+          description: >-
+            Above the measured peak of a node at the production parameters
+            (9.2 GiB, while the evaluation keys load). Close to the machine's
+            memory the kernel kills the node; it resumes from its last
+            committed step after a restart.

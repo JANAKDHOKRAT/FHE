@@ -112,3 +112,50 @@ fn collector_tells_old_stored_shares_from_corrupt_ones() {
     let e = net.collector.check_stored_share(&truncated).unwrap_err().to_string();
     assert!(e.contains("Truncated"), "{e}");
 }
+
+/// A node writes the accumulators (tens of MiB) apart from the rest of the
+/// state and only when `accumulator_generation` moved. The generation must
+/// stay put while a report waits in the open verification ciphertext and
+/// move when the ciphertext is folded in; the two parts must put back
+/// together into exactly the full snapshot; and an aggregator restored from
+/// the parts as a node stores them finishes the batch with the right result.
+#[test]
+fn accumulators_are_stored_apart_and_change_only_when_folded_in() {
+    use fhe_prio3::messages::{decode, encode};
+    let _g = serial();
+    let mut cfg = TaskConfig::new_silent(task_id(124), MeasurementType::Count, 2);
+    cfg.silent_batch_groups = 2;
+    let mut net = Net::new(cfg);
+    let g0: Vec<u64> = net.aggs.iter().map(|a| a.accumulator_generation()).collect();
+    // group 0 of 2: pending, the accumulators are not touched
+    let r0 = net.client.shard_in_group(&Measurement::Count(true), 0).unwrap();
+    net.expect_accept(&r0);
+    assert_eq!(net.aggs.iter().map(|a| a.accumulator_generation()).collect::<Vec<_>>(), g0);
+    // group 1 of 2: the verification ciphertext is full and folded in
+    let r1 = net.client.shard_in_group(&Measurement::Count(true), 1).unwrap();
+    net.expect_accept(&r1);
+    for (a, g) in net.aggs.iter().zip(&g0) {
+        assert_ne!(a.accumulator_generation(), *g);
+    }
+    let a = &net.aggs[0];
+    let full = a.snapshot().unwrap();
+    let book = a.snapshot_bookkeeping().unwrap();
+    assert!(book.sums.is_none() && book.valid_count_sum.is_none() && book.moment_sums.is_none() && book.valid_spread_sum.is_none());
+    let acc = a.snapshot_accumulators().unwrap();
+    assert!(acc.sums.is_some() && acc.valid_count_sum.is_some());
+    assert_eq!(encode(&book.clone().with_accumulators(acc.clone())).unwrap(), encode(&full).unwrap());
+    let (b, c) = full.split();
+    assert_eq!(encode(&b).unwrap(), encode(&book).unwrap());
+    assert_eq!(encode(&c).unwrap(), encode(&acc).unwrap());
+    // a third report pending; every aggregator restarts from the two parts
+    // as a node stores them (encoded apart, decoded, put back together)
+    let r2 = net.client.shard_in_group(&Measurement::Count(false), 0).unwrap();
+    net.expect_accept(&r2);
+    for a in net.aggs.iter_mut() {
+        let book = encode(&a.snapshot_bookkeeping().unwrap()).unwrap();
+        let acc = encode(&a.snapshot_accumulators().unwrap()).unwrap();
+        let st = decode::<AggregatorState>(&book).unwrap().with_accumulators(decode(&acc).unwrap());
+        a.restore(st, std::slice::from_ref(&r2)).unwrap();
+    }
+    assert_eq!(net.collect().unwrap(), (AggregateResult::Count(2), 3));
+}

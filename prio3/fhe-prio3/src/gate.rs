@@ -772,37 +772,49 @@ pub fn finish(env: &GateEnv, st: &mut GateState, reveals: &[GateReveal], ys: &[C
     Ok(fused_y)
 }
 
-/// Product of ciphertexts, as a balanced tree (depth `ceil(log2(len))`),
-/// in a fixed order so that every aggregator computes the same bytes.
-fn product(ctx: &Context, mut v: Vec<Ciphertext>) -> Result<Ciphertext> {
-    if v.is_empty() {
-        return Err(Error::Protocol("empty product".into()));
-    }
-    while v.len() > 1 {
-        let mut next = Vec::with_capacity(v.len().div_ceil(2));
-        let mut it = v.into_iter();
-        while let Some(a) = it.next() {
-            match it.next() {
-                Some(b) => next.push(ctx.mult(&a, &b)?),
-                None => next.push(a),
+/// Product of ciphertexts, depth `ceil(log2(len))`, in a fixed order so
+/// that every aggregator computes the same bytes. The terms are consumed
+/// as they come: a binary-counter stack holds at most one partial product
+/// per level, so at most `floor(log2(len)) + 1` ciphertexts are alive at
+/// once (a gate with `k = 65535` terms holds 17, not 65535 of 33 MiB each).
+fn product(ctx: &Context, terms: impl Iterator<Item = Result<Ciphertext>>) -> Result<Ciphertext> {
+    // (level, partial product of 2^level consecutive terms), levels
+    // strictly decreasing from the bottom of the stack to the top
+    let mut stack: Vec<(u32, Ciphertext)> = Vec::new();
+    for t in terms {
+        let mut cur = (0u32, t?);
+        while let Some((level, _)) = stack.last() {
+            if *level != cur.0 {
+                break;
             }
+            let (level, prev) = stack.pop().expect("checked");
+            cur = (level + 1, ctx.mult(&prev, &cur.1)?);
         }
-        v = next;
+        stack.push(cur);
     }
-    Ok(v.pop().expect("one left"))
+    // fold the leftover partials, smallest first: the result sits one level
+    // above the largest partial when more than one is left, which is
+    // `ceil(log2(len))`
+    let (_, mut acc) = stack.pop().ok_or_else(|| Error::Protocol("empty product".into()))?;
+    while let Some((_, prev)) = stack.pop() {
+        acc = ctx.mult(&prev, &acc)?;
+    }
+    Ok(acc)
 }
 
 /// `Π_{j < k} (x - j) · Π factors`: zero where `x < k`, a product of the
-/// factors with a nonzero value elsewhere.
+/// factors with a nonzero value elsewhere. The `x - j` terms are made one
+/// at a time as the product consumes them.
 fn gate(ctx: &Context, x: &Ciphertext, k: u64, factors: Vec<Ciphertext>) -> Result<Ciphertext> {
     let n = ctx.ring_dim() as usize;
-    let mut terms = Vec::with_capacity(k as usize + factors.len());
-    terms.push(x.try_clone()?);
-    for j in 1..k {
-        terms.push(ctx.sub_plain(x, &ctx.plaintext(&vec![j % ctx.plain_mod(); n])?)?);
-    }
-    terms.extend(factors);
-    product(ctx, terms)
+    let p = ctx.plain_mod();
+    let shifted = (0..k).map(move |j| -> Result<Ciphertext> {
+        if j == 0 {
+            return Ok(x.try_clone()?);
+        }
+        Ok(ctx.sub_plain(x, &ctx.plaintext(&vec![j % p; n])?)?)
+    });
+    product(ctx, shifted.chain(factors.into_iter().map(Ok)))
 }
 
 /// After the refresh (aggregators only): `X' = y - Σ_p M_p` for every
@@ -1069,5 +1081,65 @@ mod tests {
         assert!(err(&leak).contains("nonzero where its gate is zero"));
         // the wrong number of outputs
         assert!(err(&fused[..2]).contains("expected 3"));
+    }
+
+    /// One key party on a depth-6 chain (ring 32768), eval-mult key installed.
+    fn single_party() -> (Context, PublicKey, openfhe_tbgv_rs::SecretShare) {
+        use openfhe_tbgv_rs::{EvalMultKey, Params, keygen_first};
+        let ctx = Context::new(Params {
+            plain_mod: crate::config::SILENT_PLAIN_MOD,
+            mult_depth: 6,
+            security_bits: 128,
+        })
+        .unwrap();
+        let (pk, s) = keygen_first(&ctx).unwrap();
+        let tag = pk.tag().unwrap();
+        let r1 = EvalMultKey::round1_first(&ctx, &s).unwrap();
+        let r2 = EvalMultKey::round2(&ctx, &s, &r1, &tag).unwrap();
+        ctx.install_eval_mult_key(&r2, &tag).unwrap();
+        (ctx, pk, s)
+    }
+
+    /// The streamed product decrypts to the product of its terms for every
+    /// length up to a full depth-6 tree (64 terms: a deeper tree than
+    /// `ceil(log2(len))` would exhaust the chain and decrypt to garbage), and
+    /// the gate is `Π_{j<k} (x - j) · factors` slot by slot.
+    #[test]
+    fn streamed_product_and_gate_decrypt_exactly_within_ceil_log2_depth() {
+        let (ctx, pk, s) = single_party();
+        let p = ctx.plain_mod();
+        let n = ctx.ring_dim() as usize;
+        let slots = 16;
+        let enc = |v: &[u64]| {
+            let mut full = vec![0u64; n];
+            full[..v.len()].copy_from_slice(v);
+            ctx.encrypt(&pk, &ctx.plaintext(&full).unwrap()).unwrap()
+        };
+        let mut rng = rand::rngs::StdRng::seed_from_u64(7);
+        for len in [1usize, 2, 3, 5, 7, 8, 9, 31, 33, 64] {
+            let vals: Vec<Vec<u64>> = (0..len).map(|_| (0..slots).map(|_| rng.gen_range(1..p)).collect()).collect();
+            let got = product(&ctx, vals.iter().map(|v| Ok(enc(v)))).unwrap();
+            let got = s.decrypt_alone_for_tests(&got, slots).unwrap();
+            let want: Vec<u64> = (0..slots)
+                .map(|i| vals.iter().fold(1u128, |a, v| a * v[i] as u128 % p as u128) as u64)
+                .collect();
+            assert_eq!(got, want, "len {len}");
+        }
+        assert!(product(&ctx, std::iter::empty()).is_err());
+        // the gate: x = 0..16 in the slots, two random factors
+        let x: Vec<u64> = (0..slots as u64).collect();
+        let f: Vec<Vec<u64>> = (0..2).map(|_| (0..slots).map(|_| rng.gen_range(1..p)).collect()).collect();
+        for k in [1u64, 2, 3, 5, 9, 30, 62] {
+            let z = gate(&ctx, &enc(&x), k, f.iter().map(|v| enc(v)).collect()).unwrap();
+            let got = s.decrypt_alone_for_tests(&z, slots).unwrap();
+            for (i, &xi) in x.iter().enumerate() {
+                let mut want = (0..k).fold(1u128, |a, j| a * ((xi + p - j % p) % p) as u128 % p as u128);
+                for v in &f {
+                    want = want * v[i] as u128 % p as u128;
+                }
+                assert_eq!(got[i], want as u64, "k {k}, x {xi}");
+                assert_eq!(got[i] == 0, xi < k, "k {k}, x {xi}: zero exactly below k");
+            }
+        }
     }
 }

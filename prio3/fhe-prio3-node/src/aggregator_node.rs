@@ -11,6 +11,7 @@
 //! and, for silent mode, the report bytes it still needs are committed to
 //! SQLite in one transaction; a restarted node resumes from them.
 
+use crate::metrics::{BuildInfo, NodeMetrics};
 use crate::store::Store;
 use crate::wire::*;
 use axum::Router;
@@ -55,6 +56,10 @@ struct Inner {
     groups: u32,
     max_report_bytes: usize,
     max_message_bytes: usize,
+    metrics: Arc<NodeMetrics>,
+    /// Accumulator generation of the last committed `K_ACC`; `None` until
+    /// the first commit of this process, which always writes them.
+    persisted_accumulators: Mutex<Option<u64>>,
 }
 
 #[derive(Clone)]
@@ -63,7 +68,16 @@ pub struct AggregatorNode {
 }
 
 const K_STATE: &str = "aggregator_state";
+/// The encrypted accumulators, stored apart from `K_STATE` and written only
+/// when they changed (`Aggregator::accumulator_generation`). A database
+/// written before the split holds them inside `K_STATE` and none here.
+const K_ACC: &str = "aggregator_accumulators";
 const K_TASK: &str = "task_config";
+const REPORT_PREFIX: &str = "report:";
+
+fn report_key(id: &fhe_prio3::messages::ReportId) -> String {
+    format!("{REPORT_PREFIX}{}", hex::encode(id))
+}
 
 impl AggregatorNode {
     /// Builds the node, restoring persisted state if the database has any.
@@ -81,16 +95,29 @@ impl AggregatorNode {
             None => store.put(K_TASK, &encode(&cfg.task)?)?,
         }
         if let Some(bytes) = store.get(K_STATE)? {
-            let st: AggregatorState = decode(&bytes)?;
+            let mut st: AggregatorState = decode(&bytes)?;
+            if let Some(acc) = store.get(K_ACC)? {
+                st = st.with_accumulators(decode(&acc)?);
+            }
             let mut pending = Vec::with_capacity(st.silent_pending.len());
             for (_, id) in &st.silent_pending {
                 let b = store
-                    .get(&format!("report:{}", hex::encode(id)))?
+                    .get(&report_key(id))?
                     .ok_or_else(|| anyhow::anyhow!("pending report missing from store"))?;
                 pending.push(decode::<Report>(&b)?);
             }
             agg.restore(st, &pending)?;
             tracing::info!(index = cfg.index, accepted = agg.accepted_count(), "restored aggregator state");
+        }
+        // Reports no restore needs: written by builds that kept every
+        // report, or left by a crash between a flush and its commit (the
+        // snapshot is authoritative). Deleted so the database stays bounded
+        // by one verification ciphertext's reports.
+        let pending: std::collections::HashSet<String> = agg.silent_pending_ids().map(report_key).collect();
+        let stale: Vec<String> = store.names_with_prefix(REPORT_PREFIX)?.into_iter().filter(|n| !pending.contains(n)).collect();
+        if !stale.is_empty() {
+            tracing::info!(index = cfg.index, reports = stale.len(), "deleting stored reports no restore needs");
+            store.commit_step(&[], &stale, "prune_reports", &stale.len().to_string())?;
         }
         let groups = agg.layout().groups as u32;
         let max_report_bytes = agg.max_report_bytes();
@@ -103,6 +130,14 @@ impl AggregatorNode {
             );
         }
         let http = https_client(&cfg.ca_pem)?;
+        let metrics = NodeMetrics::new(BuildInfo {
+            role: "aggregator",
+            index: cfg.index,
+            task: Some(&cfg.task),
+        })?;
+        metrics.set_batch(agg.accepted_count(), agg.pending_silent_reports(), agg.is_closed());
+        metrics.set_db_size(store.size_bytes()?);
+        metrics.set_ready(true);
         Ok(Self {
             inner: Arc::new(Inner {
                 index: cfg.index,
@@ -117,8 +152,35 @@ impl AggregatorNode {
                 groups,
                 max_report_bytes,
                 max_message_bytes,
+                metrics,
+                persisted_accumulators: Mutex::new(None),
             }),
         })
+    }
+
+    /// This node's metrics (served by [`crate::metrics::serve_metrics`]).
+    pub fn metrics(&self) -> Arc<NodeMetrics> {
+        self.inner.metrics.clone()
+    }
+
+    /// POST to another node, timed and counted by peer and route.
+    async fn peer_post<T: serde::Serialize, R: serde::de::DeserializeOwned>(&self, base: &str, path: &str, body: &T) -> std::result::Result<R, HttpError> {
+        Ok(decode(&self.peer_post_raw(base, path, encode(body)?).await?)?)
+    }
+
+    async fn peer_post_raw(&self, base: &str, path: &str, body: Vec<u8>) -> std::result::Result<Vec<u8>, HttpError> {
+        let t = std::time::Instant::now();
+        let r = http_post_raw(&self.inner.http, &format!("{base}{path}"), Some(&self.inner.token), body).await;
+        self.inner.metrics.peer(base, path, t.elapsed(), r.is_ok());
+        Ok(r?)
+    }
+
+    /// Runs a batch phase, recording its duration and whether it failed.
+    async fn phase<R>(&self, phase: &str, f: impl std::future::Future<Output = std::result::Result<R, HttpError>>) -> std::result::Result<R, HttpError> {
+        let t = std::time::Instant::now();
+        let r = f.await;
+        self.inner.metrics.phase(phase, t.elapsed(), r.is_ok());
+        r
     }
 
     pub fn is_leader(&self) -> bool {
@@ -164,6 +226,8 @@ impl AggregatorNode {
             .route("/v1/gate-reveal", post(internal_gate_reveal).layer(gate))
             .route("/v1/gate-finish", post(internal_gate_finish).layer(gate))
             .with_state(self.clone())
+            .merge(crate::metrics::health_routes(self.inner.metrics.clone()))
+            .layer(axum::middleware::from_fn_with_state(self.inner.metrics.clone(), crate::metrics::track))
     }
 
     /// Loads the TLS configuration; errors surface here, before serving.
@@ -193,23 +257,56 @@ impl AggregatorNode {
         f: impl FnOnce(&mut Aggregator) -> Result<(R, bool)> + Send + 'static,
     ) -> std::result::Result<R, HttpError> {
         let inner = self.inner.clone();
-        tokio::task::spawn_blocking(move || -> std::result::Result<R, HttpError> {
-            let mut agg = guard(&inner.agg, "aggregator")?;
+        let metrics = self.inner.metrics.clone();
+        let joined = tokio::task::spawn_blocking(move || -> std::result::Result<R, HttpError> {
+            let mut timer = inner.metrics.step(event);
+            let mut agg = guard(&inner.agg, "aggregator").inspect_err(|_| inner.metrics.set_ready(false))?;
+            timer.acquired();
+            let pending_before: Vec<String> = agg.silent_pending_ids().map(report_key).collect();
             let (r, changed) = f(&mut agg)?;
             if changed {
-                let snap = encode(&agg.snapshot()?)?;
+                let snap = agg.snapshot_bookkeeping()?;
+                // A stored report is kept exactly while the snapshot lists it
+                // as pending: once its verification ciphertext is flushed it
+                // lives on only in the accumulators, so its bytes are not
+                // written (flushed at once) or are deleted (flushed now) in
+                // the same transaction as the snapshot that stops naming it.
+                let pending: std::collections::HashSet<String> = snap.silent_pending.iter().map(|(_, id)| report_key(id)).collect();
+                let deletes: Vec<String> = pending_before.into_iter().filter(|k| !pending.contains(k)).collect();
+                let snap = encode(&snap)?;
                 let mut entries: Vec<(&str, Vec<u8>)> = vec![(K_STATE, snap)];
-                let names: Vec<String> = extra.iter().map(|(n, _)| n.clone()).collect();
-                for (i, (_, b)) in extra.into_iter().enumerate() {
-                    entries.push((names[i].as_str(), b));
+                // the accumulators (tens of MiB) only when they changed
+                let generation = agg.accumulator_generation();
+                let mut persisted = guard(&inner.persisted_accumulators, "persisted accumulators")?;
+                if *persisted != Some(generation) {
+                    entries.push((K_ACC, encode(&agg.snapshot_accumulators()?)?));
                 }
-                let mut store = guard(&inner.store, "store")?;
-                store.commit_step(&entries, event, &detail)?;
+                for (name, b) in &extra {
+                    if !name.starts_with(REPORT_PREFIX) || pending.contains(name) {
+                        entries.push((name.as_str(), b.clone()));
+                    }
+                }
+                let bytes: usize = entries.iter().map(|(_, b)| b.len()).sum();
+                let mut store = guard(&inner.store, "store").inspect_err(|_| inner.metrics.set_ready(false))?;
+                let t = std::time::Instant::now();
+                store.commit_step(&entries, &deletes, event, &detail)?;
+                *persisted = Some(generation);
+                inner.metrics.committed(bytes, t.elapsed(), store.size_bytes().ok());
             }
+            inner.metrics.set_batch(agg.accepted_count(), agg.pending_silent_reports(), agg.is_closed());
+            timer.succeeded();
             Ok(r)
         })
-        .await
-        .map_err(|e| HttpError(StatusCode::INTERNAL_SERVER_ERROR, format!("task join: {e}")))?
+        .await;
+        match joined {
+            Ok(r) => r,
+            Err(e) => {
+                // a panic inside the step: the state lock is poisoned and
+                // every later step refuses until the node is restarted
+                metrics.set_ready(false);
+                Err(HttpError(StatusCode::INTERNAL_SERVER_ERROR, format!("task join: {e}")))
+            }
+        }
     }
 
     fn helpers(&self) -> Vec<(usize, String)> {
@@ -228,7 +325,6 @@ impl AggregatorNode {
     async fn drive_report(&self, report: Report) -> std::result::Result<SubmitOutcome, HttpError> {
         let id = report.report_id;
         let detail = hex::encode(id);
-        let report_bytes = encode(&report)?;
         if self.inner.task.mode == VerificationMode::Silent {
             // Local admission first: a report we refuse is not forwarded.
             let r = report.clone();
@@ -236,7 +332,7 @@ impl AggregatorNode {
                 .with_agg(
                     "silent_admit",
                     detail.clone(),
-                    vec![(format!("report:{detail}"), report_bytes.clone())],
+                    vec![(report_key(&id), encode(&report)?)],
                     move |agg| match agg.process_silent(&r) {
                         Ok(()) => Ok((SubmitOutcome::Accepted, true)),
                         Err(Error::Reject(reason)) => Ok((SubmitOutcome::Rejected(reason.to_string()), false)),
@@ -248,7 +344,7 @@ impl AggregatorNode {
                 return Ok(outcome);
             }
             for (_, url) in self.helpers() {
-                let o: SubmitOutcome = http_post(&self.inner.http, &format!("{url}/v1/report"), Some(&self.inner.token), &report).await?;
+                let o: SubmitOutcome = self.peer_post(&url, "/v1/report", &report).await?;
                 if o != SubmitOutcome::Accepted {
                     return Err(HttpError(StatusCode::CONFLICT, format!("helper disagrees on admission: {o:?}")));
                 }
@@ -271,7 +367,7 @@ impl AggregatorNode {
         };
         let mut mask_commits = vec![my_commit];
         for (i, url) in self.helpers() {
-            let m: std::result::Result<MaskCommit, String> = http_post(&self.inner.http, &format!("{url}/v1/report"), Some(&self.inner.token), &report).await?;
+            let m: std::result::Result<MaskCommit, String> = self.peer_post(&url, "/v1/report", &report).await?;
             match m {
                 Ok(m) if m.aggregator == i => mask_commits.push(m),
                 Ok(m) => return Err(HttpError(StatusCode::CONFLICT, format!("helper {i} answered as aggregator {}", m.aggregator))),
@@ -296,7 +392,7 @@ impl AggregatorNode {
                 report_id: id,
                 commits: mask_commits.iter().filter(|c| c.aggregator != i).cloned().collect(),
             };
-            let m: MaskMessage = http_post(&self.inner.http, &format!("{url}/v1/mask-commits"), Some(&self.inner.token), &req).await?;
+            let m: MaskMessage = self.peer_post(&url, "/v1/mask-commits", &req).await?;
             masks.push(m);
         }
         // Round 2: everyone commits to its partial decryption of the masked check.
@@ -312,7 +408,7 @@ impl AggregatorNode {
                 report_id: id,
                 masks: masks.iter().filter(|m| m.aggregator != i).cloned().collect(),
             };
-            let c: VerifierCommit = http_post(&self.inner.http, &format!("{url}/v1/masks"), Some(&self.inner.token), &req).await?;
+            let c: VerifierCommit = self.peer_post(&url, "/v1/masks", &req).await?;
             if c.aggregator != i {
                 return Err(HttpError(StatusCode::CONFLICT, format!("helper {i} answered as aggregator {}", c.aggregator)));
             }
@@ -331,13 +427,13 @@ impl AggregatorNode {
                 report_id: id,
                 commits: commits.iter().filter(|c| c.aggregator != i).cloned().collect(),
             };
-            let v: VerifierMessage = http_post(&self.inner.http, &format!("{url}/v1/commits"), Some(&self.inner.token), &req).await?;
+            let v: VerifierMessage = self.peer_post(&url, "/v1/commits", &req).await?;
             verifiers.push(v);
         }
         // Round 3: verdicts.
         let others_for_me: Vec<VerifierMessage> = verifiers.iter().filter(|v| v.aggregator != self.inner.index).cloned().collect();
         let my_verdict = self
-            .with_agg("verdict_finish", detail.clone(), vec![(format!("report:{detail}"), report_bytes)], move |agg| {
+            .with_agg("verdict_finish", detail.clone(), vec![], move |agg| {
                 let v = agg.prepare_finish(&id, &others_for_me)?;
                 let changed = v == Verdict::Accepted;
                 Ok((v, changed))
@@ -348,7 +444,7 @@ impl AggregatorNode {
                 report_id: id,
                 verifiers: verifiers.iter().filter(|v| v.aggregator != i).cloned().collect(),
             };
-            let o: SubmitOutcome = http_post(&self.inner.http, &format!("{url}/v1/verifiers"), Some(&self.inner.token), &req).await?;
+            let o: SubmitOutcome = self.peer_post(&url, "/v1/verifiers", &req).await?;
             let mine = match &my_verdict {
                 Verdict::Accepted => SubmitOutcome::Accepted,
                 Verdict::Rejected(r) => SubmitOutcome::Rejected(r.to_string()),
@@ -369,17 +465,12 @@ impl AggregatorNode {
     /// Silent mode: the verified count round. Every aggregator checks the
     /// decrypted count with its own blinded checks before trusting it.
     async fn drive_count(&self) -> std::result::Result<(), HttpError> {
-        let post = |url: String, body: Vec<u8>| {
-            let http = self.inner.http.clone();
-            let token = self.inner.token.clone();
-            async move { http_post_raw(&http, &url, Some(&token), body).await }
-        };
         let mut shares = vec![
             self.with_agg("count_share", String::new(), vec![], |agg| Ok((agg.count_share()?, true)))
                 .await?,
         ];
         for (_, url) in self.helpers() {
-            shares.push(decode(&post(format!("{url}/v1/count-share"), encode(&())?).await?)?);
+            shares.push(decode(&self.peer_post_raw(&url, "/v1/count-share", encode(&())?).await?)?);
         }
         let req = encode(&CountSharesRequest { shares: shares.clone() })?;
         let mut commits = vec![
@@ -387,7 +478,7 @@ impl AggregatorNode {
                 .await?,
         ];
         for (_, url) in self.helpers() {
-            commits.push(decode(&post(format!("{url}/v1/count-commit"), req.clone()).await?)?);
+            commits.push(decode(&self.peer_post_raw(&url, "/v1/count-commit", req.clone()).await?)?);
         }
         let req = encode(&CountCommitsRequest { commits: commits.clone() })?;
         let mut openings = vec![
@@ -395,7 +486,7 @@ impl AggregatorNode {
                 .await?,
         ];
         for (_, url) in self.helpers() {
-            openings.push(decode(&post(format!("{url}/v1/count-open"), req.clone()).await?)?);
+            openings.push(decode(&self.peer_post_raw(&url, "/v1/count-open", req.clone()).await?)?);
         }
         let req = encode(&CountOpeningsRequest { openings: openings.clone() })?;
         let mut reveals = vec![
@@ -403,14 +494,14 @@ impl AggregatorNode {
                 .await?,
         ];
         for (_, url) in self.helpers() {
-            reveals.push(decode(&post(format!("{url}/v1/count-reveal"), req.clone()).await?)?);
+            reveals.push(decode(&self.peer_post_raw(&url, "/v1/count-reveal", req.clone()).await?)?);
         }
         let req = encode(&CountRevealsRequest { reveals: reveals.clone() })?;
         let mine: u64 = self
             .with_agg("count_finish", String::new(), vec![], move |agg| Ok((agg.count_finish(&reveals)?, true)))
             .await?;
         for (i, url) in self.helpers() {
-            let n: u64 = decode(&post(format!("{url}/v1/count-finish"), req.clone()).await?)?;
+            let n: u64 = decode(&self.peer_post_raw(&url, "/v1/count-finish", req.clone()).await?)?;
             if n != mine {
                 return Err(HttpError(StatusCode::CONFLICT, format!("helper {i} verified another valid count")));
             }
@@ -429,16 +520,10 @@ impl AggregatorNode {
                 .await?,
         ];
         for (_, h) in self.helpers() {
-            let r: ReleaseCommit = http_post(&self.inner.http, &format!("{h}/v1/release-commit"), Some(&self.inner.token), &challenge).await?;
+            let r: ReleaseCommit = self.peer_post(&h, "/v1/release-commit", &challenge).await?;
             commits.push(r);
         }
-        let opening: ReleaseOpening = http_post(
-            &self.inner.http,
-            &format!("{url}/v1/release-commits"),
-            Some(&self.inner.token),
-            &ReleaseCommitsRequest { commits },
-        )
-        .await?;
+        let opening: ReleaseOpening = self.peer_post(&url, "/v1/release-commits", &ReleaseCommitsRequest { commits }).await?;
         let sealed = !self.inner.task.collectors.is_empty();
         let op = opening.clone();
         let mine = self
@@ -455,16 +540,10 @@ impl AggregatorNode {
             .await?;
         let mut reveals = vec![mine];
         for (_, h) in self.helpers() {
-            let r: RevealEnvelope = http_post(&self.inner.http, &format!("{h}/v1/release-reveal"), Some(&self.inner.token), &opening).await?;
+            let r: RevealEnvelope = self.peer_post(&h, "/v1/release-reveal", &opening).await?;
             reveals.push(r);
         }
-        let done: FinishReceipt = http_post(
-            &self.inner.http,
-            &format!("{url}/v1/release-reveals"),
-            Some(&self.inner.token),
-            &ReleaseRevealsRequest { reveals },
-        )
-        .await?;
+        let done: FinishReceipt = self.peer_post(&url, "/v1/release-reveals", &ReleaseRevealsRequest { reveals }).await?;
         Ok(done.result)
     }
 
@@ -482,9 +561,7 @@ impl AggregatorNode {
     async fn gate_round<R: serde::de::DeserializeOwned>(&self, path: &str, body: Vec<u8>) -> std::result::Result<Vec<R>, HttpError> {
         let mut out = Vec::new();
         for url in self.gate_peers() {
-            out.push(decode(
-                &http_post_raw(&self.inner.http, &format!("{url}{path}"), Some(&self.inner.token), body.clone()).await?,
-            )?);
+            out.push(decode(&self.peer_post_raw(&url, path, body.clone()).await?)?);
         }
         Ok(out)
     }
@@ -547,10 +624,10 @@ impl AggregatorNode {
     /// collector(s) and runs the verified release.
     async fn drive_close(&self) -> std::result::Result<CloseReply, HttpError> {
         if self.inner.task.mode == VerificationMode::Silent && !self.inner.task.collector_holds_key() {
-            self.drive_count().await?;
+            self.phase("count", self.drive_count()).await?;
         }
         if self.inner.task.gated() {
-            self.drive_gate().await?;
+            self.phase("gate", self.drive_gate()).await?;
         }
         if self.inner.task.collectors.is_empty() {
             // single collector, plain shares relayed by the leader
@@ -559,13 +636,7 @@ impl AggregatorNode {
                     .await?,
             ];
             for (_, url) in self.helpers() {
-                let r: ShareReply = http_post(
-                    &self.inner.http,
-                    &format!("{url}/v1/aggregate-share"),
-                    Some(&self.inner.token),
-                    &ShareRequest { collector: 0 },
-                )
-                .await?;
+                let r: ShareReply = self.peer_post(&url, "/v1/aggregate-share", &ShareRequest { collector: 0 }).await?;
                 match r {
                     ShareReply::Plain(s) => shares.push(s),
                     ShareReply::Sealed(_) => {
@@ -578,20 +649,16 @@ impl AggregatorNode {
             }
             let mut challenge = None;
             for s in shares {
-                let r: ShareReceipt = http_post(
-                    &self.inner.http,
-                    &format!("{}/v1/aggregate-share", self.inner.collectors[0]),
-                    Some(&self.inner.token),
-                    &ShareEnvelope { share: s },
-                )
-                .await?;
+                let r: ShareReceipt = self
+                    .peer_post(&self.inner.collectors[0], "/v1/aggregate-share", &ShareEnvelope { share: s })
+                    .await?;
                 if r.complete {
                     challenge = r.challenge;
                 }
             }
             let challenge = challenge.ok_or_else(|| HttpError(StatusCode::INTERNAL_SERVER_ERROR, "collector sent no checks after all shares".into()))?;
             let result = self
-                .drive_release(0, challenge)
+                .phase("release", self.drive_release(0, challenge))
                 .await?
                 .ok_or_else(|| HttpError(StatusCode::INTERNAL_SERVER_ERROR, "collector returned no result".into()))?;
             return Ok(CloseReply {
@@ -609,13 +676,7 @@ impl AggregatorNode {
                     .await?,
             ];
             for (_, url) in self.helpers() {
-                let r: ShareReply = http_post(
-                    &self.inner.http,
-                    &format!("{url}/v1/aggregate-share"),
-                    Some(&self.inner.token),
-                    &ShareRequest { collector: c as u32 },
-                )
-                .await?;
+                let r: ShareReply = self.peer_post(&url, "/v1/aggregate-share", &ShareRequest { collector: c as u32 }).await?;
                 match r {
                     ShareReply::Sealed(s) => sealed.push(s),
                     ShareReply::Plain(_) => {
@@ -628,19 +689,15 @@ impl AggregatorNode {
             }
             let mut challenge = None;
             for s in sealed {
-                let r: ShareReceipt = http_post(
-                    &self.inner.http,
-                    &format!("{}/v1/aggregate-share", self.inner.collectors[c]),
-                    Some(&self.inner.token),
-                    &SealedEnvelope { sealed: s },
-                )
-                .await?;
+                let r: ShareReceipt = self
+                    .peer_post(&self.inner.collectors[c], "/v1/aggregate-share", &SealedEnvelope { sealed: s })
+                    .await?;
                 if r.complete {
                     challenge = r.challenge;
                 }
             }
             let challenge = challenge.ok_or_else(|| HttpError(StatusCode::INTERNAL_SERVER_ERROR, format!("collector {c} sent no checks after all shares")))?;
-            self.drive_release(c, challenge).await?;
+            self.phase("release", self.drive_release(c, challenge)).await?;
             released_to.push(c as u32);
         }
         Ok(CloseReply { result: None, released_to })
@@ -679,9 +736,21 @@ async fn submit(State(node): State<AggregatorNode>, body: Bytes) -> std::result:
     if !node.is_leader() {
         return Err(HttpError(StatusCode::NOT_FOUND, "submit to the leader".into()));
     }
-    let report: Report = parse_body(&body)?;
-    let outcome = node.drive_report(report).await?;
-    reply(&outcome)
+    let report: Report = parse_body(&body).inspect_err(|_| node.inner.metrics.report("error", "Undecodable"))?;
+    let m = &node.inner.metrics;
+    match node.drive_report(report).await {
+        Ok(outcome) => {
+            match &outcome {
+                SubmitOutcome::Accepted => m.report("accepted", "none"),
+                SubmitOutcome::Rejected(r) => m.report("rejected", crate::metrics::reject_label(r)),
+            }
+            reply(&outcome)
+        }
+        Err(e) => {
+            m.report("error", "none");
+            Err(e)
+        }
+    }
 }
 
 async fn close(State(node): State<AggregatorNode>, headers: HeaderMap) -> std::result::Result<axum::response::Response, HttpError> {
@@ -689,7 +758,7 @@ async fn close(State(node): State<AggregatorNode>, headers: HeaderMap) -> std::r
     if !node.is_leader() {
         return Err(HttpError(StatusCode::NOT_FOUND, "close via the leader".into()));
     }
-    let r = node.drive_close().await?;
+    let r = node.phase("close", node.drive_close()).await?;
     reply(&r)
 }
 
@@ -703,7 +772,7 @@ async fn internal_report(State(node): State<AggregatorNode>, headers: HeaderMap,
             .with_agg(
                 "silent_admit",
                 detail.clone(),
-                vec![(format!("report:{detail}"), bytes)],
+                vec![(report_key(&report.report_id), bytes)],
                 move |agg| match agg.process_silent(&report) {
                     Ok(()) => Ok((SubmitOutcome::Accepted, true)),
                     Err(Error::Reject(r)) => Ok((SubmitOutcome::Rejected(r.to_string()), false)),

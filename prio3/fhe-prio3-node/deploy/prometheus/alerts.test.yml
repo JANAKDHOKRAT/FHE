@@ -1,0 +1,310 @@
+# promtool test rules alerts.test.yml
+# Every rule of alerts.yml, against series that must fire it and series
+# that must not.
+rule_files:
+  - alerts.yml
+
+evaluation_interval: 1m
+
+tests:
+  # ---- availability ------------------------------------------------------
+  - interval: 1m
+    input_series:
+      - series: 'up{job="fhe-prio3-aggregator", instance="agg:9100"}'
+        values: "1 1 0 0 0 0"
+      - series: 'up{job="fhe-prio3-collector", instance="col:9100"}'
+        values: "1 1 1 1 1 1"
+      - series: 'up{job="other", instance="x:1"}'
+        values: "0 0 0 0 0 0"
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: FhePrio3NodeDown
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: FhePrio3NodeDown
+        exp_alerts:
+          - exp_labels: { severity: critical, job: fhe-prio3-aggregator, instance: "agg:9100" }
+            exp_annotations:
+              summary: "fhe-prio3-aggregator agg:9100 is not answering scrapes"
+              description: "The metrics listener has not answered for 2 minutes. Clients cannot submit to a down leader, and a down helper or key-holding collector stops every close."
+
+  - interval: 1m
+    input_series:
+      - series: 'fhe_prio3_ready{job="fhe-prio3-aggregator", instance="agg:9100"}'
+        values: "1 0 0 0"
+      - series: 'fhe_prio3_ready{job="fhe-prio3-collector", instance="col:9100"}'
+        values: "1 1 1 1"
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: FhePrio3NodeNotReady
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: FhePrio3NodeNotReady
+        exp_alerts:
+          - exp_labels: { severity: critical, job: fhe-prio3-aggregator, instance: "agg:9100" }
+            exp_annotations:
+              summary: "agg:9100 is up but not ready"
+              description: "A panic poisoned the node's state; it refuses every protocol step until restarted. Restart it: it resumes from its last committed step (SQLite snapshot)."
+
+  # ---- progress ------------------------------------------------------------
+  # a step that started at t = 60 s and never ends, next to a node whose
+  # steps keep finishing (a new start time every minute) and an idle one
+  - interval: 1m
+    input_series:
+      - series: 'fhe_prio3_step_active_since_timestamp_seconds{instance="stuck"}'
+        values: "0 60x70"
+      - series: 'fhe_prio3_step_active_since_timestamp_seconds{instance="busy"}'
+        values: "60+60x70"
+      - series: 'fhe_prio3_step_active_since_timestamp_seconds{instance="idle"}'
+        values: "0x70"
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: FhePrio3StepStuck
+        exp_alerts: []
+      - eval_time: 62m
+        alertname: FhePrio3StepStuck
+        exp_alerts:
+          - exp_labels: { severity: critical, instance: stuck }
+            exp_annotations:
+              summary: "stuck: one protocol step has held the state lock for over an hour"
+              description: "The longest step measured, the release gates' products at min_batch_size 1000, took 16 minutes on 4 vCPUs (it grows linearly with the thresholds: raise this alert's threshold for larger ones). The node is stuck inside a homomorphic step or a database commit; every other request queues behind it."
+
+  - interval: 1m
+    input_series:
+      - series: 'fhe_prio3_lock_waiters{instance="stalled"}'
+        values: "0 2x40"
+      - series: 'fhe_prio3_last_progress_timestamp_seconds{instance="stalled"}'
+        values: "0x40"
+      - series: 'fhe_prio3_lock_waiters{instance="working"}'
+        values: "0 2x40"
+      - series: 'fhe_prio3_last_progress_timestamp_seconds{instance="working"}'
+        values: "0+60x40"
+    alert_rule_test:
+      - eval_time: 29m
+        alertname: FhePrio3QueueNoProgress
+        exp_alerts: []
+      - eval_time: 31m
+        alertname: FhePrio3QueueNoProgress
+        exp_alerts:
+          - exp_labels: { severity: critical, instance: stalled }
+            exp_annotations:
+              summary: "stalled: requests are queued but nothing was committed for 30 minutes"
+              description: "2 request(s) wait for the state lock and the node has committed no state change for 30 minutes."
+
+  - interval: 1m
+    input_series:
+      - series: 'fhe_prio3_lock_waiters{instance="flooded"}'
+        values: "40x20"
+      - series: 'fhe_prio3_lock_waiters{instance="normal"}'
+        values: "10x20"
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: FhePrio3QueueBacklog
+        exp_alerts: []
+      - eval_time: 11m
+        alertname: FhePrio3QueueBacklog
+        exp_alerts:
+          - exp_labels: { severity: warning, instance: flooded }
+            exp_annotations:
+              summary: "flooded: 40 requests waiting for the state lock"
+              description: "Clients submit faster than the node admits reports (one at a time per node). Add aggregator sets (sharding) or slow clients down; submissions will start timing out."
+
+  - interval: 1m
+    input_series:
+      - series: 'fhe_prio3_batch{instance="col-stalled", field="shares_received"}'
+        values: "1x70"
+      - series: 'fhe_prio3_batch{instance="col-stalled", field="result_ready"}'
+        values: "0x70"
+      - series: 'fhe_prio3_last_progress_timestamp_seconds{instance="col-stalled"}'
+        values: "0x70"
+      - series: 'fhe_prio3_batch{instance="col-done", field="shares_received"}'
+        values: "1x70"
+      - series: 'fhe_prio3_batch{instance="col-done", field="result_ready"}'
+        values: "1x70"
+      - series: 'fhe_prio3_last_progress_timestamp_seconds{instance="col-done"}'
+        values: "0x70"
+      # an aggregator's batch gauges have no shares_received field
+      - series: 'fhe_prio3_batch{instance="agg", field="accepted"}'
+        values: "5x70"
+      - series: 'fhe_prio3_last_progress_timestamp_seconds{instance="agg"}'
+        values: "0x70"
+    alert_rule_test:
+      - eval_time: 59m
+        alertname: FhePrio3CollectorReleaseStalled
+        exp_alerts: []
+      - eval_time: 61m
+        alertname: FhePrio3CollectorReleaseStalled
+        exp_alerts:
+          - exp_labels: { severity: warning, instance: col-stalled, field: shares_received }
+            exp_annotations:
+              summary: "col-stalled: a release started but no result for an hour"
+              description: "The collector holds aggregate shares but has not finished the verified release. Check the leader's close (phase failures) and the peers' errors."
+
+  # ---- latency ---------------------------------------------------------------
+  # 60 admissions a minute: one node at 10 s each on average, one at 1 s
+  - interval: 1m
+    input_series:
+      - series: 'fhe_prio3_step_duration_seconds_sum{instance="slow", step="silent_admit"}'
+        values: "0+600x40"
+      - series: 'fhe_prio3_step_duration_seconds_count{instance="slow", step="silent_admit"}'
+        values: "0+60x40"
+      - series: 'fhe_prio3_step_duration_seconds_sum{instance="fast", step="silent_admit"}'
+        values: "0+60x40"
+      - series: 'fhe_prio3_step_duration_seconds_count{instance="fast", step="silent_admit"}'
+        values: "0+60x40"
+      # a slow step that is not an admission
+      - series: 'fhe_prio3_step_duration_seconds_sum{instance="fast", step="gate_share"}'
+        values: "0+600x40"
+      - series: 'fhe_prio3_step_duration_seconds_count{instance="fast", step="gate_share"}'
+        values: "0+1x40"
+    alert_rule_test:
+      # the mean is above the threshold from the second sample on; the
+      # alert is pending, not firing, until it held for 15 minutes
+      - eval_time: 10m
+        alertname: FhePrio3SlowReportAdmission
+        exp_alerts: []
+      - eval_time: 31m
+        alertname: FhePrio3SlowReportAdmission
+        exp_alerts:
+          - exp_labels: { severity: warning, instance: slow, step: silent_admit }
+            exp_annotations:
+              summary: "slow: report admission averages 10s"
+              description: "The mean time of a silent-mode admission (including the batch verification every `silent_batch_groups` reports) is far above the measured one. The machine is overloaded (CPU, memory pressure) or its disk is slow (see fhe_prio3_db_commit_duration_seconds)."
+
+  - interval: 1m
+    input_series:
+      - series: 'fhe_prio3_db_commit_duration_seconds_sum{instance="slowdisk"}'
+        values: "0+120x40"
+      - series: 'fhe_prio3_db_commit_duration_seconds_count{instance="slowdisk"}'
+        values: "0+60x40"
+      - series: 'fhe_prio3_db_commit_duration_seconds_sum{instance="ssd"}'
+        values: "0+3x40"
+      - series: 'fhe_prio3_db_commit_duration_seconds_count{instance="ssd"}'
+        values: "0+60x40"
+    alert_rule_test:
+      - eval_time: 31m
+        alertname: FhePrio3SlowDatabaseCommits
+        exp_alerts:
+          - exp_labels: { severity: warning, instance: slowdisk }
+            exp_annotations:
+              summary: "slowdisk: database commits average 2s"
+              description: "Every step is committed with synchronous=FULL before it answers; slow commits slow every step."
+
+  # ---- errors ----------------------------------------------------------------
+  - interval: 1m
+    input_series:
+      - series: 'fhe_prio3_phase_failures_total{instance="leader", phase="gate"}'
+        values: "0 0 1 1 1"
+      - series: 'fhe_prio3_phase_failures_total{instance="other", phase="close"}'
+        values: "0 0 0 0 0"
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: FhePrio3PhaseFailed
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: FhePrio3PhaseFailed
+        exp_alerts:
+          - exp_labels: { severity: critical, instance: leader, phase: gate }
+            exp_annotations:
+              summary: "leader: the gate phase failed"
+              description: "A close, count round, gated release or release to a collector failed. A batch below its minimum size fails here by design; any other failure (a verification check, a peer error) needs a look at the leader's log before the close is retried."
+
+  - interval: 1m
+    input_series:
+      - series: 'fhe_prio3_step_failures_total{instance="helper", step="count_commit"}'
+        values: "0 0 2 2"
+      - series: 'fhe_prio3_step_failures_total{instance="helper", step="silent_admit"}'
+        values: "0 0 0 0"
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: FhePrio3StepFailures
+        exp_alerts:
+          - exp_labels: { severity: warning, instance: helper, step: count_commit }
+            exp_annotations:
+              summary: "helper: protocol step count_commit failed"
+              description: "A protocol step returned an error (rejected client reports are not step failures). Look for the step in the node's log."
+
+  - interval: 1m
+    input_series:
+      - series: 'fhe_prio3_peer_requests_total{instance="leader", peer="https://h:8444", route="/v1/report", outcome="error"}'
+        values: "0 0 3 3"
+      - series: 'fhe_prio3_peer_requests_total{instance="leader", peer="https://h:8444", route="/v1/report", outcome="ok"}'
+        values: "0 10 20 30"
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: FhePrio3PeerErrors
+        exp_alerts:
+          - exp_labels: { severity: warning, instance: leader, peer: "https://h:8444", route: /v1/report }
+            exp_annotations:
+              summary: "leader: calls to https://h:8444/v1/report fail"
+              description: "Calls from this node to another node failed (network, TLS, token, or the peer refused). Reports or closes depending on that peer fail with them."
+
+  # a server error fires; undecodable client bodies do not
+  - interval: 1m
+    input_series:
+      - series: 'fhe_prio3_reports_total{instance="leader", outcome="error", reason="none"}'
+        values: "0 0 1 1"
+      - series: 'fhe_prio3_reports_total{instance="other", outcome="error", reason="Undecodable"}'
+        values: "0 5 10 15"
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: FhePrio3SubmitErrors
+        exp_alerts:
+          - exp_labels: { severity: warning, instance: leader }
+            exp_annotations:
+              summary: "leader: client submissions fail with a server error"
+              description: "The leader answered client reports with an error (not a rejection): a helper disagreed, a peer failed, or a step failed."
+
+  # 10% rejected on one leader, 2% on another
+  - interval: 1m
+    input_series:
+      - series: 'fhe_prio3_reports_total{instance="noisy", outcome="accepted", reason="none"}'
+        values: "0+90x40"
+      - series: 'fhe_prio3_reports_total{instance="noisy", outcome="rejected", reason="Replay"}'
+        values: "0+10x40"
+      - series: 'fhe_prio3_reports_total{instance="quiet", outcome="accepted", reason="none"}'
+        values: "0+98x40"
+      - series: 'fhe_prio3_reports_total{instance="quiet", outcome="rejected", reason="WrongTask"}'
+        values: "0+2x40"
+    alert_rule_test:
+      - eval_time: 31m
+        alertname: FhePrio3HighRejectRate
+        exp_alerts:
+          - exp_labels: { severity: warning, instance: noisy }
+            exp_annotations:
+              summary: "noisy: 10% of reports rejected"
+              description: "More than 5% of reports are rejected (see the reason label of fhe_prio3_reports_total): clients on another task or parameters (WrongTask, WrongParameters), replays, or an attempt to submit malformed reports."
+
+  # ---- capacity --------------------------------------------------------------
+  # one database grows 1 GiB an hour, one stays at 1.4 GiB
+  - interval: 10m
+    input_series:
+      - series: 'fhe_prio3_db_size_bytes{instance="leaking"}'
+        values: "0+178956970x60"
+      - series: 'fhe_prio3_db_size_bytes{instance="bounded"}'
+        values: "1503238553x60"
+    alert_rule_test:
+      - eval_time: 8h
+        alertname: FhePrio3DatabaseGrowing
+        exp_alerts:
+          - exp_labels: { severity: warning, instance: leaking }
+            exp_annotations:
+              summary: "leaking: database on course to pass 20 GiB within a day"
+              description: "The database holds the state snapshot and the reports of the one open verification ciphertext; it does not grow with the batch. Growth means reports are not being released from the store."
+
+  - interval: 1m
+    input_series:
+      - series: 'process_resident_memory_bytes{job="fhe-prio3-aggregator", instance="big"}'
+        values: "16106127360x20"
+      - series: 'process_resident_memory_bytes{job="fhe-prio3-aggregator", instance="ok"}'
+        values: "8589934592x20"
+      - series: 'process_resident_memory_bytes{job="other", instance="big"}'
+        values: "16106127360x20"
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: FhePrio3MemoryHigh
+        exp_alerts:
+          - exp_labels: { severity: warning, job: fhe-prio3-aggregator, instance: big }
+            exp_annotations:
+              summary: "big: resident memory 15GiB"
+              description: "Above the measured peak of a node at the production parameters (9.2 GiB, while the evaluation keys load). Close to the machine's memory the kernel kills the node; it resumes from its last committed step after a restart."

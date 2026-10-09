@@ -134,6 +134,18 @@ last committed step; a report whose processing was interrupted before its
 commit is simply not in `seen` and is reprocessed when resubmitted. The
 end-to-end test restarts the leader mid-batch and finishes the batch.
 
+The only client reports a restart needs are those of the silent-mode
+verification ciphertext still open (at most `silent_batch_groups` of them):
+`restore` rebuilds that ciphertext from them. A report is stored when it is
+admitted and deleted in the same transaction as the snapshot that no longer
+lists it (its ciphertext was verified and folded into the sums); verdict
+mode adds a report to the sums when it is accepted and stores none. The
+database therefore stays bounded by one verification ciphertext's reports
+and the snapshot, whatever the batch size. Earlier builds kept every report
+(22 MiB each in silent mode: 1.4 TB for a batch of 65,536); a node started
+on such a database deletes the rows no restore needs.
+`tests/e2e.rs` checks the stored reports after every submission.
+
 The key share file is AES-256-GCM sealed with the 32-byte key in
 `FHE_PRIO3_SEAL_KEY` (hex), authenticated with the aggregator index and task
 id as associated data, so a share cannot be moved to another aggregator or
@@ -147,6 +159,124 @@ blocking pool under that lock. Throughput per node is therefore one report
 at a time (0.5–0.7 s in verdict mode); scale by running more aggregator
 *sets* under different tasks or keys, not by threads inside one node. That
 is what sharding below does.
+
+## Monitoring: metrics, health, alerts
+
+Every node (`aggregator`, `collector`, `router`) takes
+`--metrics-listen <addr>` and serves there, over plain HTTP (bind it to a
+private interface):
+
+* `GET /metrics`: Prometheus text format, one registry per node;
+* `GET /healthz`: 200 while the process answers (liveness);
+* `GET /readyz`: 200 when the node can serve, 503 after a panic poisoned
+  its state (it refuses every step until restarted; restart it and it
+  resumes from its last committed step).
+
+`/healthz` and `/readyz` are also on the public TLS listener, for load
+balancers. A metrics address that cannot be bound stops the node from
+starting, so a node never runs unmonitored by accident. Nodes stop
+gracefully on SIGTERM and SIGINT (30 s for requests in flight).
+
+What the series tell an operator (`src/metrics.rs` documents each):
+
+| Question | Series |
+| --- | --- |
+| Is a node stuck? | `fhe_prio3_step_active_since_timestamp_seconds` (start of the step holding the state lock, 0 when idle), `fhe_prio3_lock_waiters`, `fhe_prio3_last_progress_timestamp_seconds` |
+| Is it slow? | `fhe_prio3_step_duration_seconds{step}`, `fhe_prio3_lock_wait_seconds`, `fhe_prio3_phase_duration_seconds{phase}` (close, count, gate, release), `fhe_prio3_http_request_duration_seconds{route}`, `fhe_prio3_peer_request_duration_seconds{peer,route}`, `fhe_prio3_db_commit_duration_seconds` |
+| Is it failing? | `fhe_prio3_http_requests_total{route,status}`, `fhe_prio3_step_failures_total{step}`, `fhe_prio3_phase_failures_total{phase}`, `fhe_prio3_peer_requests_total{peer,route,outcome}`, `fhe_prio3_reports_total{outcome,reason}`, `fhe_prio3_ready` |
+| Capacity | `fhe_prio3_batch{field}` (aggregator: accepted, pending, closed; collector: shares_received, result_ready), `fhe_prio3_db_size_bytes`, `fhe_prio3_db_written_bytes_total`, `process_resident_memory_bytes`, `process_cpu_seconds_total`, `process_open_fds` |
+
+Label values come from fixed sets (route templates, step and phase names
+in the code, configured peer URLs, `RejectReason` variant names); nothing
+a client sends becomes a label.
+
+`deploy/prometheus/alerts.yml` holds the alerting rules (node down or not
+ready, a step stuck, a queue with no progress, a backlog, a stalled release,
+slow admissions or commits, failed phases, steps, peer calls and
+submissions, a high rejection rate, a growing database, high memory) and
+`deploy/prometheus/alerts.test.yml` tests every rule with `promtool test
+rules`, a firing and a non-firing case each; CI runs both
+(`promtool check rules`, `promtool test rules`). A unit test
+(`metrics::tests::every_series_the_alert_rules_name_is_exported`) fails if a
+rule names a series no node exports. `deploy/prometheus/prometheus.yml` is
+an example scrape configuration.
+
+`tests/e2e.rs` scrapes the nodes' `/metrics` after real traffic and checks
+the exact values: reports by outcome and reason, requests by route and
+status, steps, phases, peer calls, batch gauges, no failures, idle locks.
+
+## Load test
+
+`fhe-prio3-node loadtest` drives real clients against a running
+deployment: `--workers` threads, each with its own client and OpenFHE
+context, take a group ticket, encrypt a measurement and submit it over TLS.
+The measurements are a deterministic function of `--seed` (histograms are
+skewed, bucket `b` with probability `2^-(b+1)`, so every run has large cells
+and cells below a suppression threshold), and `--invalid-every n` makes
+every n-th report invalid (a non-bit slot). After the last report the batch
+is closed and the released result compared with the expected one:
+
+* the exact aggregate of the valid reports, the valid count, the admitted
+  count;
+* with small-cell suppression: the cells below `min_cell_count` zeroed and
+  listed, the others exact, the counts withheld;
+* below `min_batch_size`: a refusal, either the leader's (fewer reports
+  admitted than the minimum) or, with enough reports admitted but too few
+  valid, the encrypted gate's, which only the gate can know.
+
+Throughout, every node's `/metrics` is scraped into a timeline (resident
+memory, database size, lock waiters, batch gauges), and the last scrape of
+each node goes into the JSON report with the client-side timings (ticket,
+encryption, submission round trip, percentiles), the outcomes, the close's
+duration and the verdict. The command exits non-zero unless the released
+result is exactly the expected one and every report was delivered.
+
+`loadtest/run.sh` brings up a split-key deployment as separate processes
+over TLS (certificates, task, keys, the collector and the aggregator with
+metrics listeners), runs the load test and stops the nodes:
+
+```sh
+cargo build --release
+loadtest/run.sh --out /tmp/lt --reports 1024 --type histogram:16 \
+    --min-batch 1000 --min-cell 100 --invalid-every 2 --workers 2 --keys keygen
+```
+
+`--keys ceremony` runs the distributed ceremony (one process per key
+party); at the production parameters its two processes do not fit on one
+15 GiB machine (AUDIT.md F-25), so single-machine runs use `--keys keygen`
+(the same keys from one dealer process). The collector runs on the
+material without evaluation keys (`client-material`), which is all it uses.
+
+Measured on one 4-vCPU, 15 GiB machine running the client threads, the
+aggregator and the collector together, at the production silent-mode
+parameters (ring 65536, depth 28, 64 groups, 7 repetitions; reports of
+23,085,183 bytes), `histogram:16`:
+
+| Run | Result | Submission | Close | Peaks |
+| --- | --- | --- | --- | --- |
+| 128 reports, 12 invalid, `min_batch 3`, `min_cell 3`, 2 workers | exact; cells below 3 suppressed and listed, counts withheld | 121.9 s, 1.05 reports/s; encryption mean 0.58 s; submit p50 0.63 s, p99 21.1 s | 225.8 s (gate 131.7 s, release 69.1 s) | aggregator 9.20 GiB resident, 2.2 GiB database; collector 4.25 GiB, 1.3 GiB |
+| 1024 reports, 512 invalid, `min_batch 1000`, `min_cell 100`, 2 workers | refused by the encrypted gate (512 valid < 1000, with 1024 admitted) | 911.6 s, 1.12 reports/s | 1158.2 s (gate 1060 s, of which the gates' products 957 s) | aggregator 9.15 GiB, 2.2 GiB; collector 4.40 GiB, 1.3 GiB |
+
+What the numbers say, from the nodes' own metrics:
+
+* A report costs the aggregator a mean of 0.80 s of state-lock time
+  (`fhe_prio3_step_duration_seconds{step="silent_admit"}`), of which about
+  0.33 s is its share of the batch verification (about 21 s per 64
+  reports, which is also the p99 of a submission: the report that
+  completes a verification ciphertext waits for it) and about 0.18 s the
+  database commit of the report (kept until its ciphertext is verified,
+  for restore).
+* The release gates cost about 0.9 s per factor on this machine (957 s for
+  the products over 1001 batch-size factors and 101 cell factors): they
+  dominate the close at large thresholds and grow linearly with them; their
+  memory stays bounded (AUDIT.md F-22).
+* The aggregator's resident peak is at start-up, while the evaluation keys
+  are loaded (4.4 GB of material); it then runs at about 5-6 GiB. The
+  database stays bounded by one verification ciphertext's reports
+  (AUDIT.md F-21).
+* Submissions here are bounded by the client threads sharing the machine
+  with the servers; the server-side capacity is the inverse of the mean
+  admission time.
 
 ## Release policies: several collectors, each seeing only its elements
 
@@ -342,7 +472,8 @@ fhe-prio3-node task-config --out task.bin --type sum:100 --aggregators 2 --mode 
 fhe-prio3-node keygen --task task.bin --out-dir keys/        # material.bin, share-0.sealed, share-1.sealed
 fhe-prio3-node client-identity --out client.key              # prints the public key to enrol
 
-fhe-prio3-node collector  --task task.bin --material keys/material.bin --db col.db --listen 0.0.0.0:8443 \
+fhe-prio3-node client-material --material keys/material.bin --out keys/client-material.bin  # for clients and collectors
+fhe-prio3-node collector  --task task.bin --material keys/client-material.bin --db col.db --listen 0.0.0.0:8443 \
     --token "$TOKEN" --tls-cert col.pem --tls-key col.key
 fhe-prio3-node aggregator --index 1 --task task.bin --material keys/material.bin --share keys/share-1.sealed \
     --db agg1.db --listen 0.0.0.0:8444 --aggregators https://agg0:8443,https://agg1:8444 \

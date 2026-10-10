@@ -268,24 +268,40 @@ parameters (ring 65536, depth 28, 64 groups, 7 repetitions; reports of
 | 128 reports, 12 invalid, `min_batch 3`, `min_cell 3`, 2 workers | exact; cells below 3 suppressed and listed, counts withheld | 121.9 s, 1.05 reports/s; encryption mean 0.58 s; submit p50 0.63 s, p99 21.1 s | 225.8 s (gate 131.7 s, release 69.1 s) | aggregator 9.20 GiB resident, 2.2 GiB database; collector 4.25 GiB, 1.3 GiB |
 | 160 reports, 16 invalid, `min_batch 3`, `min_cell 3`, 3 workers, every process killed with SIGKILL after 121 answers and resumed | exact; the aggregator restored 121 admitted reports (57 of them in the open verification ciphertext, rebuilt from the stored reports), the one report in flight was sent again and counted once | first run until the kill, then 42.3 s for the remaining 39 | 173.4 s | aggregator 9.32 GiB, 2.2 GiB; collector 4.35 GiB, 1.3 GiB |
 | 1024 reports, 512 invalid, `min_batch 1000`, `min_cell 100`, 2 workers | refused by the encrypted gate (512 valid < 1000, with 1024 admitted) | 911.6 s, 1.12 reports/s | 1158.2 s (gate 1060 s, of which the gates' products 957 s) | aggregator 9.15 GiB, 2.2 GiB; collector 4.40 GiB, 1.3 GiB |
+| **65,536 reports**, 65 invalid, `min_batch 1000`, `min_cell 100`, 3 workers (build `0372835`, before F-26) | **exact**: 65,471 valid; cells 0 to 8 (32,618 down to 131) exact, cells 9 to 15 (70, 30, 17, 4, 6, 1, 1) suppressed and listed, counts withheld. Interrupted twice and resumed: the machine restarted after 12,543 answers (the aggregator restored them all; the 3 reports in flight were sent again, each counted once); the kernel killed the aggregator in the release, after the gate had finished (aggregator up to 10.05 GiB, collector 4.64 GiB and the client threads on one 15 GiB machine), and the restarted close continued from the persisted gate outputs | the last 52,993 reports in 34,537 s, 1.53 reports/s; encryption mean 0.38 s (p99 0.52 s); submit p50 0.65 s, p99 19.5 s | gate 985 s (the gates' products 882 s); after the restart, the close completed in 165 s | aggregator 10.05 GiB, database 2.35 GiB; collector 4.64 GiB, 1.35 GiB |
 
 What the numbers say, from the nodes' own metrics:
 
-* A report costs the aggregator a mean of 0.80 s of state-lock time
-  (`fhe_prio3_step_duration_seconds{step="silent_admit"}`), of which about
-  0.33 s is its share of the batch verification (about 21 s per 64
-  reports, which is also the p99 of a submission: the report that
-  completes a verification ciphertext waits for it) and about 0.18 s the
-  database commit of the report (kept until its ciphertext is verified,
-  for restore).
+* A report costs the aggregator a mean of 0.65 to 0.80 s of state-lock
+  time (`fhe_prio3_step_duration_seconds{step="silent_admit"}`; 0.651 s
+  over 52,993 reports of the large run), of which about 0.33 s is its share
+  of the batch verification (about 21 s per 64 reports, which is also the
+  p99 of a submission: the report that completes a verification ciphertext
+  waits for it) and 0.11 to 0.18 s the database commit of the report (kept
+  until its ciphertext is verified, for restore). In the large run, which
+  predates F-26, both grew with the batch (mean admission 0.609 s up to
+  20,000 reports, 0.637 s between 33,000 and 43,000; 1 MB more written per
+  commit): the report id lists were rewritten with every commit. They are
+  now appended once each (AUDIT.md F-26).
 * The release gates cost about 0.9 s per factor on this machine (957 s for
   the products over 1001 batch-size factors and 101 cell factors): they
   dominate the close at large thresholds and grow linearly with them; their
   memory stays bounded (AUDIT.md F-22).
-* The aggregator's resident peak is at start-up, while the evaluation keys
-  are loaded (4.4 GB of material); it then runs at about 5-6 GiB. The
-  database stays bounded by one verification ciphertext's reports
-  (AUDIT.md F-21).
+* The aggregator runs at about 5 to 6.5 GiB resident while it admits
+  reports; it peaks while the evaluation keys load at start-up (4.4 GB of
+  material, about 9.2 GiB) and in the release that follows the gates (the
+  partial decryptions of the gated outputs with their blinded checks:
+  10.05 GiB at `min_batch_size 1000`; the gates' products themselves stayed
+  at or below 7.54 GiB). A node restarted after the gates holds the
+  persisted gate state and runs the close at 8 to 8.65 GiB. A deployment
+  gives each node its own machine; on one 15 GiB machine the three
+  processes together ran out of memory once, in the release of the large
+  run, which the restart then completed. The database stays bounded by one
+  verification ciphertext's reports (2.35 GiB at 65,536 reports, as at
+  128; AUDIT.md F-21).
+* Node start-up takes 81 s on a warm machine and up to 592 s after a
+  machine restart (cold disk cache, the 4.4 GB of material read again, the
+  open verification ciphertext rebuilt from its stored reports).
 * Submissions here are bounded by the client threads sharing the machine
   with the servers; the server-side capacity is the inverse of the mean
   admission time.

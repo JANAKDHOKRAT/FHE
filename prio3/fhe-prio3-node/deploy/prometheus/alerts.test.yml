@@ -307,4 +307,4 @@ tests:
           - exp_labels: { severity: warning, job: fhe-prio3-aggregator, instance: big }
             exp_annotations:
               summary: "big: resident memory 15GiB"
-              description: "Above the measured peak of a node at the production parameters (9.2 GiB, while the evaluation keys load). Close to the machine's memory the kernel kills the node; it resumes from its last committed step after a restart."
+              description: "Above the measured peak of a node at the production parameters (10.05 GiB, in the release after the gates at min_batch_size 1000). Close to the machine's memory the kernel kills the node; it resumes from its last committed step after a restart."

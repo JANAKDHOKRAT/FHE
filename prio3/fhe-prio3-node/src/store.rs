@@ -6,6 +6,15 @@ use anyhow::Context as _;
 use rusqlite::{Connection, OptionalExtension, params};
 use std::path::Path;
 
+/// Which list a stored report id belongs to (`ids.kind`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IdKind {
+    /// Every report admitted to the batch (replay protection).
+    Seen = 0,
+    /// The reports in the sums.
+    Accepted = 1,
+}
+
 pub struct Store {
     conn: Connection,
     path: std::path::PathBuf,
@@ -18,7 +27,8 @@ impl Store {
         conn.pragma_update(None, "synchronous", "FULL")?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS kv (name TEXT PRIMARY KEY, bytes BLOB NOT NULL);
-             CREATE TABLE IF NOT EXISTS journal (seq INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, event TEXT NOT NULL, detail TEXT NOT NULL);",
+             CREATE TABLE IF NOT EXISTS journal (seq INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, event TEXT NOT NULL, detail TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS ids (seq INTEGER PRIMARY KEY AUTOINCREMENT, kind INTEGER NOT NULL, id BLOB NOT NULL);",
         )?;
         Ok(Self {
             conn,
@@ -41,10 +51,23 @@ impl Store {
             .optional()?)
     }
 
-    /// Writes several entries, deletes others and adds a journal line,
-    /// atomically.
-    pub fn commit_step(&mut self, entries: &[(&str, Vec<u8>)], deletes: &[String], event: &str, detail: &str) -> anyhow::Result<()> {
+    /// Writes several entries, deletes others, appends report ids and adds
+    /// a journal line, atomically.
+    pub fn commit_step(
+        &mut self,
+        entries: &[(&str, Vec<u8>)],
+        deletes: &[String],
+        ids: &[(IdKind, [u8; 32])],
+        event: &str,
+        detail: &str,
+    ) -> anyhow::Result<()> {
         let tx = self.conn.transaction()?;
+        {
+            let mut ins = tx.prepare_cached("INSERT INTO ids(kind, id) VALUES (?1, ?2)")?;
+            for (kind, id) in ids {
+                ins.execute(params![*kind as i64, &id[..]])?;
+            }
+        }
         for (name, bytes) in entries {
             tx.execute(
                 "INSERT INTO kv(name, bytes) VALUES (?1, ?2) ON CONFLICT(name) DO UPDATE SET bytes = excluded.bytes",
@@ -61,6 +84,18 @@ impl Store {
         tx.execute("INSERT INTO journal(ts, event, detail) VALUES (?1, ?2, ?3)", params![ts, event, detail])?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// The appended report ids of `kind`, in the order they were appended.
+    pub fn ids(&self, kind: IdKind) -> anyhow::Result<Vec<[u8; 32]>> {
+        let mut stmt = self.conn.prepare("SELECT id FROM ids WHERE kind = ?1 ORDER BY seq")?;
+        let rows = stmt.query_map(params![kind as i64], |r| r.get::<_, Vec<u8>>(0))?;
+        let mut out = Vec::new();
+        for r in rows {
+            let b = r?;
+            out.push(b.as_slice().try_into().map_err(|_| anyhow::anyhow!("stored report id is {} bytes", b.len()))?);
+        }
+        Ok(out)
     }
 
     /// Names of the stored entries starting with `prefix`.

@@ -8,8 +8,9 @@
 #
 # Thresholds come from the measured runs in README.md ("Load test", one
 # 4-vCPU machine): a silent-mode admission averages 0.80 s of state-lock
-# time, a database commit 0.18 s, a node's resident memory peaks at 9.2 GiB
-# (key loading), and the longest single step, the release gates' products
+# time, a database commit 0.18 s, a node's resident memory peaks at 10.05
+# GiB (the release after the gates at min_batch_size 1000; 9.2 GiB while
+# the keys load), and the longest single step, the release gates' products
 # at min_batch_size 1000, took 957 s; it grows linearly with the
 # thresholds. The thresholds leave a wide margin above those measurements;
 # tune them to your hardware from your own `loadtest` run.
@@ -217,6 +218,7 @@ groups:
           summary: "{{ $labels.instance }}: resident memory {{ $value | humanize1024 }}B"
           description: >-
             Above the measured peak of a node at the production parameters
-            (9.2 GiB, while the evaluation keys load). Close to the machine's
+            (10.05 GiB, in the release after the gates at min_batch_size
+            1000). Close to the machine's
             memory the kernel kills the node; it resumes from its last
             committed step after a restart.

@@ -183,6 +183,9 @@ pub struct Aggregator {
     registry: Option<Arc<dyn ClientRegistry>>,
     client_reports: HashMap<[u8; 32], u32>,
     seen: HashSet<ReportId>,
+    /// `seen` in insertion order: what a node appends to its store, so it
+    /// writes each id once instead of the whole set with every step.
+    seen_log: Vec<ReportId>,
     admitted: u64,
     pending: HashMap<ReportId, Pending>,
     accepted_ids: Vec<ReportId>,
@@ -325,6 +328,7 @@ impl Aggregator {
             registry,
             client_reports: HashMap::new(),
             seen: HashSet::new(),
+            seen_log: Vec::new(),
             admitted: 0,
             pending: HashMap::new(),
             accepted_ids: Vec::new(),
@@ -482,9 +486,24 @@ impl Aggregator {
         for bytes in &report.chunks {
             chunks.push(self.load_fresh(bytes)?);
         }
-        self.seen.insert(report.report_id);
+        self.mark_seen(report.report_id);
         self.admitted += 1;
         Ok(chunks)
+    }
+
+    fn mark_seen(&mut self, id: ReportId) {
+        if self.seen.insert(id) {
+            self.seen_log.push(id);
+        }
+    }
+
+    /// The report ids seen (in insertion order) and accepted, which grow by
+    /// at most one each per report. A node stores them append-only (only the
+    /// ids past what it already stored) and the rest of the state with
+    /// [`Self::snapshot_bookkeeping_without_ids`]; restore takes them back
+    /// in `AggregatorState::seen` and `accepted_ids`.
+    pub fn id_logs(&self) -> (&[ReportId], &[ReportId]) {
+        (&self.seen_log, &self.accepted_ids)
     }
 
     fn add_to_sums(&mut self, chunks: Vec<Ciphertext>) -> Result<()> {
@@ -828,7 +847,7 @@ impl Aggregator {
         }
         self.accumulate_silent(group, id, chunks)?;
         self.accepted_ids.push(id);
-        self.seen.insert(id);
+        self.mark_seen(id);
         self.admitted += 1;
         if self.silent_batch.used_groups.len() == self.layout.groups {
             self.flush_silent_batch()?;
@@ -979,14 +998,25 @@ impl Aggregator {
     /// with every report. Restore it with the accumulators stored apart
     /// ([`AggregatorState::with_accumulators`]).
     pub fn snapshot_bookkeeping(&self) -> Result<AggregatorState> {
+        let mut st = self.snapshot_bookkeeping_without_ids()?;
+        st.seen = self.seen_log.clone();
+        st.accepted_ids = self.accepted_ids.clone();
+        Ok(st)
+    }
+
+    /// [`Self::snapshot_bookkeeping`] without the report ids (`seen` and
+    /// `accepted_ids` empty), which a node stores append-only from
+    /// [`Self::id_logs`]: tens of bytes per report instead of the whole
+    /// lists (megabytes in a large batch) with every step.
+    pub fn snapshot_bookkeeping_without_ids(&self) -> Result<AggregatorState> {
         Ok(AggregatorState {
             sums: None,
             valid_count_sum: None,
             moment_sums: None,
             silent_pending: self.silent_batch.reports.clone(),
             silent_finalized: self.silent_finalized,
-            accepted_ids: self.accepted_ids.clone(),
-            seen: self.seen.iter().copied().collect(),
+            accepted_ids: Vec::new(),
+            seen: Vec::new(),
             client_reports: self.client_reports.iter().map(|(k, n)| (*k, *n)).collect(),
             admitted: self.admitted,
             valid_count: self.valid_count,
@@ -1075,7 +1105,8 @@ impl Aggregator {
         }
         self.silent_finalized = st.silent_finalized;
         self.accepted_ids = st.accepted_ids;
-        self.seen = st.seen.into_iter().collect();
+        self.seen = st.seen.iter().copied().collect();
+        self.seen_log = st.seen;
         self.client_reports = st.client_reports.into_iter().collect();
         self.admitted = st.admitted;
         self.valid_count = st.valid_count;

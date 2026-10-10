@@ -12,7 +12,7 @@
 //! SQLite in one transaction; a restarted node resumes from them.
 
 use crate::metrics::{BuildInfo, NodeMetrics};
-use crate::store::Store;
+use crate::store::{IdKind, Store};
 use crate::wire::*;
 use axum::Router;
 use axum::body::Bytes;
@@ -60,6 +60,9 @@ struct Inner {
     /// Accumulator generation of the last committed `K_ACC`; `None` until
     /// the first commit of this process, which always writes them.
     persisted_accumulators: Mutex<Option<u64>>,
+    /// Report ids already in the store's `ids` table: (seen, accepted). The
+    /// table holds a prefix of `Aggregator::id_logs`; a step appends the rest.
+    persisted_ids: Mutex<(usize, usize)>,
 }
 
 #[derive(Clone)]
@@ -94,10 +97,21 @@ impl AggregatorNode {
             }
             None => store.put(K_TASK, &encode(&cfg.task)?)?,
         }
+        // report ids: a database written before the ids table holds them in
+        // the snapshot and none in the table; since, the table holds them all
+        let (stored_seen, stored_accepted) = (store.ids(IdKind::Seen)?, store.ids(IdKind::Accepted)?);
+        let persisted_ids = (stored_seen.len(), stored_accepted.len());
         if let Some(bytes) = store.get(K_STATE)? {
             let mut st: AggregatorState = decode(&bytes)?;
             if let Some(acc) = store.get(K_ACC)? {
                 st = st.with_accumulators(decode(&acc)?);
+            }
+            if persisted_ids != (0, 0) {
+                if !st.seen.is_empty() || !st.accepted_ids.is_empty() {
+                    anyhow::bail!("database {} holds report ids both in the snapshot and in the ids table", cfg.db.display());
+                }
+                st.seen = stored_seen;
+                st.accepted_ids = stored_accepted;
             }
             let mut pending = Vec::with_capacity(st.silent_pending.len());
             for (_, id) in &st.silent_pending {
@@ -117,7 +131,7 @@ impl AggregatorNode {
         let stale: Vec<String> = store.names_with_prefix(REPORT_PREFIX)?.into_iter().filter(|n| !pending.contains(n)).collect();
         if !stale.is_empty() {
             tracing::info!(index = cfg.index, reports = stale.len(), "deleting stored reports no restore needs");
-            store.commit_step(&[], &stale, "prune_reports", &stale.len().to_string())?;
+            store.commit_step(&[], &stale, &[], "prune_reports", &stale.len().to_string())?;
         }
         let groups = agg.layout().groups as u32;
         let max_report_bytes = agg.max_report_bytes();
@@ -154,6 +168,7 @@ impl AggregatorNode {
                 max_message_bytes,
                 metrics,
                 persisted_accumulators: Mutex::new(None),
+                persisted_ids: Mutex::new(persisted_ids),
             }),
         })
     }
@@ -265,7 +280,7 @@ impl AggregatorNode {
             let pending_before: Vec<String> = agg.silent_pending_ids().map(report_key).collect();
             let (r, changed) = f(&mut agg)?;
             if changed {
-                let snap = agg.snapshot_bookkeeping()?;
+                let snap = agg.snapshot_bookkeeping_without_ids()?;
                 // A stored report is kept exactly while the snapshot lists it
                 // as pending: once its verification ciphertext is flushed it
                 // lives on only in the accumulators, so its bytes are not
@@ -286,11 +301,26 @@ impl AggregatorNode {
                         entries.push((name.as_str(), b.clone()));
                     }
                 }
-                let bytes: usize = entries.iter().map(|(_, b)| b.len()).sum();
+                // the report ids past those already stored (one or two per
+                // report), not the whole lists
+                let mut persisted_ids = guard(&inner.persisted_ids, "persisted ids")?;
+                let (seen, accepted) = agg.id_logs();
+                if seen.len() < persisted_ids.0 || accepted.len() < persisted_ids.1 {
+                    return Err(HttpError(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "report id lists shorter than what the store holds".into(),
+                    ));
+                }
+                let mut ids: Vec<(IdKind, [u8; 32])> = Vec::new();
+                ids.extend(seen[persisted_ids.0..].iter().map(|id| (IdKind::Seen, *id)));
+                ids.extend(accepted[persisted_ids.1..].iter().map(|id| (IdKind::Accepted, *id)));
+                let next_ids = (seen.len(), accepted.len());
+                let bytes: usize = entries.iter().map(|(_, b)| b.len()).sum::<usize>() + 32 * ids.len();
                 let mut store = guard(&inner.store, "store").inspect_err(|_| inner.metrics.set_ready(false))?;
                 let t = std::time::Instant::now();
-                store.commit_step(&entries, &deletes, event, &detail)?;
+                store.commit_step(&entries, &deletes, &ids, event, &detail)?;
                 *persisted = Some(generation);
+                *persisted_ids = next_ids;
                 inner.metrics.committed(bytes, t.elapsed(), store.size_bytes().ok());
             }
             inner.metrics.set_batch(agg.accepted_count(), agg.pending_silent_reports(), agg.is_closed());

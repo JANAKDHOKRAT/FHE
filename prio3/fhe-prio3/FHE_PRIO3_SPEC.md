@@ -1218,8 +1218,12 @@ products at the same depth `⌈log2(len)⌉` (building every factor first took
 over the network, `fhe-prio3-node loadtest`): the close of a split-key
 batch with `min_batch_size = 3`, `k = 3` takes 226 s (gate 132 s, release
 69 s); with `min_batch_size = 1000`, `k = 100`, 1158 s, of which the gates'
-products take 957 s (1001 and 101 factors, about 0.9 s each), at a resident
-peak of about 6 GiB during the gate. Noise of the released
+products take 957 s (1001 and 101 factors, about 0.9 s each); with 65,536
+reports (65,471 valid) and the same thresholds the gate takes 985 s (products
+882 s) and the release is exact, with the cells below 100 suppressed. The
+aggregator's resident memory peaks at 10.05 GiB in the release that follows
+the gate (the gates' products stay at or below 7.54 GiB; 5 to 6.5 GiB while
+reports are admitted). Noise of the released
 ciphertexts (`tests/gate_noise.rs`, `min_batch_size = 100`, `k = 10`):
 808 bits or more below the flooding with honest contributions, 401.7 bits
 with a contribution whose randomness sits at the proof's masking range

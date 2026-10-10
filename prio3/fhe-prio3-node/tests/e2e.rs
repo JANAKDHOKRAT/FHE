@@ -7,7 +7,7 @@ use fhe_prio3_node::aggregator_node::{AggregatorNode, AggregatorNodeConfig};
 use fhe_prio3_node::client::NetworkClient;
 use fhe_prio3_node::collector_node::{CollectorNode, CollectorNodeConfig};
 use fhe_prio3_node::metrics::spawn_metrics_server;
-use fhe_prio3_node::store::Store;
+use fhe_prio3_node::store::{IdKind, Store};
 use fhe_prio3_node::wire::{ServerHandle, SubmitOutcome, http_get, http_post, https_client};
 use std::net::{SocketAddr, TcpListener};
 use std::path::PathBuf;
@@ -391,12 +391,46 @@ async fn verdict_count_over_tls_with_leader_restart() {
         .put(&format!("report:{}", hex::encode([7u8; 32])), &[1, 2, 3])
         .unwrap();
     assert_eq!(c.stored_reports(), vec![1, 0]);
+    // Report ids are appended to their own table, one row each, not
+    // rewritten with every step: four seen (the invalid report too), three
+    // accepted, none in the snapshot.
+    let db0 = c.dir.path().join("agg0.db");
+    {
+        let s = Store::open(&db0).unwrap();
+        let (seen, accepted) = (s.ids(IdKind::Seen).unwrap(), s.ids(IdKind::Accepted).unwrap());
+        assert_eq!((seen.len(), accepted.len()), (4, 3));
+        assert!(accepted.iter().all(|a| seen.contains(a)));
+        let mut st: AggregatorState = fhe_prio3::messages::decode(&s.get("aggregator_state").unwrap().unwrap()).unwrap();
+        assert!(st.seen.is_empty() && st.accepted_ids.is_empty());
+        // Turn it into a database of an earlier build (ids inside the
+        // snapshot, no ids table rows): the node must start from it and
+        // move the ids to the table at its next commit.
+        st.seen = seen;
+        st.accepted_ids = accepted;
+        drop(s);
+        let mut s = Store::open(&db0).unwrap();
+        s.put("aggregator_state", &fhe_prio3::messages::encode(&st).unwrap()).unwrap();
+        rusqlite::Connection::open(&db0).unwrap().execute("DELETE FROM ids", []).unwrap();
+        assert!(s.ids(IdKind::Seen).unwrap().is_empty());
+    }
     c.start_aggregator(0).await;
     assert_eq!(c.stored_reports(), vec![0, 0]);
     let st: fhe_prio3_node::wire::StatusReply = http_get(&http, &format!("{}/v1/status", c.agg_urls[0]), None).await.unwrap();
     assert_eq!((st.accepted, st.closed), (3, false));
+    // the restarted leader still refuses a replay of a report it admitted
+    match client.submit_report(&first).await.unwrap() {
+        SubmitOutcome::Rejected(r) => assert!(r.contains("Replay"), "{r}"),
+        o => panic!("expected replay rejection after the restart, got {o:?}"),
+    }
 
     assert_eq!(client.submit(&Measurement::Count(true)).await.unwrap(), SubmitOutcome::Accepted);
+    // that commit moved every id to the table (and out of the snapshot)
+    {
+        let s = Store::open(&db0).unwrap();
+        assert_eq!((s.ids(IdKind::Seen).unwrap().len(), s.ids(IdKind::Accepted).unwrap().len()), (5, 4));
+        let st: AggregatorState = fhe_prio3::messages::decode(&s.get("aggregator_state").unwrap().unwrap()).unwrap();
+        assert!(st.seen.is_empty() && st.accepted_ids.is_empty());
+    }
     let r = c.close().await.unwrap();
     assert_eq!((r.aggregate, r.report_count, r.valid_count), (AggregateResult::Count(3), 4, 4));
     // closed: further reports refused, close again fails
@@ -427,6 +461,15 @@ async fn silent_batched_sum_over_tls() {
     let r = client.inner().shard_raw_elements_in_group(&[bad], 1).unwrap();
     assert_eq!(client.submit_report(&r).await.unwrap(), SubmitOutcome::Accepted);
     assert_eq!(c.stored_reports(), vec![0, 0]);
+    // every admitted report's id appended once on each aggregator
+    for i in 0..2 {
+        let s = Store::open(&c.dir.path().join(format!("agg{i}.db"))).unwrap();
+        assert_eq!(
+            (s.ids(IdKind::Seen).unwrap().len(), s.ids(IdKind::Accepted).unwrap().len()),
+            (4, 4),
+            "aggregator {i}"
+        );
+    }
     let r = c.close().await.unwrap();
     assert_eq!((r.aggregate, r.report_count, r.valid_count), (AggregateResult::Sum(200), 4, 3));
 

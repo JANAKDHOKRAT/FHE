@@ -50,6 +50,106 @@ pub struct LoadConfig {
     /// Longest wait for the close (a gated release at a large threshold
     /// runs for minutes).
     pub close_timeout: Duration,
+    /// Durable client state ([`ClientState`]): with it, a run stopped at any
+    /// point (the machine restarted) resumes where it stopped, every report
+    /// counted once.
+    pub state_dir: Option<PathBuf>,
+}
+
+/// A client's durable state across restarts, in a directory:
+///
+/// * `pending/<i>.report`: the encoded bytes of report `i`, written and
+///   synced *before* it is sent, removed once its answer is journaled;
+/// * `answers.log`: one line per answered report (`<i> accepted`,
+///   `<i> rejected <Reason>`), appended and synced.
+///
+/// On resume, a journaled report is done; a pending one is sent again with
+/// the same bytes, so the leader answers it as a new report if it never
+/// committed it, or as a replay (`Replay`) if it did, which then counts as
+/// the outcome it had (accepted; or rejected for an invalid report in
+/// verdict mode, where invalid reports are refused). Every report is
+/// counted exactly once, as a real client retrying the same report is.
+pub struct ClientState {
+    dir: PathBuf,
+    journal: Mutex<std::fs::File>,
+}
+
+/// What a previous run left: the answered reports and the reports sent (or
+/// about to be sent) without a journaled answer.
+#[derive(Default)]
+pub struct Prior {
+    pub answered: BTreeMap<u64, String>,
+    pub pending: Vec<(u64, Vec<u8>)>,
+}
+
+fn sync_dir(dir: &std::path::Path) -> std::io::Result<()> {
+    std::fs::File::open(dir)?.sync_all()
+}
+
+impl ClientState {
+    pub fn open(dir: &std::path::Path) -> anyhow::Result<(Self, Prior)> {
+        let pending_dir = dir.join("pending");
+        std::fs::create_dir_all(&pending_dir)?;
+        let journal_path = dir.join("answers.log");
+        let mut prior = Prior::default();
+        if let Ok(text) = std::fs::read_to_string(&journal_path) {
+            for line in text.lines() {
+                // a torn last line (a crash inside the append) is skipped:
+                // its report is still pending and is sent again
+                let Some((i, answer)) = line.split_once(' ') else { continue };
+                let Ok(i) = i.parse::<u64>() else { continue };
+                if answer == "accepted" || answer.starts_with("rejected ") {
+                    prior.answered.insert(i, answer.to_string());
+                }
+            }
+        }
+        for entry in std::fs::read_dir(&pending_dir)? {
+            let path = entry?.path();
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_string();
+            match name.strip_suffix(".report").and_then(|i| i.parse::<u64>().ok()) {
+                // answered before the pending file was removed
+                Some(i) if prior.answered.contains_key(&i) => std::fs::remove_file(&path)?,
+                Some(i) => prior.pending.push((i, std::fs::read(&path)?)),
+                // a temporary file of a write the crash interrupted: its
+                // report was never sent
+                None => std::fs::remove_file(&path)?,
+            }
+        }
+        prior.pending.sort_by_key(|(i, _)| *i);
+        let journal = std::fs::OpenOptions::new().create(true).append(true).open(&journal_path)?;
+        sync_dir(dir)?;
+        Ok((
+            Self {
+                dir: dir.to_path_buf(),
+                journal: Mutex::new(journal),
+            },
+            prior,
+        ))
+    }
+
+    /// Makes report `i`'s bytes durable before they are sent.
+    fn save_pending(&self, i: u64, bytes: &[u8]) -> std::io::Result<()> {
+        let dir = self.dir.join("pending");
+        let tmp = dir.join(format!("{i}.tmp"));
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        std::fs::rename(&tmp, dir.join(format!("{i}.report")))?;
+        sync_dir(&dir)
+    }
+
+    /// Journals report `i`'s answer, then drops its pending bytes.
+    fn record(&self, i: u64, answer: &str) -> std::io::Result<()> {
+        {
+            let mut j = self.journal.lock().expect("journal");
+            writeln!(j, "{i} {answer}")?;
+            j.sync_data()?;
+        }
+        match std::fs::remove_file(self.dir.join("pending").join(format!("{i}.report"))) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        }
+    }
 }
 
 /// splitmix64: a fixed, seedable generator, so a run is reproducible.
@@ -78,6 +178,22 @@ pub fn measurement(ty: &MeasurementType, seed: u64, i: u64) -> anyhow::Result<Me
 
 pub fn is_invalid(invalid_every: u64, i: u64) -> bool {
     invalid_every > 0 && i % invalid_every == invalid_every - 1
+}
+
+/// Report `i` of a run, in `group`: the encrypted measurement, or for an
+/// invalid one a valid encoding with its first element set to 2 (not a bit,
+/// so the validity check zeroes or rejects it).
+pub fn make_report(client: &Client, task: &TaskConfig, seed: u64, invalid_every: u64, i: u64, group: u32) -> anyhow::Result<Report> {
+    let m = measurement(&task.measurement_type, seed, i)?;
+    Ok(if is_invalid(invalid_every, i) {
+        let mut enc = task.measurement_type.encode(&m)?;
+        enc[0] = 2;
+        let layout = client.layout();
+        let chunks: Vec<Vec<u64>> = (0..layout.num_chunks).map(|c| enc[layout.chunk_range(c)].to_vec()).collect();
+        client.shard_raw_elements_in_group(&chunks, group)?
+    } else {
+        client.shard_in_group(&m, group)?
+    })
 }
 
 /// The aggregate of the valid measurements of a run, kept per element.
@@ -210,6 +326,8 @@ struct Sample {
     submit: f64,
     retries: u32,
     done_at: f64,
+    /// Sent again from the client state (no ticket, no encryption here).
+    resent: bool,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -243,7 +361,12 @@ pub struct LoadReport {
     pub seed: u64,
     pub invalid_every: u64,
     pub report_bytes: usize,
+    /// Totals over every run of this client state.
     pub outcomes: Outcomes,
+    /// Reports answered in earlier runs of this client state (resumed).
+    pub answered_before: u64,
+    /// Reports pending from an earlier run, sent again with their bytes.
+    pub resent: u64,
     /// Wall time from the first ticket to the last answered submission.
     pub submit_wall_seconds: f64,
     pub reports_per_second: f64,
@@ -369,57 +492,98 @@ pub async fn run(cfg: LoadConfig) -> anyhow::Result<LoadReport> {
         })
     };
 
+    // client state: what earlier runs answered, what they left in flight
+    let (state, prior) = match &cfg.state_dir {
+        Some(d) => {
+            let (st, prior) = ClientState::open(d)?;
+            (Some(Arc::new(st)), prior)
+        }
+        None => (None, Prior::default()),
+    };
+    let mut outcomes0 = Outcomes::default();
+    for (i, a) in &prior.answered {
+        if *i >= cfg.reports {
+            anyhow::bail!("client state answers report {i}, beyond --reports {}", cfg.reports);
+        }
+        match a.strip_prefix("rejected ") {
+            None => outcomes0.accepted += 1,
+            Some(r) => *outcomes0.rejected.entry(r.to_string()).or_default() += 1,
+        }
+    }
+    let answered_before = prior.answered.len() as u64;
+    let resent = prior.pending.len() as u64;
+    if answered_before + resent > 0 {
+        tracing::info!(answered_before, resent, "resuming from the client state");
+    }
+    // the work: pending reports first (same bytes), then every report
+    // neither answered nor pending
+    enum Work {
+        Fresh(u64),
+        Resend(u64, Vec<u8>),
+    }
+    let pending_ids: std::collections::BTreeSet<u64> = prior.pending.iter().map(|(i, _)| *i).collect();
+    let mut queue: std::collections::VecDeque<Work> = prior.pending.into_iter().map(|(i, b)| Work::Resend(i, b)).collect();
+    queue.extend(
+        (0..cfg.reports)
+            .filter(|i| !prior.answered.contains_key(i) && !pending_ids.contains(i))
+            .map(Work::Fresh),
+    );
+    let todo = queue.len() as u64;
+    let queue = Arc::new(Mutex::new(queue));
+
     // workers: one OS thread and one client each; network calls run on the
     // runtime through its handle
     let rt = tokio::runtime::Handle::current();
-    let next = Arc::new(AtomicU64::new(0));
-    let samples: Arc<Mutex<Vec<Sample>>> = Arc::new(Mutex::new(Vec::with_capacity(cfg.reports as usize)));
-    let outcomes = Arc::new(Mutex::new(Outcomes::default()));
+    let samples: Arc<Mutex<Vec<Sample>>> = Arc::new(Mutex::new(Vec::with_capacity(todo as usize)));
+    let outcomes = Arc::new(Mutex::new(outcomes0));
     let report_bytes = Arc::new(AtomicU64::new(0));
-    let progress = Arc::new(AtomicU64::new(0));
+    let progress = Arc::new(AtomicU64::new(answered_before));
     let submit_start = Instant::now();
     let mut threads = Vec::new();
     for w in 0..cfg.workers {
         let client = Client::new(cfg.task.clone(), &cfg.material.context, &cfg.material.public_key)?;
-        let (rt, next, samples, outcomes, report_bytes, progress) = (
+        let (rt, queue, samples, outcomes, report_bytes, progress, state) = (
             rt.clone(),
-            next.clone(),
+            queue.clone(),
             samples.clone(),
             outcomes.clone(),
             report_bytes.clone(),
             progress.clone(),
+            state.clone(),
         );
         let (http, leader, task, n, seed, invalid_every) = (http.clone(), cfg.leader.clone(), cfg.task.clone(), cfg.reports, cfg.seed, cfg.invalid_every);
         threads.push(std::thread::Builder::new().name(format!("loadtest-{w}")).spawn(move || -> anyhow::Result<()> {
             loop {
-                let i = next.fetch_add(1, Ordering::SeqCst);
-                if i >= n {
+                let Some(work) = queue.lock().expect("queue").pop_front() else {
                     return Ok(());
-                }
+                };
                 let mut s = Sample::default();
-                let t = Instant::now();
-                let group = if batched {
-                    let ticket: GroupTicket = rt.block_on(http_get(&http, &format!("{leader}/v1/group"), None))?;
-                    ticket.group
-                } else {
-                    0
+                let (i, body) = match work {
+                    Work::Resend(i, bytes) => {
+                        s.resent = true;
+                        (i, bytes)
+                    }
+                    Work::Fresh(i) => {
+                        let t = Instant::now();
+                        let group = if batched {
+                            let ticket: GroupTicket = rt.block_on(http_get(&http, &format!("{leader}/v1/group"), None))?;
+                            ticket.group
+                        } else {
+                            0
+                        };
+                        s.group = t.elapsed().as_secs_f64();
+                        let t = Instant::now();
+                        let report = make_report(&client, &task, seed, invalid_every, i, group)?;
+                        s.encrypt = t.elapsed().as_secs_f64();
+                        let body = fhe_prio3::messages::encode(&report)?;
+                        // durable before it leaves: a crash from here on resends
+                        // exactly these bytes
+                        if let Some(st) = &state {
+                            st.save_pending(i, &body)?;
+                        }
+                        (i, body)
+                    }
                 };
-                s.group = t.elapsed().as_secs_f64();
-                let t = Instant::now();
-                let m = measurement(&task.measurement_type, seed, i)?;
-                let report = if is_invalid(invalid_every, i) {
-                    // a valid encoding with its first element set to 2: not
-                    // a bit, so the validity check zeroes or rejects it
-                    let mut enc = task.measurement_type.encode(&m)?;
-                    enc[0] = 2;
-                    let layout = client.layout();
-                    let chunks: Vec<Vec<u64>> = (0..layout.num_chunks).map(|c| enc[layout.chunk_range(c)].to_vec()).collect();
-                    client.shard_raw_elements_in_group(&chunks, group)?
-                } else {
-                    client.shard_in_group(&m, group)?
-                };
-                s.encrypt = t.elapsed().as_secs_f64();
-                let body = fhe_prio3::messages::encode(&report)?;
                 report_bytes.store(body.len() as u64, Ordering::Relaxed);
                 let t = Instant::now();
                 let mut answer = None;
@@ -428,8 +592,16 @@ pub async fn run(cfg: LoadConfig) -> anyhow::Result<LoadReport> {
                         Ok(bytes) => {
                             let o: SubmitOutcome = fhe_prio3::messages::decode(&bytes)?;
                             answer = Some(match o {
-                                // a retry of a report the leader admitted
-                                SubmitOutcome::Rejected(r) if attempt > 0 && r.starts_with("Replay") => SubmitOutcome::Accepted,
+                                // the same bytes again (a retry, or a report left
+                                // pending by an earlier run): the leader committed
+                                // it before; it has the outcome it had then
+                                SubmitOutcome::Rejected(r) if (attempt > 0 || s.resent) && r.starts_with("Replay") => {
+                                    if task.mode == VerificationMode::Verdict && is_invalid(invalid_every, i) {
+                                        SubmitOutcome::Rejected("ValidityCheckFailed".into())
+                                    } else {
+                                        SubmitOutcome::Accepted
+                                    }
+                                }
                                 o => o,
                             });
                             break;
@@ -446,17 +618,32 @@ pub async fn run(cfg: LoadConfig) -> anyhow::Result<LoadReport> {
                 {
                     let mut o = outcomes.lock().expect("outcomes");
                     o.retries += s.retries as u64;
-                    match answer {
-                        Some(SubmitOutcome::Accepted) => o.accepted += 1,
-                        Some(SubmitOutcome::Rejected(r)) => *o.rejected.entry(crate::metrics::reject_label(&r).to_string()).or_default() += 1,
-                        None => o.failed += 1,
+                    let journaled = match &answer {
+                        Some(SubmitOutcome::Accepted) => {
+                            o.accepted += 1;
+                            Some("accepted".to_string())
+                        }
+                        Some(SubmitOutcome::Rejected(r)) => {
+                            let label = crate::metrics::reject_label(r);
+                            *o.rejected.entry(label.to_string()).or_default() += 1;
+                            Some(format!("rejected {label}"))
+                        }
+                        // undelivered: stays pending, the next run resends it
+                        None => {
+                            o.failed += 1;
+                            None
+                        }
+                    };
+                    if let (Some(st), Some(a)) = (&state, journaled) {
+                        st.record(i, &a)?;
                     }
                 }
                 samples.lock().expect("samples").push(s);
                 let done = progress.fetch_add(1, Ordering::SeqCst) + 1;
                 if done % 256 == 0 || done == n {
                     let el = submit_start.elapsed().as_secs_f64();
-                    tracing::info!(done, total = n, elapsed_s = el as u64, rate = format!("{:.3}/s", done as f64 / el), "submitted");
+                    let here = done - answered_before;
+                    tracing::info!(done, total = n, elapsed_s = el as u64, rate = format!("{:.3}/s", here as f64 / el), "submitted");
                 }
             }
         })?);
@@ -535,9 +722,11 @@ pub async fn run(cfg: LoadConfig) -> anyhow::Result<LoadReport> {
         report_bytes: report_bytes.load(Ordering::Relaxed) as usize,
         submit_wall_seconds: submit_wall,
         reports_per_second: samples.len() as f64 / submit_wall,
+        answered_before,
+        resent,
         per_minute,
-        group_ticket: Stats::of(samples.iter().map(|s| s.group).collect()),
-        encrypt: Stats::of(samples.iter().map(|s| s.encrypt).collect()),
+        group_ticket: Stats::of(samples.iter().filter(|s| !s.resent).map(|s| s.group).collect()),
+        encrypt: Stats::of(samples.iter().filter(|s| !s.resent).map(|s| s.encrypt).collect()),
         submit: Stats::of(samples.iter().map(|s| s.submit).collect()),
         outcomes,
         close_seconds,
@@ -631,6 +820,46 @@ mod tests {
             Ok(())
         );
         assert!(e.check(&t, 18, &Err("collector: batch below minimum size".into())).is_err());
+    }
+
+    /// Every crash window of the client state: a report journaled but not
+    /// yet unlinked is done; one sent (or about to be) without an answer is
+    /// pending with its exact bytes; a torn journal line and an interrupted
+    /// temporary write leave the report pending or unsent, never counted.
+    #[test]
+    fn client_state_survives_every_crash_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let (st, prior) = ClientState::open(dir.path()).unwrap();
+        assert!(prior.answered.is_empty() && prior.pending.is_empty());
+        st.save_pending(0, b"r0").unwrap();
+        st.record(0, "accepted").unwrap();
+        st.save_pending(1, b"r1").unwrap();
+        st.record(1, "rejected ValidityCheckFailed").unwrap();
+        // sent, no answer yet
+        st.save_pending(2, b"r2").unwrap();
+        // answered, then the crash before the pending file was removed
+        st.save_pending(3, b"r3").unwrap();
+        {
+            let mut j = st.journal.lock().unwrap();
+            writeln!(j, "3 accepted").unwrap();
+        }
+        // a write interrupted before its rename, and a torn journal line
+        std::fs::write(dir.path().join("pending/4.tmp"), b"partial").unwrap();
+        {
+            let mut j = st.journal.lock().unwrap();
+            write!(j, "5 accep").unwrap();
+        }
+        drop(st);
+        let (_st, prior) = ClientState::open(dir.path()).unwrap();
+        let answered: Vec<(u64, &str)> = prior.answered.iter().map(|(i, a)| (*i, a.as_str())).collect();
+        assert_eq!(answered, vec![(0, "accepted"), (1, "rejected ValidityCheckFailed"), (3, "accepted")]);
+        assert_eq!(prior.pending, vec![(2, b"r2".to_vec())]);
+        let mut left: Vec<String> = std::fs::read_dir(dir.path().join("pending"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        left.sort();
+        assert_eq!(left, vec!["2.report".to_string()]);
     }
 
     #[test]

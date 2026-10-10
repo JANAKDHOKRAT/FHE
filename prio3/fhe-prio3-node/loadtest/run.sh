@@ -18,16 +18,25 @@
 #      timeline, the database sizes and the machine description stay in the
 #      output directory.
 #
+# A run stopped at any point (the machine restarted, a node killed) is
+# continued with `--resume --out DIR`: the nodes restart from their
+# databases (their crash recovery) and the load test from its client state
+# (every report counted once), with the secrets and arguments of the first
+# run (DIR/run.env, readable by its owner only: it holds the seal keys and
+# the token of this throwaway deployment).
+#
 # Usage: loadtest/run.sh --out DIR --reports N [--type histogram:16]
 #          [--min-batch K] [--min-cell C] [--workers W] [--invalid-every M]
 #          [--seed S] [--keys ceremony|keygen]
+#        loadtest/run.sh --resume --out DIR
 # Exit status: that of the load test (0 only when the released result is
 # exactly the expected one).
 set -euo pipefail
 
-OUT="" REPORTS="" TYPE="histogram:16" MIN_BATCH=1 MIN_CELL=0 WORKERS=2 INVALID_EVERY=0 SEED=1 KEYS=ceremony
+OUT="" REPORTS="" TYPE="histogram:16" MIN_BATCH=1 MIN_CELL=0 WORKERS=2 INVALID_EVERY=0 SEED=1 KEYS=ceremony RESUME=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --resume) RESUME=1; shift ;;
     --out) OUT="$2"; shift 2 ;;
     --reports) REPORTS="$2"; shift 2 ;;
     --type) TYPE="$2"; shift 2 ;;
@@ -40,17 +49,24 @@ while [[ $# -gt 0 ]]; do
     *) echo "unknown argument $1" >&2; exit 2 ;;
   esac
 done
-[[ -n "$OUT" && -n "$REPORTS" ]] || { echo "usage: $0 --out DIR --reports N [options]" >&2; exit 2; }
-[[ "$KEYS" == ceremony || "$KEYS" == keygen ]] || { echo "--keys is ceremony or keygen" >&2; exit 2; }
-
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN="${FHE_PRIO3_NODE_BIN:-$HERE/../target/release/fhe-prio3-node}"
 [[ -x "$BIN" ]] || { echo "build first: cargo build --release (or set FHE_PRIO3_NODE_BIN)" >&2; exit 2; }
-mkdir -p "$OUT"
-OUT="$(cd "$OUT" && pwd)"
-TOKEN="$(openssl rand -hex 24)"
-SEAL0="$(openssl rand -hex 32)"
-SEAL1="$(openssl rand -hex 32)"
+if (( RESUME )); then
+  [[ -n "$OUT" && -f "$OUT/run.env" ]] || { echo "--resume needs --out DIR of an earlier run (DIR/run.env)" >&2; exit 2; }
+  OUT="$(cd "$OUT" && pwd)"
+  # shellcheck disable=SC1091
+  source "$OUT/run.env"
+else
+  [[ -n "$OUT" && -n "$REPORTS" ]] || { echo "usage: $0 --out DIR --reports N [options]" >&2; exit 2; }
+  [[ "$KEYS" == ceremony || "$KEYS" == keygen ]] || { echo "--keys is ceremony or keygen" >&2; exit 2; }
+  [[ ! -e "$OUT/run.env" ]] || { echo "$OUT holds a run: continue it with --resume, or use another --out" >&2; exit 2; }
+  mkdir -p "$OUT"
+  OUT="$(cd "$OUT" && pwd)"
+  TOKEN="$(openssl rand -hex 24)"
+  SEAL0="$(openssl rand -hex 32)"
+  SEAL1="$(openssl rand -hex 32)"
+fi
 
 free_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()'; }
 
@@ -81,6 +97,7 @@ peak_rss() {
   echo "$peak"
 }
 
+if (( ! RESUME )); then
 # ---- the machine this ran on ------------------------------------------------
 {
   echo "date: $(date -u +%FT%TZ)"
@@ -158,6 +175,20 @@ echo "keys_seconds: $(( $(date +%s) - T0 ))" >> "$OUT/machine.txt"
 ls -l "$MATERIAL" >> "$OUT/machine.txt"
 # what clients get: no evaluation keys
 "$BIN" client-material --material "$MATERIAL" --out "$OUT/client-material.bin" | tee -a "$OUT/machine.txt"
+# what --resume needs: the throwaway deployment's secrets and the arguments
+( umask 077
+  {
+    printf 'TOKEN=%q\nSEAL0=%q\nSEAL1=%q\nMATERIAL=%q\nKEYS=%q\n' "$TOKEN" "$SEAL0" "$SEAL1" "$MATERIAL" "$KEYS"
+    printf 'REPORTS=%q\nTYPE=%q\nMIN_BATCH=%q\nMIN_CELL=%q\nWORKERS=%q\nINVALID_EVERY=%q\nSEED=%q\n' \
+      "$REPORTS" "$TYPE" "$MIN_BATCH" "$MIN_CELL" "$WORKERS" "$INVALID_EVERY" "$SEED"
+  } > "$OUT/run.env" )
+else
+  log "resuming the run in $OUT"
+  echo "resumed: $(date -u +%FT%TZ)" >> "$OUT/machine.txt"
+fi
+# one numbered set of client-side files per invocation
+RUN=1
+while [[ -e "$OUT/report-$RUN.json" || -e "$OUT/loadtest-$RUN.log" ]]; do RUN=$((RUN + 1)); done
 
 # ---- nodes ---------------------------------------------------------------------
 AP="$(free_port)"; CP="$(free_port)"; AM="$(free_port)"; CM="$(free_port)"
@@ -167,14 +198,14 @@ log "collector :$CP (metrics :$CM)"
 FHE_PRIO3_SEAL_KEY="$SEAL1" "$BIN" collector --task "$OUT/task.bin" --material "$OUT/client-material.bin" \
   --key-share "$OUT/m1/share-1.sealed" --db "$OUT/collector.db" --listen "127.0.0.1:$CP" \
   --token "$TOKEN" --tls-cert "$OUT/server.pem" --tls-key "$OUT/server.key" \
-  --metrics-listen "127.0.0.1:$CM" > "$OUT/collector.log" 2>&1 &
+  --metrics-listen "127.0.0.1:$CM" >> "$OUT/collector.log" 2>&1 &
 COL_PID=$!; PIDS+=("$COL_PID")
 log "aggregator :$AP (metrics :$AM)"
 FHE_PRIO3_SEAL_KEY="$SEAL0" "$BIN" aggregator --index 0 --task "$OUT/task.bin" --material "$MATERIAL" \
   --share "$OUT/m0/share-0.sealed" --db "$OUT/aggregator.db" --listen "127.0.0.1:$AP" \
   --aggregators "https://localhost:$AP" --collectors "https://localhost:$CP" --token "$TOKEN" \
   --tls-cert "$OUT/server.pem" --tls-key "$OUT/server.key" --ca "$OUT/ca.pem" \
-  --metrics-listen "127.0.0.1:$AM" > "$OUT/aggregator.log" 2>&1 &
+  --metrics-listen "127.0.0.1:$AM" >> "$OUT/aggregator.log" 2>&1 &
 AGG_PID=$!; PIDS+=("$AGG_PID")
 
 wait_ready() {
@@ -188,7 +219,7 @@ wait_ready() {
 T0=$(date +%s)
 wait_ready collector "$CM" "$COL_PID"
 wait_ready aggregator "$AM" "$AGG_PID"
-echo "node_startup_seconds: $(( $(date +%s) - T0 ))" >> "$OUT/machine.txt"
+echo "node_startup_seconds[$RUN]: $(( $(date +%s) - T0 ))" >> "$OUT/machine.txt"
 log "nodes ready"
 
 # ---- load -------------------------------------------------------------------------
@@ -197,11 +228,13 @@ OMP_NUM_THREADS=1 "$BIN" loadtest --task "$OUT/task.bin" --material "$OUT/client
   --leader "https://localhost:$AP" --ca "$OUT/ca.pem" --token "$TOKEN" \
   --reports "$REPORTS" --workers "$WORKERS" --seed "$SEED" --invalid-every "$INVALID_EVERY" \
   --metrics "aggregator=http://127.0.0.1:$AM" --metrics "collector=http://127.0.0.1:$CM" \
-  --timeline "$OUT/timeline.jsonl" --out "$OUT/report.json" 2>&1 | tee "$OUT/loadtest.log"
+  --state-dir "$OUT/client-state" \
+  --timeline "$OUT/timeline-$RUN.jsonl" --out "$OUT/report-$RUN.json" 2>&1 | tee "$OUT/loadtest-$RUN.log"
 STATUS=${PIPESTATUS[0]}
 set -e
+[[ -f "$OUT/report-$RUN.json" ]] && cp "$OUT/report-$RUN.json" "$OUT/report.json"
 {
-  echo "loadtest_exit: $STATUS"
+  echo "loadtest_exit[$RUN]: $STATUS"
   ls -l "$OUT"/aggregator.db* "$OUT"/collector.db* 2>/dev/null || true
 } >> "$OUT/machine.txt"
 log "done (exit $STATUS); output in $OUT"

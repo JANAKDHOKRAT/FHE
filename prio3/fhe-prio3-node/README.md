@@ -241,6 +241,17 @@ loadtest/run.sh --out /tmp/lt --reports 1024 --type histogram:16 \
     --min-batch 1000 --min-cell 100 --invalid-every 2 --workers 2 --keys keygen
 ```
 
+A run survives being stopped at any point. With `--state-dir` (which
+`run.sh` always passes) the load test keeps a durable client state: each
+report's bytes are written and synced before they are sent and removed once
+the answer is journaled, so a resumed run sends a report left in flight
+again with the same bytes; the leader answers it as a new report if it never
+committed it, or as a replay if it did, and either way it is counted once.
+`loadtest/run.sh --resume --out DIR` restarts both nodes from their
+databases (their crash recovery) and the load test from its client state.
+`tests/loadtest.rs` checks the replay path (a report the leader committed
+but whose answer was never journaled is counted once).
+
 `--keys ceremony` runs the distributed ceremony (one process per key
 party); at the production parameters its two processes do not fit on one
 15 GiB machine (AUDIT.md F-25), so single-machine runs use `--keys keygen`
@@ -255,6 +266,7 @@ parameters (ring 65536, depth 28, 64 groups, 7 repetitions; reports of
 | Run | Result | Submission | Close | Peaks |
 | --- | --- | --- | --- | --- |
 | 128 reports, 12 invalid, `min_batch 3`, `min_cell 3`, 2 workers | exact; cells below 3 suppressed and listed, counts withheld | 121.9 s, 1.05 reports/s; encryption mean 0.58 s; submit p50 0.63 s, p99 21.1 s | 225.8 s (gate 131.7 s, release 69.1 s) | aggregator 9.20 GiB resident, 2.2 GiB database; collector 4.25 GiB, 1.3 GiB |
+| 160 reports, 16 invalid, `min_batch 3`, `min_cell 3`, 3 workers, every process killed with SIGKILL after 121 answers and resumed | exact; the aggregator restored 121 admitted reports (57 of them in the open verification ciphertext, rebuilt from the stored reports), the one report in flight was sent again and counted once | first run until the kill, then 42.3 s for the remaining 39 | 173.4 s | aggregator 9.32 GiB, 2.2 GiB; collector 4.35 GiB, 1.3 GiB |
 | 1024 reports, 512 invalid, `min_batch 1000`, `min_cell 100`, 2 workers | refused by the encrypted gate (512 valid < 1000, with 1024 admitted) | 911.6 s, 1.12 reports/s | 1158.2 s (gate 1060 s, of which the gates' products 957 s) | aggregator 9.15 GiB, 2.2 GiB; collector 4.40 GiB, 1.3 GiB |
 
 What the numbers say, from the nodes' own metrics:

@@ -250,6 +250,10 @@ enum Cmd {
         no_close: bool,
         #[arg(long, default_value_t = 4 * 3600)]
         close_timeout_secs: u64,
+        /// Durable client state: a run stopped at any point (a restart)
+        /// resumes from here, every report counted once.
+        #[arg(long)]
+        state_dir: Option<PathBuf>,
     },
     /// Submit one measurement to the leader.
     Submit {
@@ -761,6 +765,7 @@ async fn main() -> anyhow::Result<()> {
             out,
             no_close,
             close_timeout_secs,
+            state_dir,
         } => {
             let metrics = metrics
                 .iter()
@@ -786,12 +791,15 @@ async fn main() -> anyhow::Result<()> {
                 timeline,
                 close: !no_close,
                 close_timeout: std::time::Duration::from_secs(close_timeout_secs),
+                state_dir,
             })
             .await?;
             std::fs::write(&out, serde_json::to_vec_pretty(&report)?)?;
             println!(
-                "{} reports ({} bytes each) by {} workers in {:.1} s: {:.3} reports/s; accepted {}, rejected {:?}, failed {}, retries {}",
+                "{} reports ({} answered before, {} resent) ({} bytes each) by {} workers in {:.1} s: {:.3} reports/s; accepted {}, rejected {:?}, failed {}, retries {}",
                 report.reports,
+                report.answered_before,
+                report.resent,
                 report.report_bytes,
                 report.workers,
                 report.submit_wall_seconds,

@@ -2,8 +2,12 @@
 //! process (the aggregator and the collector over real TLS sockets, each
 //! with its metrics listener), at small parameters: every report delivered,
 //! the released result checked exactly (small cells suppressed), the nodes'
-//! metrics scraped into the report. The production-size runs use the same
-//! code through `loadtest/run.sh` (README, "Load test").
+//! metrics scraped into the report. The run is interrupted and resumed from
+//! its client state, with a report the leader committed but whose answer
+//! the client never journaled (the machine died in between): resent with
+//! the same bytes, it is answered as a replay and counted once. The
+//! production-size runs use the same code through `loadtest/run.sh`
+//! (README, "Load test").
 
 use fhe_prio3::*;
 use fhe_prio3_node::aggregator_node::{AggregatorNode, AggregatorNodeConfig};
@@ -96,12 +100,13 @@ async fn loadtest_against_a_split_key_deployment() {
     }
 
     let reports = 20;
-    let report = loadtest::run(LoadConfig {
+    let state = dir.path().join("client-state");
+    let cfg = |reports: u64, close: bool, timeline: &str| LoadConfig {
         task: task.clone(),
         material: fhe_prio3_node::router::client_material(&material),
         leader: format!("https://localhost:{agg_port}"),
-        ca_pem,
-        token,
+        ca_pem: ca_pem.clone(),
+        token: token.clone(),
         reports,
         workers: 2,
         seed: 3,
@@ -111,17 +116,38 @@ async fn loadtest_against_a_split_key_deployment() {
             ("collector".into(), format!("http://{col_metrics}")),
         ],
         scrape_every: Duration::from_secs(1),
-        timeline: Some(dir.path().join("timeline.jsonl")),
-        close: true,
+        timeline: Some(dir.path().join(timeline)),
+        close,
         close_timeout: Duration::from_secs(3600),
-    })
-    .await
-    .unwrap();
+        state_dir: Some(state.clone()),
+    };
+    // first run: reports 0..19, no close
+    let first = loadtest::run(cfg(reports - 1, false, "timeline-1.jsonl")).await.unwrap();
+    assert_eq!(first.verdict, Ok(()));
+    assert_eq!((first.outcomes.accepted, first.answered_before, first.resent), (reports - 1, 0, 0));
+    // report 19 (invalid: 19 % 5 == 4) built exactly as the tool builds it,
+    // committed by the leader, left pending in the client state
+    let client = Client::new(task.clone(), &material.context, &material.public_key).unwrap();
+    let r19 = loadtest::make_report(&client, &task, 3, 5, reports - 1, 0).unwrap();
+    let bytes = fhe_prio3::messages::encode(&r19).unwrap();
+    let http = fhe_prio3_node::wire::https_client(&ca_pem).unwrap();
+    let out: fhe_prio3_node::wire::SubmitOutcome = fhe_prio3_node::wire::http_post(&http, &format!("https://localhost:{agg_port}/v1/submit"), None, &r19)
+        .await
+        .unwrap();
+    assert_eq!(out, fhe_prio3_node::wire::SubmitOutcome::Accepted);
+    std::fs::write(state.join("pending").join(format!("{}.report", reports - 1)), &bytes).unwrap();
+    // resumed run over all 20: 19 answered before, report 19 resent and
+    // answered as a replay (counted once, as accepted), then the close
+    let report = loadtest::run(cfg(reports, true, "timeline.jsonl")).await.unwrap();
     for h in handles {
         h.shutdown();
     }
+    assert_eq!((report.answered_before, report.resent), (reports - 1, 1));
+    assert!(std::fs::read_dir(state.join("pending")).unwrap().next().is_none(), "nothing left pending");
+    let journal = std::fs::read_to_string(state.join("answers.log")).unwrap();
+    assert_eq!(journal.lines().count(), reports as usize);
 
-    // every report delivered, the released result exactly the expected one
+    // every report delivered once, the released result exactly the expected one
     assert_eq!(report.verdict, Ok(()), "{:?}", report.close_error);
     assert_eq!((report.outcomes.accepted, report.outcomes.failed), (reports, 0));
     assert!(report.outcomes.rejected.is_empty(), "{:?}", report.outcomes.rejected);
@@ -131,15 +157,19 @@ async fn loadtest_against_a_split_key_deployment() {
     assert_eq!(r.aggregate, AggregateResult::Histogram(want));
     assert!(r.counts_withheld);
     assert_eq!(r.suppressed, (0..4).filter(|&e| report.expected.elements[e] < 2).collect::<Vec<_>>());
-    // client timings for every report, and a close duration
-    assert_eq!((report.encrypt.n, report.submit.n), (reports as usize, reports as usize));
-    assert!(report.encrypt.p50 > 0.0 && report.submit.max >= report.submit.p50);
+    // client timings: the first run's 19 encryptions; the resumed run only
+    // resent (no encryption), with a submit time and a close duration
+    assert_eq!((first.encrypt.n, first.submit.n), (reports as usize - 1, reports as usize - 1));
+    assert!(first.encrypt.p50 > 0.0 && first.submit.max >= first.submit.p50);
+    assert_eq!((report.encrypt.n, report.submit.n), (0, 1));
     assert!(report.close_seconds.unwrap() > 0.0);
-    // the nodes' metrics were scraped: peaks and the final exposition
+    // the nodes' metrics were scraped: peaks and the final exposition; the
+    // leader saw 20 accepted reports and one replay
     assert!(report.peaks["aggregator"].resident_memory_bytes > 0.0);
     assert!(report.peaks["collector"].db_size_bytes > 0.0);
     let agg = loadtest::parse_metrics(&report.final_metrics["aggregator"]);
     assert_eq!(agg[r#"fhe_prio3_reports_total{outcome="accepted",reason="none"}"#], reports as f64);
+    assert_eq!(agg[r#"fhe_prio3_reports_total{outcome="rejected",reason="Replay"}"#], 1.0);
     assert_eq!(agg[r#"fhe_prio3_batch{field="closed"}"#], 1.0);
     let col = loadtest::parse_metrics(&report.final_metrics["collector"]);
     assert_eq!(col[r#"fhe_prio3_batch{field="result_ready"}"#], 1.0);

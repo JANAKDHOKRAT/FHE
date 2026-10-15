@@ -140,6 +140,23 @@ enum Cmd {
         /// histogram and multihot).
         #[arg(long, default_value_t = 0)]
         min_cell: u64,
+        /// How clients send measurements: `ciphertext` (encrypted under the
+        /// joint key) or `shares` (Prio3's sealed secret shares, silent
+        /// mode; every key party needs an upload key, `--upload-keys`).
+        #[arg(long, default_value = "ciphertext")]
+        upload: String,
+        /// With `--upload shares`: every key party's upload public key (hex,
+        /// from `upload-key`), comma separated, in party order (aggregators,
+        /// then the collector of a split-key task).
+        #[arg(long)]
+        upload_keys: Option<String>,
+    },
+    /// Generate a key party's upload key (secret sealed under
+    /// FHE_PRIO3_SEAL_KEY) and print its public key, to be listed in the
+    /// task's `--upload-keys`.
+    UploadKey {
+        #[arg(long)]
+        out: PathBuf,
     },
     Aggregator {
         #[arg(long)]
@@ -175,6 +192,10 @@ enum Cmd {
         /// this address over plain HTTP. Bind it to a private interface.
         #[arg(long)]
         metrics_listen: Option<std::net::SocketAddr>,
+        /// Tasks whose clients upload shares: this party's upload key file
+        /// (from `upload-key`).
+        #[arg(long)]
+        upload_key: Option<PathBuf>,
     },
     Collector {
         #[arg(long)]
@@ -205,6 +226,10 @@ enum Cmd {
         /// this address over plain HTTP. Bind it to a private interface.
         #[arg(long)]
         metrics_listen: Option<std::net::SocketAddr>,
+        /// Tasks whose clients upload shares: this party's upload key file
+        /// (from `upload-key`).
+        #[arg(long)]
+        upload_key: Option<PathBuf>,
     },
     /// Load test of a running deployment: `--workers` client threads
     /// encrypt and submit `--reports` deterministic measurements, the batch
@@ -474,6 +499,12 @@ fn read<T: serde::de::DeserializeOwned>(p: &PathBuf) -> anyhow::Result<T> {
 
 /// A task file, in the current format or one written before
 /// `key_topology` and `min_cell_count` existed.
+/// A key party's upload secret from an `upload-key` file.
+fn read_upload_key(p: &std::path::Path) -> anyhow::Result<[u8; 32]> {
+    let b = secret::unseal(b"upload-key", &std::fs::read(p)?)?;
+    b.as_slice().try_into().map_err(|_| anyhow::anyhow!("an upload key secret is 32 bytes"))
+}
+
 fn read_task(p: &PathBuf) -> anyhow::Result<TaskConfig> {
     Ok(TaskConfig::decode(&std::fs::read(p)?)?)
 }
@@ -566,6 +597,8 @@ async fn main() -> anyhow::Result<()> {
             collectors,
             topology,
             min_cell,
+            upload,
+            upload_keys,
         } => {
             let ty = parse_type(&r#type)?;
             let id: [u8; 32] = match task_id {
@@ -601,6 +634,21 @@ async fn main() -> anyhow::Result<()> {
                 other => anyhow::bail!("topology must be aggregators or split, got {other}"),
             };
             cfg.min_cell_count = min_cell;
+            cfg.upload = match upload.as_str() {
+                "ciphertext" => Upload::Ciphertext,
+                "shares" => Upload::Shares,
+                other => anyhow::bail!("upload must be ciphertext or shares, got {other}"),
+            };
+            if let Some(keys) = upload_keys {
+                for k in keys.split(',').filter(|k| !k.is_empty()) {
+                    cfg.upload_keys.push(
+                        hex::decode(k.trim())?
+                            .as_slice()
+                            .try_into()
+                            .map_err(|_| anyhow::anyhow!("an upload key is 32 bytes"))?,
+                    );
+                }
+            }
             cfg.validate()?;
             std::fs::write(&out, encode(&cfg)?)?;
             println!("wrote {} (digest {})", out.display(), hex::encode(cfg.digest()));
@@ -638,6 +686,11 @@ async fn main() -> anyhow::Result<()> {
             std::fs::write(&out, hex::encode(id.secret_bytes()))?;
             println!("{}", hex::encode(id.public_key()));
         }
+        Cmd::UploadKey { out } => {
+            let k = UploadKey::generate();
+            std::fs::write(&out, secret::seal(b"upload-key", &k.secret_bytes())?)?;
+            println!("{}", hex::encode(k.public_key()));
+        }
         Cmd::CollectorIdentity { out } => {
             let k = CollectorSealKey::generate();
             std::fs::write(&out, secret::seal(b"collector-identity", &k.secret_bytes())?)?;
@@ -658,8 +711,10 @@ async fn main() -> anyhow::Result<()> {
             ca,
             clients,
             metrics_listen,
+            upload_key,
         } => {
             let cfg = read_task(&task)?;
+            let upload_key = upload_key.map(|p| read_upload_key(&p)).transpose()?;
             let material: PublicMaterial = read(&material)?;
             let sealed = std::fs::read(&share)?;
             let share = secret::unseal(format!("share:{index}:{}", hex::encode(cfg.task_id)).as_bytes(), &sealed)?;
@@ -690,6 +745,7 @@ async fn main() -> anyhow::Result<()> {
                 db,
                 registry,
                 ca_pem: std::fs::read(&ca)?,
+                upload_key,
             })?;
             let handle = ServerHandle::new();
             run_metrics(node.metrics(), metrics_listen)?;
@@ -710,8 +766,10 @@ async fn main() -> anyhow::Result<()> {
             tls_cert,
             tls_key,
             metrics_listen,
+            upload_key,
         } => {
             let cfg = read_task(&task)?;
+            let upload_key = upload_key.map(|p| read_upload_key(&p)).transpose()?;
             // the collector uses the context and the joint public key only:
             // drop the evaluation keys at once (gigabytes in silent mode) if
             // it was given the full material instead of `client-material`'s
@@ -741,6 +799,7 @@ async fn main() -> anyhow::Result<()> {
                 token,
                 db,
                 key_share,
+                upload_key,
             })?;
             let handle = ServerHandle::new();
             run_metrics(node.metrics(), metrics_listen)?;

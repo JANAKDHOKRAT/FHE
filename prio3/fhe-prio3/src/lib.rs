@@ -34,23 +34,26 @@ pub mod messages;
 pub mod packed;
 pub mod seal;
 pub mod sharding;
+pub mod shares;
 pub mod types;
 pub mod vdec;
 pub mod verify;
 pub mod wfe;
 pub mod xof;
 
-pub use aggregator::{AccumulatorState, Aggregator, AggregatorState, Verdict};
+pub use aggregator::{AccumulatorState, Aggregator, AggregatorState, ShareRoundState, Verdict};
 pub use attest::{AggregatorIdentity, MaterialAttestation};
 pub use auth::{ClientIdentity, ClientRegistry, StaticRegistry};
 pub use client::Client;
 pub use collector::Collector;
-pub use collector::PendingRelease;
-pub use config::{AuthPolicy, CollectorPolicy, KeyTopology, TaskConfig, VerificationMode};
+pub use collector::{CollectorShareState, PendingRelease};
+pub use config::{AuthPolicy, CollectorPolicy, KeyTopology, TaskConfig, Upload, VerificationMode};
 pub use error::{Error, RejectReason, Result};
 pub use messages::{
     AggregateShare, CountCommit, CountOpening, CountReveal, CountShare, GateCheckCommit, GateCommit, GateContribution, GateOpening, GateReveal, GateShare,
-    MaskCommit, MaskMessage, PublicMaterial, ReleaseChallenge, ReleaseCommit, ReleaseOpening, ReleaseReveal, Report, VerifierCommit, VerifierMessage,
+    MaskCommit, MaskMessage, PublicMaterial, ReleaseChallenge, ReleaseCommit, ReleaseOpening, ReleaseReveal, Report, SealedInput, ShareContribution,
+    ShareFlushRequest, ShareReport, VerifierCommit, VerifierMessage,
 };
 pub use seal::{CollectorSealKey, SealedShare};
+pub use shares::{ShareClient, UploadKey};
 pub use types::{AggregateResult, BatchResult, Measurement, MeasurementType, RegressionResult};

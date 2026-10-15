@@ -65,6 +65,7 @@ fn agg_config(b: &Batch, i: usize, db: std::path::PathBuf) -> AggregatorNodeConf
         db,
         registry: None,
         ca_pem: Vec::new(),
+        upload_key: None,
     }
 }
 
@@ -77,6 +78,7 @@ fn col_config(b: &Batch, db: std::path::PathBuf) -> CollectorNodeConfig {
         token: "t".into(),
         db,
         key_share: None,
+        upload_key: None,
     }
 }
 

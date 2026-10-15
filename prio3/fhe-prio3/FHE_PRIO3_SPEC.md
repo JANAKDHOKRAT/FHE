@@ -1239,6 +1239,121 @@ collector, driven by the leader. Every step is persisted and idempotent.
 `tests/gate_noise.rs`, node `ceremony_node.rs` (distributed split-key
 ceremony, two processes over TLS), node `e2e.rs::split_key_with_suppression_over_tls`.
 
+### Secret-shared upload (`upload = Shares`, `shares.rs`)
+
+A task option that replaces the client's ciphertext with Prio3's upload
+format, keeping every later step (the validity check, the gates, the
+release) unchanged.
+
+*Client.* The encoded measurement `x` (field elements mod `p`) is split
+into one additive share per key party: party `i > 0` receives a 32-byte
+seed, expanded with SHAKE128 to its share (`shares::expand_seed`, rejection
+sampling from the low `ceil(log2 p)` bits, exactly uniform); party 0
+receives `s_0 = x - sum_{i>0} s_i` explicitly (4 bytes per element). Each
+share is sealed to the party's X25519 upload key, which the task lists in
+`upload_keys` (bound into the task digest, so into the material
+attestation): ephemeral Diffie-Hellman, HKDF-SHA256, AES-256-GCM with
+associated data binding the task, a fresh 16-byte report nonce, the party
+index and the number of parties. The report id is SHA-256 over the task,
+the nonce and every sealed byte; the client signs it when the task
+requires authentication. The client runs no homomorphic encryption and
+needs no public material beyond the task.
+
+*Admission.* The leader checks, in the order of a ciphertext report, the
+batch state, the exact sealed size, the task, the signature, registry and
+quota, the structure (input count, exact lengths: party 0 `4m + 16` bytes,
+the others `48`), the report id, replays and the batch bound, and assigns
+report `k` of a verification batch to group `k`. Nothing is opened at
+admission.
+
+*Flush.* When every group is occupied (or the batch closes), the leader
+sends the batch's reports to every other key party
+(`ShareFlushRequest`, bound by its digest over the task, the flush number
+and every report id). A helper aggregator admits them there with every one
+of the leader's checks, all or nothing; the collector of a split-key task
+checks their structure and that it never contributed a share of any of
+them before (so the aggregator cannot count an honest report twice). Each
+party opens its own sealed input of each report (a sealed input that does
+not open, or an explicit share that is not canonical, counts as an all-zero
+share: a deterministic function of the report bytes and the party's key, so
+the report still adds up to one value the client fixed, which the check
+then accepts or zeroes), writes its shares at the reports' group slots,
+and encrypts them as one contribution per chunk with a proof of
+well-formedness (`wfe.rs`; the effective ciphertext `2C` decodes to the
+shares; the proof is bound to the task, the flush digest, the party and the
+chunk). Contributions are deterministic: their randomness is ChaCha20
+seeded from HKDF of the party's upload secret, the task digest, the flush
+digest and the party index, so a party asked again (a retry, a restart)
+answers with the same bytes and persists only the digest. The aggregators
+verify every other party's proofs, check their own contribution against
+the recorded digest, add the effective contributions, restrict the sum to
+the element slots of the occupied groups (`Circuit::mask_to_groups`, the
+level the per-report group mask uses with ciphertext upload, so the chain
+stays at depth 28) and run the validity circuit on it with every report's
+challenge, keyed as before by the aggregators' verify key and the report
+id. The helpers finish before the leader; a leader that restarts in
+between asks again and gets the same contributions.
+
+*What changes for security.*
+* Robustness against clients (4.1): unchanged. The shares fix `x` when the
+  report is sent; the challenge is derived from the report id and the
+  verify key afterwards; the same `p^-7` bound applies to whatever `x` the
+  shares add up to.
+* Privacy against an outsider or a single key party: each party sees one
+  share, uniform on its own, and ciphertexts under the joint key.
+* Spec 4.3 item 2 (ciphertext well-formedness) does not arise: no client
+  ciphertext enters the circuit; every ciphertext a key party adds carries
+  a proof of short randomness.
+* Spec 4.3 item 1 (malleability): a party holds a random share, not a
+  ciphertext of the report, so it cannot form a related report.
+* New: every key party can change the value of any report of a flush by
+  encrypting a different share (a well-formed contribution of another
+  plaintext). With ciphertext upload this power belongs to the aggregators
+  (4.3 item 3: drop reports, make valid reports fail), and in two-aggregator
+  tasks a deviating aggregator's accumulators no longer diverge from the
+  honest one's, so it is not caught by the verified release either: in
+  share mode the release is correct only with honest key parties, as in
+  Prio3. In a split-key task the collector gains this power, which it does
+  not have with ciphertext upload. With `k - 1` enrolled Sybil clients it
+  could zero every other report of a batch and isolate one: the Sybil-class
+  leakage of 4.3 item 4, now reachable from the collector too. What no
+  party can do: learn a share it was not sent, or make its contribution
+  depend on another party's shares (a well-formed contribution is a fresh
+  encryption with an opening the party knows; one built from another
+  party's ciphertext would need that party's randomness).
+* The collector refuses a report it already contributed to, so the
+  aggregator of a split-key task cannot count an honest report twice (with
+  ciphertext upload it can, since the collector never sees reports).
+
+*Measured* (4 vCPUs, release build). A `Histogram { length: 5 }` share
+report of a split-key task: 256 bytes on the wire, 172 of them sealed
+inputs (a ciphertext report at the production parameters: 23,085,183
+bytes). At ring dimension 65536 one contribution's proof takes 1.4 to 1.8
+s to prove and 1.9 to 2.3 s to verify, and is 5,377,810 bytes; per flush of
+64 reports each party proves once per chunk and verifies the others'.
+Noise at the production parameters (`tests/share_noise.rs`, 64 groups, 7
+repetitions, depth 28, a full batch through the real count round and
+release): the release is exact and the released sum sits 128.9 bits below
+the flooding with one party's contribution at the proof's masking range
+(128.8 with honest contributions, 128.8 with client ciphertexts), against
+the 57 bits required (40 plus the 17 bits of the extraction bound).
+
+*Tests.* `src/shares.rs` (sharing, sealing, tampering, canonical shares,
+seed expansion, task validation), `tests/share_noise.rs`,
+`tests/shares_split.rs` (split key: exact releases, the cancelling vector
+of an unweighted check, unopenable shares, malformed, replayed and foreign
+reports, a batch below the minimum, suppression, broken and misbound
+proofs, replayed contributions, replayed reports and equivocating flushes
+at the collector, determinism, restarts at every step),
+`tests/shares_aggregators.rs` (two aggregators: the count round, a leader
+asking the helper to admit replayed, malformed, unsigned, unregistered or
+over-quota reports, a leader showing the helper another flush or replacing
+its contribution, broken proofs either way, a helper restart mid-flush),
+`tests/shares_moments.rs` (regression moments through the shared input),
+`aggregator::tests::states_from_before_share_upload_decode`, node
+`e2e.rs::share_upload_split_key_over_tls` and
+`::share_upload_two_aggregators_over_tls`.
+
 ### Horizontal sharding (`sharding.rs`, node `router`)
 
 Throughput beyond one aggregator set comes from running several sets in

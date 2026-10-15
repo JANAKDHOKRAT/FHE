@@ -48,6 +48,24 @@ impl Xof {
         }
     }
 
+    /// Uniform element of `[0, p)` by rejection from the low
+    /// `ceil(log2 p)` bits of 32-bit words: exactly uniform like
+    /// [`Self::next_field_elem`], but accepting at least half of the words
+    /// instead of `p / 2^32` of them (used where many elements are
+    /// expanded from one seed: input shares). A separate stream from
+    /// [`Self::next_field_elem`], which the validity check's coefficients
+    /// keep using unchanged.
+    pub fn next_field_elem_dense(&mut self, f: &Field) -> u64 {
+        let p = f.modulus();
+        let mask = p.next_power_of_two() - 1;
+        loop {
+            let v = self.next_u32() as u64 & mask;
+            if v < p {
+                return v;
+            }
+        }
+    }
+
     pub fn fill(&mut self, out: &mut [u8]) {
         self.reader.read(out);
     }

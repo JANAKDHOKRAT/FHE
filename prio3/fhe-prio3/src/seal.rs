@@ -68,7 +68,7 @@ fn aad(domain: &[u8], task_id: &[u8; 32], collector: u32, aggregator: usize) -> 
     a
 }
 
-fn derive_key(domain: &[u8], shared: &[u8; 32], ephemeral: &[u8; 32], recipient: &[u8; 32]) -> Result<[u8; 32]> {
+pub(crate) fn derive_key(domain: &[u8], shared: &[u8; 32], ephemeral: &[u8; 32], recipient: &[u8; 32]) -> Result<[u8; 32]> {
     let hk = Hkdf::<Sha256>::new(None, shared);
     let mut info = Vec::with_capacity(domain.len() + 64);
     info.extend_from_slice(domain);

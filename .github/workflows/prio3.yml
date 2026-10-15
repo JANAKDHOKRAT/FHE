@@ -91,6 +91,10 @@ jobs:
           - { name: protocol-gate-noise, dir: prio3/fhe-prio3, args: "--test gate_noise" }
           - { name: protocol-split-key, dir: prio3/fhe-prio3, args: "--test split_key" }
           - { name: protocol-suppression, dir: prio3/fhe-prio3, args: "--test suppression" }
+          - { name: protocol-share-noise, dir: prio3/fhe-prio3, args: "--test share_noise" }
+          - { name: protocol-shares-split, dir: prio3/fhe-prio3, args: "--test shares_split" }
+          - { name: protocol-shares-aggregators, dir: prio3/fhe-prio3, args: "--test shares_aggregators" }
+          - { name: protocol-shares-moments, dir: prio3/fhe-prio3, args: "--test shares_moments" }
           - { name: node, dir: prio3/fhe-prio3-node, args: "" }
     env:
       LD_LIBRARY_PATH: /home/runner/openfhe-install/lib

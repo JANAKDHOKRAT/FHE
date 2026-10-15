@@ -86,6 +86,26 @@ pub enum KeyTopology {
     AggregatorAndCollector,
 }
 
+/// How a client sends its measurement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum Upload {
+    /// The client encrypts its encoded measurement under the joint key and
+    /// every aggregator receives the same ciphertexts (one fresh encryption
+    /// per chunk, 22 MiB at the silent-mode parameters).
+    #[default]
+    Ciphertext,
+    /// Prio3's upload: the client splits its encoded measurement into
+    /// additive shares modulo `p`, one per key party (party 0's explicit,
+    /// the others' expanded from 32-byte seeds), and seals each share to
+    /// that party's X25519 key in [`TaskConfig::upload_keys`]. A report is
+    /// a few hundred bytes and the client runs no homomorphic encryption.
+    /// The key parties encrypt their shares of a whole verification batch
+    /// themselves, each as one contribution proven well formed
+    /// (`shares.rs`), and the validity circuit runs on their sum. Silent
+    /// mode with a batched layout only.
+    Shares,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskConfig {
     /// 32-byte task identifier chosen by the deployment.
@@ -132,6 +152,15 @@ pub struct TaskConfig {
     /// the collector (with them it would recover the suppressed total).
     #[serde(default)]
     pub min_cell_count: u64,
+    /// How clients send their measurements (absent in task files from
+    /// before it existed: ciphertexts).
+    #[serde(default)]
+    pub upload: Upload,
+    /// [`Upload::Shares`]: every key party's X25519 public key, in party
+    /// order (aggregators, then the key-holding collector). Clients seal
+    /// party `i`'s input share to `upload_keys[i]`. Empty otherwise.
+    #[serde(default)]
+    pub upload_keys: Vec<[u8; 32]>,
 }
 
 /// The configuration fields that existed before `key_topology` and
@@ -176,8 +205,42 @@ struct LegacyTaskConfig {
     collectors: Vec<CollectorPolicy>,
 }
 
+/// A task file written before `upload` and `upload_keys` existed
+/// (postcard, field by field).
+#[derive(Deserialize)]
+struct TaskConfigV2 {
+    task_id: [u8; 32],
+    measurement_type: MeasurementType,
+    mode: VerificationMode,
+    auth: AuthPolicy,
+    num_aggregators: usize,
+    repetitions: usize,
+    min_batch_size: usize,
+    max_batch_size: u64,
+    max_report_bytes: usize,
+    plain_mod: u64,
+    security_bits: u32,
+    silent_batch_groups: usize,
+    moments: bool,
+    collectors: Vec<CollectorPolicy>,
+    key_topology: KeyTopology,
+    min_cell_count: u64,
+}
+
 /// Separates the legacy binding from the extension in tasks that use it.
 const BINDING_EXTENSION: &[u8] = b"fhe-prio3/2 task extension";
+
+/// Separates the upload extension (`upload`, `upload_keys`) in tasks whose
+/// upload is not the default.
+const BINDING_UPLOAD_EXTENSION: &[u8] = b"fhe-prio3/3 upload extension";
+
+/// Whether an X25519 public key is a point a Diffie-Hellman with it can
+/// be contributory for (not one of the small-order points, for which every
+/// shared secret is the identity whatever the client's secret).
+fn upload_key_usable(key: &[u8; 32]) -> bool {
+    let probe = x25519_dalek::StaticSecret::from([0x5Au8; 32]);
+    probe.diffie_hellman(&x25519_dalek::PublicKey::from(*key)).was_contributory()
+}
 
 impl TaskConfig {
     /// Verdict mode with 128-bit soundness (`4 * 32 = 128` bits).
@@ -199,15 +262,40 @@ impl TaskConfig {
             collectors: Vec::new(),
             key_topology: KeyTopology::Aggregators,
             min_cell_count: 0,
+            upload: Upload::Ciphertext,
+            upload_keys: Vec::new(),
         }
     }
 
-    /// Decodes a task file (postcard): the current format, or one written
-    /// before `key_topology` and `min_cell_count` existed (read with both
-    /// at their defaults, which keeps its digest).
+    /// Decodes a task file (postcard): the current format, one written
+    /// before `upload` existed, or one written before `key_topology` and
+    /// `min_cell_count` existed (read with the missing fields at their
+    /// defaults, which keeps its digest).
     pub fn decode(bytes: &[u8]) -> Result<Self> {
         if let Ok(c) = crate::messages::decode::<TaskConfig>(bytes) {
             return Ok(c);
+        }
+        if let Ok(v) = crate::messages::decode::<TaskConfigV2>(bytes) {
+            return Ok(Self {
+                task_id: v.task_id,
+                measurement_type: v.measurement_type,
+                mode: v.mode,
+                auth: v.auth,
+                num_aggregators: v.num_aggregators,
+                repetitions: v.repetitions,
+                min_batch_size: v.min_batch_size,
+                max_batch_size: v.max_batch_size,
+                max_report_bytes: v.max_report_bytes,
+                plain_mod: v.plain_mod,
+                security_bits: v.security_bits,
+                silent_batch_groups: v.silent_batch_groups,
+                moments: v.moments,
+                collectors: v.collectors,
+                key_topology: v.key_topology,
+                min_cell_count: v.min_cell_count,
+                upload: Upload::Ciphertext,
+                upload_keys: Vec::new(),
+            });
         }
         let l: LegacyTaskConfig = crate::messages::decode(bytes)?;
         Ok(Self {
@@ -227,6 +315,8 @@ impl TaskConfig {
             collectors: l.collectors,
             key_topology: KeyTopology::Aggregators,
             min_cell_count: 0,
+            upload: Upload::Ciphertext,
+            upload_keys: Vec::new(),
         })
     }
 
@@ -245,6 +335,11 @@ impl TaskConfig {
             KeyTopology::Aggregators => self.num_aggregators,
             KeyTopology::AggregatorAndCollector => self.num_aggregators + 1,
         }
+    }
+
+    /// Whether clients upload secret shares ([`Upload::Shares`]).
+    pub fn shares_upload(&self) -> bool {
+        self.upload == Upload::Shares
     }
 
     /// Whether the collector holds a key share.
@@ -474,6 +569,34 @@ impl TaskConfig {
                 return Err(Error::Config("min_cell_count must be 0 (off) or in 2..=max_batch_size".into()));
             }
         }
+        match self.upload {
+            Upload::Ciphertext if !self.upload_keys.is_empty() => {
+                return Err(Error::Config("upload_keys are only used with Upload::Shares".into()));
+            }
+            Upload::Ciphertext => {}
+            Upload::Shares => {
+                if self.mode != VerificationMode::Silent || self.silent_batch_groups < 2 {
+                    return Err(Error::Config(
+                        "Upload::Shares requires silent mode with a batched layout (silent_batch_groups >= 2)".into(),
+                    ));
+                }
+                if self.upload_keys.len() != self.num_key_parties() {
+                    return Err(Error::Config(format!(
+                        "Upload::Shares needs one upload key per key party: {} given, {} key parties",
+                        self.upload_keys.len(),
+                        self.num_key_parties()
+                    )));
+                }
+                for (i, k) in self.upload_keys.iter().enumerate() {
+                    if !upload_key_usable(k) {
+                        return Err(Error::Config(format!("upload key {i} is a small-order X25519 point")));
+                    }
+                    if self.upload_keys[..i].contains(k) {
+                        return Err(Error::Config(format!("upload key {i} repeats an earlier party's key")));
+                    }
+                }
+            }
+        }
         if self.repetitions == 0 || self.repetitions > 64 {
             return Err(Error::Config("repetitions must be in 1..=64".into()));
         }
@@ -698,6 +821,10 @@ impl TaskConfig {
         if self.key_topology != KeyTopology::default() || self.min_cell_count != 0 {
             out.extend_from_slice(BINDING_EXTENSION);
             out.extend_from_slice(&postcard::to_allocvec(&(self.key_topology, self.min_cell_count)).expect("serializable"));
+        }
+        if self.upload != Upload::default() || !self.upload_keys.is_empty() {
+            out.extend_from_slice(BINDING_UPLOAD_EXTENSION);
+            out.extend_from_slice(&postcard::to_allocvec(&(self.upload, &self.upload_keys)).expect("serializable"));
         }
         out
     }

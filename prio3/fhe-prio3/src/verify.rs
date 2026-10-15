@@ -187,6 +187,27 @@ impl Circuit {
         Ok(self.ctx.mult_plain(ct, &self.group_masks[chunk])?)
     }
 
+    /// Secret-shared upload: restricts the sum of the key parties'
+    /// contributions of chunk `chunk` to the element slots of the listed
+    /// groups (one plaintext multiplication, the level the per-report group
+    /// mask uses with ciphertext upload). Whatever a party wrote anywhere
+    /// else (another class, an empty group, a constraint slot) is zeroed,
+    /// so it can neither enter a sum nor be multiplied by a report's
+    /// validity bit without passing through that report's check.
+    pub fn mask_to_groups(&self, ct: &Ciphertext, chunk: usize, groups: &[usize]) -> Result<Ciphertext> {
+        let l = &self.layout;
+        let mut m = vec![0u64; l.row];
+        for &r in groups {
+            if r >= l.groups {
+                return Err(crate::error::Error::Protocol(format!("group {r} outside the layout")));
+            }
+            for i in 0..l.chunk_len(chunk) {
+                m[l.group_slot(r, i)] = 1;
+            }
+        }
+        Ok(self.ctx.mult_plain(ct, &self.ctx.plaintext(&m)?)?)
+    }
+
     /// Silent mode: `valid_r` at slot `group_slot(r, 0)` of every listed
     /// group `r`, zero elsewhere, from `G`. Only the groups that hold a
     /// report in this batch are listed: an empty group's check value is

@@ -196,6 +196,19 @@ pub fn make_report(client: &Client, task: &TaskConfig, seed: u64, invalid_every:
     })
 }
 
+/// Report `i` of a run for a task whose clients upload shares (invalid
+/// reports as in [`make_report`]: a valid encoding with its first element 2).
+pub fn make_share_report(client: &ShareClient, task: &TaskConfig, seed: u64, invalid_every: u64, i: u64) -> anyhow::Result<ShareReport> {
+    let m = measurement(&task.measurement_type, seed, i)?;
+    Ok(if is_invalid(invalid_every, i) {
+        let mut enc = task.measurement_type.encode(&m)?;
+        enc[0] = 2;
+        client.shard_encoded(&enc)?
+    } else {
+        client.shard(&m)?
+    })
+}
+
 /// The aggregate of the valid measurements of a run, kept per element.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Expected {
@@ -461,7 +474,7 @@ impl Scraper {
 /// Runs the load test; the report says whether it passed.
 pub async fn run(cfg: LoadConfig) -> anyhow::Result<LoadReport> {
     let expected = Expected::of(&cfg.task.measurement_type, cfg.seed, cfg.reports, cfg.invalid_every)?;
-    let batched = cfg.task.mode == VerificationMode::Silent && cfg.task.silent_batch_groups > 1;
+    let batched = cfg.task.mode == VerificationMode::Silent && cfg.task.silent_batch_groups > 1 && !cfg.task.shares_upload();
     let http = https_client(&cfg.ca_pem)?;
     let plain = reqwest::Client::builder().timeout(Duration::from_secs(30)).build()?;
     let t0 = Instant::now();
@@ -541,7 +554,12 @@ pub async fn run(cfg: LoadConfig) -> anyhow::Result<LoadReport> {
     let submit_start = Instant::now();
     let mut threads = Vec::new();
     for w in 0..cfg.workers {
-        let client = Client::new(cfg.task.clone(), &cfg.material.context, &cfg.material.public_key)?;
+        // share upload: no homomorphic material, no group tickets
+        let (client, share_client) = if cfg.task.shares_upload() {
+            (None, Some(ShareClient::new(cfg.task.clone())?))
+        } else {
+            (Some(Client::new(cfg.task.clone(), &cfg.material.context, &cfg.material.public_key)?), None)
+        };
         let (rt, queue, samples, outcomes, report_bytes, progress, state) = (
             rt.clone(),
             queue.clone(),
@@ -573,9 +591,12 @@ pub async fn run(cfg: LoadConfig) -> anyhow::Result<LoadReport> {
                         };
                         s.group = t.elapsed().as_secs_f64();
                         let t = Instant::now();
-                        let report = make_report(&client, &task, seed, invalid_every, i, group)?;
+                        let body = match (&client, &share_client) {
+                            (Some(c), _) => fhe_prio3::messages::encode(&make_report(c, &task, seed, invalid_every, i, group)?)?,
+                            (None, Some(sc)) => fhe_prio3::messages::encode(&make_share_report(sc, &task, seed, invalid_every, i)?)?,
+                            (None, None) => anyhow::bail!("no client for this task's upload"),
+                        };
                         s.encrypt = t.elapsed().as_secs_f64();
-                        let body = fhe_prio3::messages::encode(&report)?;
                         // durable before it leaves: a crash from here on resends
                         // exactly these bytes
                         if let Some(st) = &state {

@@ -46,6 +46,22 @@ pub enum RejectReason {
     /// The chunk was encrypted for other parameters or another joint key
     /// (its fingerprint does not match this task's public material).
     WrongParameters,
+    /// A ciphertext report sent to a task whose clients upload shares, or
+    /// a share report to a task whose clients upload ciphertexts.
+    WrongUpload,
+    /// A share report with a sealed input per party count other than the
+    /// task's number of key parties.
+    WrongInputShareCount {
+        expected: usize,
+        got: usize,
+    },
+    /// A sealed input whose length is not the exact length of its party's
+    /// share (party 0: the explicit share; the others: a seed).
+    MalformedInputShare {
+        party: usize,
+        expected: usize,
+        got: usize,
+    },
 }
 
 impl std::fmt::Display for RejectReason {

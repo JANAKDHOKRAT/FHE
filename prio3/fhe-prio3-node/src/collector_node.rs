@@ -9,7 +9,7 @@
 //! collector continues it.
 
 use crate::metrics::{BuildInfo, NodeMetrics};
-use crate::store::Store;
+use crate::store::{IdKind, Store};
 use crate::wire::*;
 use axum::Router;
 use axum::body::Bytes;
@@ -35,6 +35,9 @@ pub struct CollectorNodeConfig {
     pub db: PathBuf,
     /// Split-key tasks: this collector's unsealed `CollectorSecret` bytes.
     pub key_share: Option<Vec<u8>>,
+    /// Split-key tasks whose clients upload shares: this collector's upload
+    /// secret (its public half is the task's upload key of its party).
+    pub upload_key: Option<[u8; 32]>,
 }
 
 struct Inner {
@@ -108,6 +111,13 @@ impl CollectorNode {
             (None, true) => anyhow::bail!("split-key task: this collector holds a key share; pass it (--key-share)"),
             (Some(_), false) => anyhow::bail!("this task gives the collector no key share"),
         };
+        let needs_upload_key = cfg.task.shares_upload() && cfg.task.collector_holds_key();
+        match (needs_upload_key, cfg.upload_key) {
+            (true, Some(k)) => collector = collector.with_upload_key(UploadKey::from_secret_bytes(&k))?,
+            (true, None) => anyhow::bail!("the task's clients upload shares: this collector needs its upload key (--upload-key)"),
+            (false, Some(_)) => anyhow::bail!("this task gives the collector no upload key"),
+            (false, None) => {}
+        }
         let c = cfg.collector_id as usize;
         if cfg.task.collectors.is_empty() {
             if c != 0 {
@@ -131,6 +141,20 @@ impl CollectorNode {
         let store = Store::open(&cfg.db)?;
         if let Some(b) = store.get("gate")? {
             collector.restore_gate_state(decode(&b)?);
+        }
+        // share upload: the round state under "shares", the ids it
+        // contributed to appended to the ids table (once each, not the whole
+        // list with every flush)
+        let stored_share_ids = store.ids(IdKind::Seen)?;
+        if let Some(b) = store.get("shares")? {
+            let mut st: CollectorShareState = decode(&b)?;
+            if !st.seen.is_empty() {
+                anyhow::bail!("database {} holds the collector's share log inside its state", cfg.db.display());
+            }
+            st.seen = stored_share_ids;
+            collector.restore_share_state(st)?;
+        } else if !stored_share_ids.is_empty() {
+            anyhow::bail!("database {} holds share-log ids without a share state", cfg.db.display());
         }
         let mut shares = BTreeMap::new();
         for i in 0..cfg.task.num_aggregators {
@@ -193,6 +217,7 @@ impl CollectorNode {
             .route("/v1/gate-open", post(gate_open))
             .route("/v1/gate-reveal", post(gate_reveal))
             .route("/v1/gate-finish", post(gate_finish))
+            .route("/v1/share-contribute", post(share_contribute))
             .layer(DefaultBodyLimit::max(GATE_BODY_LIMIT))
             .with_state(self.clone())
             .merge(crate::metrics::health_routes(self.inner.metrics.clone()))
@@ -414,6 +439,35 @@ async fn gate_step<R: serde::Serialize + Send + 'static>(
         timer.acquired();
         let r = f(&mut collector)?;
         inner.put(&[("gate", encode(collector.gate_state())?)])?;
+        Ok(r)
+    })
+    .await?;
+    reply(&out)
+}
+
+/// Split-key task with share upload: the collector's contribution to one
+/// flush, its share log persisted before the reply.
+async fn share_contribute(State(node): State<CollectorNode>, headers: HeaderMap, body: Bytes) -> std::result::Result<axum::response::Response, HttpError> {
+    check_token(&headers, &node.inner.token)?;
+    if !(node.inner.task.collector_holds_key() && node.inner.task.shares_upload()) {
+        return Err(HttpError(StatusCode::NOT_FOUND, "this task's collector takes no part in the upload".into()));
+    }
+    let req: ShareFlushRequest = parse_body(&body)?;
+    let inner = node.inner.clone();
+    let out = blocking_step(inner, "share_contribute", move |inner, timer| {
+        let mut collector = inner.lock(&inner.collector, "collector")?;
+        timer.acquired();
+        let before = collector.share_state().seen.len();
+        let r = collector.share_contribute(&req)?;
+        let st = collector.share_state();
+        let ids: Vec<(IdKind, [u8; 32])> = st.seen[before..].iter().map(|id| (IdKind::Seen, *id)).collect();
+        let mut round = st.clone();
+        round.seen.clear();
+        let entry = encode(&round)?;
+        let mut store = inner.lock(&inner.store, "store")?;
+        let t = std::time::Instant::now();
+        store.commit_step(&[("shares", entry.clone())], &[], &ids, "share_contribute", &req.seq.to_string())?;
+        inner.metrics.committed(entry.len() + 32 * ids.len(), t.elapsed(), store.size_bytes().ok());
         Ok(r)
     })
     .await?;

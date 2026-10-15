@@ -55,6 +55,22 @@ pub struct Collector {
     share: Option<SecretShare>,
     /// Split-key tasks: the gated release's state (`gate.rs`).
     gate: crate::gate::GateState,
+    /// Split-key task with secret-shared upload: this collector's upload key.
+    upload_key: Option<crate::shares::UploadKey>,
+    shares: CollectorShareState,
+    /// `shares.seen` as a set.
+    seen: std::collections::HashSet<crate::messages::ReportId>,
+}
+
+/// What a key-holding collector keeps of the secret-shared upload
+/// (`shares.rs`), for a collector node to persist.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CollectorShareState {
+    pub round: crate::aggregator::ShareRoundState,
+    /// Every report this collector contributed a share of, in order: it
+    /// never contributes to one report twice, so the aggregator cannot
+    /// count an honest report more than once.
+    pub seen: Vec<crate::messages::ReportId>,
 }
 
 impl Collector {
@@ -75,6 +91,9 @@ impl Collector {
             codec,
             share: None,
             gate: crate::gate::GateState::default(),
+            upload_key: None,
+            shares: CollectorShareState::default(),
+            seen: std::collections::HashSet::new(),
         })
     }
 
@@ -175,6 +194,114 @@ impl Collector {
     /// TEST HOOK: the gated release's state (tests acting as a malicious collector).
     pub fn gate_state_for_tests(&mut self) -> &mut crate::gate::GateState {
         &mut self.gate
+    }
+
+    /// Installs the collector's upload key (split-key tasks whose clients
+    /// upload shares): its public half must be the task's upload key of the
+    /// collector's party.
+    pub fn with_upload_key(mut self, key: crate::shares::UploadKey) -> Result<Self> {
+        let party = self
+            .cfg
+            .collector_party()
+            .filter(|_| self.cfg.shares_upload())
+            .ok_or_else(|| Error::Config("only a key-holding collector of a task with share upload has an upload key".into()))?;
+        if self.cfg.upload_keys[party] != key.public_key() {
+            return Err(Error::Config(format!("this upload key is not the task's upload key of party {party}")));
+        }
+        self.upload_key = Some(key);
+        Ok(self)
+    }
+
+    /// Split-key task with share upload: the collector's contribution to
+    /// flush `req` (`shares.rs`). It checks every report's structure and
+    /// that it never contributed a share of it before (so no report is
+    /// counted twice), opens its sealed inputs and encrypts its shares.
+    /// Asked again for the flush it last contributed to, it returns the
+    /// same bytes; it contributes to each sequence number once, in order.
+    pub fn share_contribute(&mut self, req: &crate::messages::ShareFlushRequest) -> Result<crate::messages::ShareContribution> {
+        let key = self
+            .upload_key
+            .as_ref()
+            .ok_or_else(|| Error::Config("install the collector's upload key (with_upload_key)".into()))?;
+        let party = self.cfg.collector_party().expect("upload key implies a key-holding collector");
+        if self.gate.batch_digest.is_some() {
+            return Err(Error::Protocol("the gated release has started: the batch is closed to share flushes".into()));
+        }
+        crate::shares::check_request(&self.cfg, &self.layout, req)?;
+        let digest = req.digest();
+        let field = self.cfg.field();
+        let env = crate::shares::ShareEnv {
+            cfg: &self.cfg,
+            field: &field,
+            layout: &self.layout,
+            ctx: &self.ctx,
+            pk: &self.pk,
+            codec: &self.codec,
+            key,
+            party,
+        };
+        let round = &self.shares.round;
+        if let Some((seq, d, own)) = round.contributed {
+            if seq == req.seq {
+                if d != digest {
+                    return Err(Error::Protocol(format!("share flush {seq} requested again with other reports")));
+                }
+                let c = crate::shares::contribution(&env, req)?;
+                if c.digest() != own {
+                    return Err(Error::Protocol("this party's contribution to the flush is not reproducible".into()));
+                }
+                return Ok(c);
+            }
+            if req.seq != seq + 1 {
+                return Err(Error::Protocol(format!("share flush {} requested after flush {seq}", req.seq)));
+            }
+        } else if req.seq != round.next_seq {
+            return Err(Error::Protocol(format!("share flush {} requested, the next is {}", req.seq, round.next_seq)));
+        }
+        if self.shares.seen.len() + req.reports.len() > self.cfg.max_batch_size as usize {
+            return Err(Error::Protocol("share flush beyond the task's max_batch_size".into()));
+        }
+        for (k, r) in req.reports.iter().enumerate() {
+            crate::shares::check_structure(&self.cfg, r)
+                .map_err(|reason| Error::Protocol(format!("share flush {}: report {k} is malformed: {reason}", req.seq)))?;
+            if self.seen.contains(&r.report_id) {
+                return Err(Error::Protocol(format!(
+                    "share flush {}: report {k} was already contributed to (a replayed report)",
+                    req.seq
+                )));
+            }
+        }
+        let c = crate::shares::contribution(&env, req)?;
+        let round = &mut self.shares.round;
+        if let Some((seq, d, _)) = round.contributed {
+            // the aggregator moved on: the previous flush is behind it
+            round.finished = Some((seq, d));
+            round.next_seq = seq + 1;
+        }
+        round.contributed = Some((req.seq, digest, c.digest()));
+        for r in &req.reports {
+            self.shares.seen.push(r.report_id);
+            self.seen.insert(r.report_id);
+        }
+        Ok(c)
+    }
+
+    /// The secret-shared upload state, for a collector node to persist.
+    pub fn share_state(&self) -> &CollectorShareState {
+        &self.shares
+    }
+
+    /// Restores a state from [`Self::share_state`] (same task, same keys).
+    pub fn restore_share_state(&mut self, st: CollectorShareState) -> Result<()> {
+        if st != CollectorShareState::default() && !(self.cfg.shares_upload() && self.cfg.collector_holds_key()) {
+            return Err(Error::Protocol("restore: share upload state for a task without it".into()));
+        }
+        self.seen = st.seen.iter().copied().collect();
+        if self.seen.len() != st.seen.len() {
+            return Err(Error::Protocol("restore: a report id repeats in the collector's share log".into()));
+        }
+        self.shares = st;
+        Ok(())
     }
 
     /// The gated release's state, for a collector node to persist.

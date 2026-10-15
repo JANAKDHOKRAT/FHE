@@ -41,8 +41,8 @@ use crate::keys;
 use crate::layout::Layout;
 use crate::messages::{
     AggregateShare, CountCommit, CountOpening, CountReveal, CountShare, GateCheckCommit, GateCommit, GateContribution, GateOpening, GateReveal, GateShare,
-    MaskCommit, MaskMessage, PublicMaterial, ReleaseChallenge, ReleaseCommit, ReleaseOpening, ReleaseReveal, Report, ReportId, VerifierCommit, VerifierMessage,
-    batch_digest,
+    MaskCommit, MaskMessage, PublicMaterial, ReleaseChallenge, ReleaseCommit, ReleaseOpening, ReleaseReveal, Report, ReportId, ShareContribution,
+    ShareFlushRequest, ShareReport, VerifierCommit, VerifierMessage, batch_digest,
 };
 use crate::packed::{Codec, Expect, WireError, check_stored};
 use crate::vdec;
@@ -97,6 +97,78 @@ pub struct AggregatorState {
     /// Gated release state (`gate.rs`).
     #[serde(default)]
     pub gate: crate::gate::GateState,
+    /// Secret-shared upload state (`shares.rs`).
+    #[serde(default)]
+    pub share_round: ShareRoundState,
+}
+
+/// [`AggregatorState`] as builds before the secret-shared upload wrote it
+/// (postcard, field by field: every field of today's but `share_round`).
+#[derive(serde::Deserialize)]
+struct AggregatorStateV3 {
+    sums: Option<Vec<Vec<u8>>>,
+    valid_count_sum: Option<Vec<u8>>,
+    moment_sums: Option<Vec<Vec<u8>>>,
+    silent_pending: Vec<(usize, ReportId)>,
+    silent_finalized: bool,
+    accepted_ids: Vec<ReportId>,
+    seen: Vec<ReportId>,
+    client_reports: Vec<([u8; 32], u32)>,
+    admitted: u64,
+    valid_count: Option<u64>,
+    closed: bool,
+    released_count_share: Option<CountShare>,
+    released_aggregate_shares: BTreeMap<u32, AggregateShare>,
+    verification: VerificationState,
+    valid_spread_sum: Option<Vec<u8>>,
+    gate: crate::gate::GateState,
+}
+
+impl AggregatorState {
+    /// Decodes a stored state: today's encoding, or one written before the
+    /// secret-shared upload existed (read with an empty `share_round`).
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
+        if let Ok(st) = crate::messages::decode::<AggregatorState>(bytes) {
+            return Ok(st);
+        }
+        let v: AggregatorStateV3 = crate::messages::decode(bytes)?;
+        Ok(Self {
+            sums: v.sums,
+            valid_count_sum: v.valid_count_sum,
+            moment_sums: v.moment_sums,
+            silent_pending: v.silent_pending,
+            silent_finalized: v.silent_finalized,
+            accepted_ids: v.accepted_ids,
+            seen: v.seen,
+            client_reports: v.client_reports,
+            admitted: v.admitted,
+            valid_count: v.valid_count,
+            closed: v.closed,
+            released_count_share: v.released_count_share,
+            released_aggregate_shares: v.released_aggregate_shares,
+            verification: v.verification,
+            valid_spread_sum: v.valid_spread_sum,
+            gate: v.gate,
+            share_round: ShareRoundState::default(),
+        })
+    }
+}
+
+/// What a key party keeps of the secret-shared upload (`shares.rs`)
+/// between requests, persisted with the bookkeeping. Contributions are
+/// deterministic, so a party recomputes rather than stores them.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ShareRoundState {
+    /// Flushes this party has finished: the next flush's sequence number.
+    pub next_seq: u64,
+    /// Leader: the reports admitted into the open flush, report `k` in group `k`.
+    pub pending: Vec<ShareReport>,
+    /// The flush this party has contributed to and not finished:
+    /// (sequence number, flush digest, digest of its own contribution).
+    pub contributed: Option<(u64, [u8; 32], [u8; 32])>,
+    /// The last flush finished: (sequence number, flush digest), so a
+    /// repeated finish is acknowledged without being applied twice.
+    pub finished: Option<(u64, [u8; 32])>,
 }
 
 /// What an aggregator keeps between the rounds of verifiable decryption
@@ -207,6 +279,10 @@ pub struct Aggregator {
     /// See `AggregatorState::valid_spread_sum`.
     valid_spread_sum: Tracked<Option<Ciphertext>>,
     gate: crate::gate::GateState,
+    /// [`crate::config::Upload::Shares`]: this party's upload key (opens its
+    /// sealed input shares; [`Self::with_upload_key`]).
+    upload_key: Option<crate::shares::UploadKey>,
+    share_round: ShareRoundState,
     rng: OsRng,
 }
 
@@ -344,8 +420,23 @@ impl Aggregator {
             verification: VerificationState::default(),
             valid_spread_sum: Tracked::new(None),
             gate: crate::gate::GateState::default(),
+            upload_key: None,
+            share_round: ShareRoundState::default(),
             rng: OsRng,
         })
+    }
+
+    /// Installs this aggregator's upload key (required when clients upload
+    /// shares): its public half must be the task's `upload_keys[index]`.
+    pub fn with_upload_key(mut self, key: crate::shares::UploadKey) -> Result<Self> {
+        if !self.cfg.shares_upload() {
+            return Err(Error::Config("the task's clients upload ciphertexts: no upload key is used".into()));
+        }
+        if self.cfg.upload_keys[self.index] != key.public_key() {
+            return Err(Error::Config(format!("this upload key is not the task's upload key of party {}", self.index)));
+        }
+        self.upload_key = Some(key);
+        Ok(self)
     }
 
     fn add_to_moments(&mut self, products: Vec<Ciphertext>) -> Result<()> {
@@ -385,6 +476,11 @@ impl Aggregator {
     /// Largest ciphertext payload a report may carry: exactly one packed
     /// fresh ciphertext per chunk.
     pub fn max_report_bytes(&self) -> usize {
+        if self.cfg.shares_upload() {
+            // the sealed inputs of every key party, exactly
+            let m = self.cfg.measurement_type.input_len();
+            return (0..self.cfg.num_key_parties()).map(|p| 32 + 12 + crate::shares::sealed_len(p, m)).sum();
+        }
         let derived = self.layout.num_chunks * self.codec.fresh_len();
         if self.cfg.max_report_bytes == 0 {
             derived
@@ -433,6 +529,9 @@ impl Aggregator {
     /// Cheap checks first, FHE work last. On success the report id and the
     /// client's quota are consumed even if verification later fails.
     fn admit(&mut self, report: &Report) -> std::result::Result<Vec<Ciphertext>, RejectReason> {
+        if self.cfg.shares_upload() {
+            return Err(RejectReason::WrongUpload);
+        }
         if self.closed {
             return Err(RejectReason::BatchClosed);
         }
@@ -808,6 +907,271 @@ impl Aggregator {
         Ok(())
     }
 
+    // ----- secret-shared upload (`shares.rs`) -------------------------
+
+    fn upload_key(&self) -> Result<&crate::shares::UploadKey> {
+        self.upload_key
+            .as_ref()
+            .ok_or_else(|| Error::Config("the task's clients upload shares: install this aggregator's upload key (with_upload_key)".into()))
+    }
+
+    fn share_env(&self) -> Result<crate::shares::ShareEnv<'_>> {
+        Ok(crate::shares::ShareEnv {
+            cfg: &self.cfg,
+            field: &self.field,
+            layout: &self.layout,
+            ctx: &self.ctx,
+            pk: &self.pk,
+            codec: &self.codec,
+            key: self.upload_key()?,
+            party: self.index,
+        })
+    }
+
+    /// Every check of a share report except the quota charge, in the order
+    /// of [`Self::admit`]; `quota_used` is the count of the report's signer
+    /// to compare against the quota, `in_flush` the ids already listed in
+    /// the same flush.
+    fn share_report_problem(&self, r: &ShareReport, quota_used: u32, in_flush: &HashSet<ReportId>) -> Option<RejectReason> {
+        if !self.cfg.shares_upload() {
+            return Some(RejectReason::WrongUpload);
+        }
+        if self.closed {
+            return Some(RejectReason::BatchClosed);
+        }
+        let limit = self.max_report_bytes();
+        let got = r.sealed_bytes();
+        if got > limit {
+            return Some(RejectReason::TooLarge { limit, got });
+        }
+        if r.task_id != self.cfg.task_id {
+            return Some(RejectReason::WrongTask);
+        }
+        if let AuthPolicy::Required {
+            max_reports_per_client_per_batch,
+        } = self.cfg.auth
+        {
+            let Some(a) = r.auth.as_ref() else {
+                return Some(RejectReason::Unauthenticated("report carries no signature".into()));
+            };
+            if let Err(e) = auth::verify(a, &r.task_id, &r.report_id) {
+                return Some(RejectReason::Unauthenticated(e.to_string()));
+            }
+            let registry = self.registry.as_ref().expect("checked in new");
+            if !registry.is_registered(&a.client_key) {
+                return Some(RejectReason::UnknownClient);
+            }
+            if quota_used >= max_reports_per_client_per_batch {
+                return Some(RejectReason::QuotaExceeded);
+            }
+        }
+        if let Err(reason) = crate::shares::check_structure(&self.cfg, r) {
+            return Some(reason);
+        }
+        if self.seen.contains(&r.report_id) || in_flush.contains(&r.report_id) {
+            return Some(RejectReason::Replay);
+        }
+        if self.admitted + in_flush.len() as u64 >= self.cfg.max_batch_size {
+            return Some(RejectReason::BatchFull);
+        }
+        None
+    }
+
+    fn quota_used(&self, r: &ShareReport, extra: &HashMap<[u8; 32], u32>) -> u32 {
+        match &r.auth {
+            Some(a) => self.client_reports.get(&a.client_key).copied().unwrap_or(0) + extra.get(&a.client_key).copied().unwrap_or(0),
+            None => 0,
+        }
+    }
+
+    /// Leader, [`crate::config::Upload::Shares`]: admits a client's share
+    /// report into the open flush (report `k` of a flush occupies group
+    /// `k`). Only deterministic checks that need no secret; the report's
+    /// own input is opened when the flush is contributed. The client's
+    /// quota is charged for the attempt whatever happens next. When
+    /// [`Self::share_flush_ready`] turns true the caller runs the flush
+    /// before admitting more.
+    pub fn admit_share_report(&mut self, r: &ShareReport) -> Result<()> {
+        if !self.cfg.shares_upload() {
+            return Err(Error::Reject(RejectReason::WrongUpload));
+        }
+        if self.index != 0 {
+            return Err(Error::Protocol("only the leader admits share reports".into()));
+        }
+        if self.share_round.contributed.is_some() || self.share_round.pending.len() >= self.layout.groups {
+            return Err(Error::Protocol("the open share flush is full or being contributed: finish it first".into()));
+        }
+        let used = self.quota_used(r, &HashMap::new());
+        let in_flush: HashSet<ReportId> = self.share_round.pending.iter().map(|p| p.report_id).collect();
+        let problem = self.share_report_problem(r, used, &in_flush);
+        // the attempt is charged once the signature and the registry have
+        // passed, as in `admit`
+        if let (AuthPolicy::Required { .. }, Some(a)) = (&self.cfg.auth, &r.auth) {
+            let charged = !matches!(
+                problem,
+                Some(
+                    RejectReason::WrongUpload
+                        | RejectReason::BatchClosed
+                        | RejectReason::TooLarge { .. }
+                        | RejectReason::WrongTask
+                        | RejectReason::Unauthenticated(_)
+                        | RejectReason::UnknownClient
+                        | RejectReason::QuotaExceeded
+                )
+            );
+            if charged {
+                *self.client_reports.entry(a.client_key).or_insert(0) += 1;
+            }
+        }
+        if let Some(reason) = problem {
+            return Err(Error::Reject(reason));
+        }
+        self.mark_seen(r.report_id);
+        self.admitted += 1;
+        self.share_round.pending.push(r.clone());
+        Ok(())
+    }
+
+    /// Leader: reports admitted into the open flush.
+    pub fn share_pending(&self) -> usize {
+        self.share_round.pending.len()
+    }
+
+    /// Leader: whether the open flush has a report in every group.
+    pub fn share_flush_ready(&self) -> bool {
+        self.share_round.pending.len() >= self.layout.groups
+    }
+
+    /// The secret-shared upload state (persisted with the bookkeeping).
+    pub fn share_round(&self) -> &ShareRoundState {
+        &self.share_round
+    }
+
+    /// Leader: the request for the open flush, if it holds any report.
+    pub fn share_flush_request(&self) -> Option<ShareFlushRequest> {
+        (!self.share_round.pending.is_empty()).then(|| ShareFlushRequest {
+            task_id: self.cfg.task_id,
+            seq: self.share_round.next_seq,
+            reports: self.share_round.pending.clone(),
+        })
+    }
+
+    /// Every key party: this party's contribution to flush `req`. The
+    /// leader's request must be its own open flush; another aggregator
+    /// admits the listed reports here (every check of the leader's
+    /// admission, all or nothing). Contributing again to the same flush
+    /// returns the same bytes; a party contributes to each sequence number
+    /// once.
+    pub fn share_contribute(&mut self, req: &ShareFlushRequest) -> Result<ShareContribution> {
+        if !self.cfg.shares_upload() {
+            return Err(Error::Protocol("the task's clients upload ciphertexts".into()));
+        }
+        crate::shares::check_request(&self.cfg, &self.layout, req)?;
+        let digest = req.digest();
+        if self.share_round.contributed.is_none() && self.share_round.finished == Some((req.seq, digest)) {
+            // the leader lost the round after this party finished it (a
+            // restart between the helpers' finish and its own): the same
+            // contribution again, nothing admitted twice
+            return crate::shares::contribution(&self.share_env()?, req);
+        }
+        if let Some((seq, d, own)) = self.share_round.contributed {
+            if seq != req.seq || d != digest {
+                return Err(Error::Protocol(format!(
+                    "already contributed to share flush {seq}, not finished; refusing another flush {}",
+                    req.seq
+                )));
+            }
+            let c = crate::shares::contribution(&self.share_env()?, req)?;
+            if c.digest() != own {
+                return Err(Error::Protocol("this party's contribution to the flush is not reproducible".into()));
+            }
+            return Ok(c);
+        }
+        if req.seq != self.share_round.next_seq {
+            return Err(Error::Protocol(format!(
+                "share flush {} requested, the next is {}",
+                req.seq, self.share_round.next_seq
+            )));
+        }
+        if self.index == 0 {
+            let open = self.share_flush_request().ok_or_else(|| Error::Protocol("no open share flush".into()))?;
+            if open.digest() != digest {
+                return Err(Error::Protocol("the share flush request is not the leader's open flush".into()));
+            }
+        } else {
+            let mut in_flush = HashSet::with_capacity(req.reports.len());
+            let mut extra: HashMap<[u8; 32], u32> = HashMap::new();
+            for (k, r) in req.reports.iter().enumerate() {
+                if let Some(reason) = self.share_report_problem(r, self.quota_used(r, &extra), &in_flush) {
+                    return Err(Error::Protocol(format!("share flush {}: report {k} is not admissible: {reason}", req.seq)));
+                }
+                in_flush.insert(r.report_id);
+                if let Some(a) = &r.auth {
+                    *extra.entry(a.client_key).or_insert(0) += 1;
+                }
+            }
+        }
+        let c = crate::shares::contribution(&self.share_env()?, req)?;
+        if self.index != 0 {
+            for r in &req.reports {
+                self.mark_seen(r.report_id);
+                if let (AuthPolicy::Required { .. }, Some(a)) = (&self.cfg.auth, &r.auth) {
+                    *self.client_reports.entry(a.client_key).or_insert(0) += 1;
+                }
+            }
+            self.admitted += req.reports.len() as u64;
+        }
+        self.share_round.contributed = Some((req.seq, digest, c.digest()));
+        Ok(c)
+    }
+
+    /// Aggregators: with every key party's contribution to the flush this
+    /// party contributed to, checks them (this party's own against its
+    /// recorded digest, every other party's proofs), adds them, restricts
+    /// the sum to the element slots of the occupied groups and runs the
+    /// validity circuit on it. A repeated finish of the last finished flush
+    /// is acknowledged without effect.
+    pub fn share_finish(&mut self, req: &ShareFlushRequest, contributions: &[ShareContribution]) -> Result<()> {
+        if !self.cfg.shares_upload() {
+            return Err(Error::Protocol("the task's clients upload ciphertexts".into()));
+        }
+        let digest = req.digest();
+        if self.share_round.finished == Some((req.seq, digest)) && self.share_round.contributed.is_none() {
+            return Ok(());
+        }
+        let Some((seq, d, own)) = self.share_round.contributed else {
+            return Err(Error::Protocol("share finish before contributing to the flush".into()));
+        };
+        if seq != req.seq || d != digest {
+            return Err(Error::Protocol(format!("share finish for flush {}, this party contributed to {seq}", req.seq)));
+        }
+        let acc = crate::shares::combine(&self.share_env()?, req, contributions, &own)?;
+        let reports = crate::shares::flush_reports(req);
+        let groups: Vec<usize> = reports.iter().map(|(g, _)| *g).collect();
+        let mut masked = Vec::with_capacity(acc.len());
+        for (c, ct) in acc.iter().enumerate() {
+            masked.push(self.circuit.mask_to_groups(ct, c, &groups)?);
+        }
+        self.verify_and_fold(masked, &reports)?;
+        self.accepted_ids.extend(reports.iter().map(|(_, id)| *id));
+        if self.index == 0 {
+            self.share_round.pending.clear();
+        }
+        self.share_round.contributed = None;
+        self.share_round.finished = Some((req.seq, digest));
+        self.share_round.next_seq += 1;
+        Ok(())
+    }
+
+    /// Refuses to close while a share flush is open (its reports would be
+    /// silently dropped) or contributed and not finished.
+    fn require_no_open_share_flush(&self) -> Result<()> {
+        if self.cfg.shares_upload() && (!self.share_round.pending.is_empty() || self.share_round.contributed.is_some()) {
+            return Err(Error::Protocol("a share flush is open: run and finish it before closing the batch".into()));
+        }
+        Ok(())
+    }
+
     /// Batched layout: restricts an admitted report's fresh chunks to its
     /// own group's element slots. Everything the client wrote elsewhere,
     /// including into other groups' slots, is zeroed before the report
@@ -864,14 +1228,24 @@ impl Aggregator {
     fn flush_silent_batch(&mut self) -> Result<()> {
         let batch = std::mem::replace(&mut self.silent_batch, SilentBatch::new());
         let Some(acc) = batch.acc else { return Ok(()) };
-        let challenge = Challenge::derive_batch(&self.cfg, &self.field, &self.layout, &self.verify_key, &batch.reports);
+        self.verify_and_fold(acc, &batch.reports)
+    }
+
+    /// The validity circuit over one verification ciphertext per chunk,
+    /// with every report's challenge in its own group's slots; adds the
+    /// validity-gated chunks, count and moment products to the running sums.
+    fn verify_and_fold(&mut self, acc: Vec<Ciphertext>, reports: &[(usize, ReportId)]) -> Result<()> {
+        let challenge = Challenge::derive_batch(&self.cfg, &self.field, &self.layout, &self.verify_key, reports);
         let terms = self.circuit.report_terms(&acc, &challenge)?;
         let s = self.circuit.class_sums(&terms)?;
         let g = self.circuit.silent_validity(&s)?;
-        let groups: Vec<usize> = batch.reports.iter().map(|(g, _)| *g).collect();
-        // Batched: every report was masked to its group on admission, so the
-        // accumulator is already zero outside the groups' element slots.
-        // Single group: the one report is masked here.
+        let groups: Vec<usize> = reports.iter().map(|(g, _)| *g).collect();
+        // Batched: every report was masked to its group on admission (with
+        // shares: the combined batch input was masked to its reports'
+        // groups), so the accumulator is already zero outside the groups'
+        // element slots. Single group: the one report is masked here, after
+        // its validity terms, which keeps the circuit's input at the first
+        // level (`TaskConfig::mult_depth` counts no mask for one group).
         let masked = if self.layout.groups == 1 {
             let mut m = Vec::with_capacity(acc.len());
             for (c, ct) in acc.iter().enumerate() {
@@ -944,7 +1318,7 @@ impl Aggregator {
     /// Number of reports admitted into the current, not yet flushed,
     /// verification ciphertext.
     pub fn pending_silent_reports(&self) -> usize {
-        self.silent_batch.reports.len()
+        self.silent_batch.reports.len() + self.share_round.pending.len()
     }
 
     /// Ids of the reports in the current, not yet flushed, verification
@@ -1026,6 +1400,7 @@ impl Aggregator {
             verification: self.verification.clone(),
             valid_spread_sum: None,
             gate: self.gate.clone(),
+            share_round: self.share_round.clone(),
         })
     }
 
@@ -1119,6 +1494,17 @@ impl Aggregator {
             None => None,
         };
         self.gate = st.gate;
+        if !self.cfg.shares_upload() && st.share_round != ShareRoundState::default() {
+            return Err(Error::Protocol(
+                "restore: secret-shared upload state in a task whose clients upload ciphertexts".into(),
+            ));
+        }
+        for r in &st.share_round.pending {
+            if crate::shares::check_structure(&self.cfg, r).is_err() || !self.seen.contains(&r.report_id) {
+                return Err(Error::Protocol("restore: a pending share report is malformed or was never admitted".into()));
+            }
+        }
+        self.share_round = st.share_round;
         self.pending.clear();
         Ok(())
     }
@@ -1153,6 +1539,7 @@ impl Aggregator {
         if let Some(s) = &self.released_count_share {
             return Ok(s.clone());
         }
+        self.require_no_open_share_flush()?;
         let count = self.accepted_ids.len();
         if count < self.cfg.min_batch_size {
             return Err(Error::Protocol(format!(
@@ -1523,6 +1910,7 @@ impl Aggregator {
         if let Some(s) = self.released_aggregate_shares.get(&(collector as u32)) {
             return Ok(s.clone());
         }
+        self.require_no_open_share_flush()?;
         let count = self.accepted_ids.len();
         if self.cfg.gated() {
             return self.gated_share(collector);
@@ -1771,6 +2159,7 @@ impl Aggregator {
         if !self.cfg.gated() {
             return Err(Error::Protocol("task does not use the gated release".into()));
         }
+        self.require_no_open_share_flush()?;
         let admitted = self.accepted_ids.len();
         if admitted < self.cfg.min_batch_size {
             return Err(Error::Protocol(format!(
@@ -1933,5 +2322,61 @@ impl Aggregator {
     /// The gated release's state (tests that act as a malicious party).
     pub fn gate_state_for_tests(&mut self) -> &mut crate::gate::GateState {
         &mut self.gate
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state(share_round: ShareRoundState) -> AggregatorState {
+        AggregatorState {
+            sums: Some(vec![vec![1, 2, 3]]),
+            valid_count_sum: Some(vec![4]),
+            moment_sums: None,
+            silent_pending: vec![(3, [7u8; 32])],
+            silent_finalized: false,
+            accepted_ids: vec![[1u8; 32], [2u8; 32]],
+            seen: vec![[1u8; 32], [2u8; 32], [7u8; 32]],
+            client_reports: vec![([9u8; 32], 2)],
+            admitted: 3,
+            valid_count: Some(2),
+            closed: false,
+            released_count_share: None,
+            released_aggregate_shares: BTreeMap::new(),
+            verification: VerificationState::default(),
+            valid_spread_sum: None,
+            gate: crate::gate::GateState::default(),
+            share_round,
+        }
+    }
+
+    /// A database written before the secret-shared upload holds the state
+    /// without its last field; it decodes with an empty `share_round`, and
+    /// today's encoding round-trips with a non-empty one.
+    #[test]
+    fn states_from_before_share_upload_decode() {
+        let st = state(ShareRoundState::default());
+        let bytes = crate::messages::encode(&st).unwrap();
+        // the empty share round encodes as four bytes: 0 (next_seq), 0
+        // (pending), None, None
+        assert_eq!(&bytes[bytes.len() - 4..], &[0, 0, 0, 0]);
+        let old = &bytes[..bytes.len() - 4];
+        assert!(crate::messages::decode::<AggregatorState>(old).is_err());
+        let back = AggregatorState::decode(old).unwrap();
+        assert_eq!(crate::messages::encode(&back).unwrap(), bytes);
+        let busy = state(ShareRoundState {
+            next_seq: 5,
+            pending: Vec::new(),
+            contributed: Some((5, [1u8; 32], [2u8; 32])),
+            finished: Some((4, [3u8; 32])),
+        });
+        let bytes = crate::messages::encode(&busy).unwrap();
+        assert_eq!(AggregatorState::decode(&bytes).unwrap().share_round, busy.share_round);
+        // a truncated or extended encoding is refused, not misread
+        assert!(AggregatorState::decode(&bytes[..bytes.len() - 1]).is_err());
+        let mut longer = bytes.clone();
+        longer.push(0);
+        assert!(AggregatorState::decode(&longer).is_err());
     }
 }

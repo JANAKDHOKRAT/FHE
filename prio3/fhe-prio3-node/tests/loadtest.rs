@@ -68,6 +68,7 @@ async fn loadtest_against_a_split_key_deployment() {
         token: token.clone(),
         db: dir.path().join("collector.db"),
         key_share: collector_secret,
+        upload_key: None,
     })
     .unwrap();
     let col_metrics = spawn_metrics_server(collector.metrics(), "127.0.0.1:0".parse().unwrap()).unwrap();
@@ -82,6 +83,7 @@ async fn loadtest_against_a_split_key_deployment() {
         db: dir.path().join("aggregator.db"),
         registry: None,
         ca_pem: ca_pem.clone(),
+        upload_key: None,
     })
     .unwrap();
     let agg_metrics = spawn_metrics_server(aggregator.metrics(), "127.0.0.1:0".parse().unwrap()).unwrap();

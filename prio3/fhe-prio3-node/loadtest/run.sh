@@ -4,7 +4,10 @@
 #
 #   1. TLS: a throwaway CA and a localhost server certificate (openssl);
 #   2. the task (`task-config --topology split`, production silent-mode
-#      parameters: ring 65536, depth 28, 64 groups, 7 repetitions);
+#      parameters: ring 65536, depth 28, 64 groups, 7 repetitions), with
+#      `--upload shares` Prio3's secret-shared upload: each key party first
+#      makes its upload key (`upload-key`, sealed under its seal key) and the
+#      task lists both public keys;
 #   3. keys: `--keys ceremony` runs the distributed key ceremony, one
 #      process per key party, each with its own seal key (the deployment
 #      path; no process sees both shares). At the production parameters its
@@ -27,13 +30,13 @@
 #
 # Usage: loadtest/run.sh --out DIR --reports N [--type histogram:16]
 #          [--min-batch K] [--min-cell C] [--workers W] [--invalid-every M]
-#          [--seed S] [--keys ceremony|keygen]
+#          [--seed S] [--keys ceremony|keygen] [--upload ciphertext|shares]
 #        loadtest/run.sh --resume --out DIR
 # Exit status: that of the load test (0 only when the released result is
 # exactly the expected one).
 set -euo pipefail
 
-OUT="" REPORTS="" TYPE="histogram:16" MIN_BATCH=1 MIN_CELL=0 WORKERS=2 INVALID_EVERY=0 SEED=1 KEYS=ceremony RESUME=0
+OUT="" REPORTS="" TYPE="histogram:16" MIN_BATCH=1 MIN_CELL=0 WORKERS=2 INVALID_EVERY=0 SEED=1 KEYS=ceremony UPLOAD=ciphertext RESUME=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --resume) RESUME=1; shift ;;
@@ -46,6 +49,7 @@ while [[ $# -gt 0 ]]; do
     --invalid-every) INVALID_EVERY="$2"; shift 2 ;;
     --seed) SEED="$2"; shift 2 ;;
     --keys) KEYS="$2"; shift 2 ;;
+    --upload) UPLOAD="$2"; shift 2 ;;
     *) echo "unknown argument $1" >&2; exit 2 ;;
   esac
 done
@@ -60,13 +64,17 @@ if (( RESUME )); then
 else
   [[ -n "$OUT" && -n "$REPORTS" ]] || { echo "usage: $0 --out DIR --reports N [options]" >&2; exit 2; }
   [[ "$KEYS" == ceremony || "$KEYS" == keygen ]] || { echo "--keys is ceremony or keygen" >&2; exit 2; }
+  [[ "$UPLOAD" == ciphertext || "$UPLOAD" == shares ]] || { echo "--upload is ciphertext or shares" >&2; exit 2; }
   [[ ! -e "$OUT/run.env" ]] || { echo "$OUT holds a run: continue it with --resume, or use another --out" >&2; exit 2; }
   mkdir -p "$OUT"
   OUT="$(cd "$OUT" && pwd)"
   TOKEN="$(openssl rand -hex 24)"
   SEAL0="$(openssl rand -hex 32)"
   SEAL1="$(openssl rand -hex 32)"
+  # one dealer process holds both parties' secrets under one seal key
+  [[ "$KEYS" == keygen ]] && SEAL1="$SEAL0"
 fi
+UPLOAD="${UPLOAD:-ciphertext}"
 
 free_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()'; }
 
@@ -105,7 +113,7 @@ if (( ! RESUME )); then
   grep -m1 'model name' /proc/cpuinfo || true
   grep -E 'MemTotal|MemAvailable' /proc/meminfo
   echo "binary: $BIN"
-  echo "args: reports=$REPORTS type=$TYPE min_batch=$MIN_BATCH min_cell=$MIN_CELL workers=$WORKERS invalid_every=$INVALID_EVERY seed=$SEED keys=$KEYS"
+  echo "args: reports=$REPORTS type=$TYPE min_batch=$MIN_BATCH min_cell=$MIN_CELL workers=$WORKERS invalid_every=$INVALID_EVERY seed=$SEED keys=$KEYS upload=$UPLOAD"
 } > "$OUT/machine.txt"
 
 # ---- TLS ----------------------------------------------------------------------
@@ -120,12 +128,19 @@ openssl x509 -req -in "$OUT/server.csr" -CA "$OUT/ca.pem" -CAkey "$OUT/ca.key" -
 cat "$OUT/leaf.pem" "$OUT/ca.pem" > "$OUT/server.pem"
 
 # ---- task ------------------------------------------------------------------------
+mkdir -p "$OUT/m0" "$OUT/m1"
+UPLOAD_ARGS=()
+if [[ "$UPLOAD" == shares ]]; then
+  log "upload keys"
+  U0="$(FHE_PRIO3_SEAL_KEY="$SEAL0" "$BIN" upload-key --out "$OUT/m0/upload.key")"
+  U1="$(FHE_PRIO3_SEAL_KEY="$SEAL1" "$BIN" upload-key --out "$OUT/m1/upload.key")"
+  UPLOAD_ARGS=(--upload shares --upload-keys "$U0,$U1")
+fi
 log "task"
 "$BIN" task-config --out "$OUT/task.bin" --type "$TYPE" --aggregators 1 --mode silent \
-  --topology split --min-batch "$MIN_BATCH" --min-cell "$MIN_CELL" | tee "$OUT/task.txt"
+  --topology split --min-batch "$MIN_BATCH" --min-cell "$MIN_CELL" "${UPLOAD_ARGS[@]}" | tee "$OUT/task.txt"
 
 # ---- keys: party 0 = aggregator, party 1 = collector ---------------------
-mkdir -p "$OUT/m0" "$OUT/m1"
 T0=$(date +%s)
 if [[ "$KEYS" == ceremony ]]; then
   log "key ceremony (two processes)"
@@ -178,7 +193,7 @@ ls -l "$MATERIAL" >> "$OUT/machine.txt"
 # what --resume needs: the throwaway deployment's secrets and the arguments
 ( umask 077
   {
-    printf 'TOKEN=%q\nSEAL0=%q\nSEAL1=%q\nMATERIAL=%q\nKEYS=%q\n' "$TOKEN" "$SEAL0" "$SEAL1" "$MATERIAL" "$KEYS"
+    printf 'TOKEN=%q\nSEAL0=%q\nSEAL1=%q\nMATERIAL=%q\nKEYS=%q\nUPLOAD=%q\n' "$TOKEN" "$SEAL0" "$SEAL1" "$MATERIAL" "$KEYS" "$UPLOAD"
     printf 'REPORTS=%q\nTYPE=%q\nMIN_BATCH=%q\nMIN_CELL=%q\nWORKERS=%q\nINVALID_EVERY=%q\nSEED=%q\n' \
       "$REPORTS" "$TYPE" "$MIN_BATCH" "$MIN_CELL" "$WORKERS" "$INVALID_EVERY" "$SEED"
   } > "$OUT/run.env" )
@@ -192,20 +207,25 @@ while [[ -e "$OUT/report-$RUN.json" || -e "$OUT/loadtest-$RUN.log" ]]; do RUN=$(
 
 # ---- nodes ---------------------------------------------------------------------
 AP="$(free_port)"; CP="$(free_port)"; AM="$(free_port)"; CM="$(free_port)"
+AGG_UPLOAD=() COL_UPLOAD=()
+if [[ "$UPLOAD" == shares ]]; then
+  AGG_UPLOAD=(--upload-key "$OUT/m0/upload.key")
+  COL_UPLOAD=(--upload-key "$OUT/m1/upload.key")
+fi
 log "collector :$CP (metrics :$CM)"
 # the collector uses the context and the joint public key only: it gets the
 # client material (no evaluation keys)
 FHE_PRIO3_SEAL_KEY="$SEAL1" "$BIN" collector --task "$OUT/task.bin" --material "$OUT/client-material.bin" \
   --key-share "$OUT/m1/share-1.sealed" --db "$OUT/collector.db" --listen "127.0.0.1:$CP" \
   --token "$TOKEN" --tls-cert "$OUT/server.pem" --tls-key "$OUT/server.key" \
-  --metrics-listen "127.0.0.1:$CM" >> "$OUT/collector.log" 2>&1 &
+  --metrics-listen "127.0.0.1:$CM" "${COL_UPLOAD[@]}" >> "$OUT/collector.log" 2>&1 &
 COL_PID=$!; PIDS+=("$COL_PID")
 log "aggregator :$AP (metrics :$AM)"
 FHE_PRIO3_SEAL_KEY="$SEAL0" "$BIN" aggregator --index 0 --task "$OUT/task.bin" --material "$MATERIAL" \
   --share "$OUT/m0/share-0.sealed" --db "$OUT/aggregator.db" --listen "127.0.0.1:$AP" \
   --aggregators "https://localhost:$AP" --collectors "https://localhost:$CP" --token "$TOKEN" \
   --tls-cert "$OUT/server.pem" --tls-key "$OUT/server.key" --ca "$OUT/ca.pem" \
-  --metrics-listen "127.0.0.1:$AM" >> "$OUT/aggregator.log" 2>&1 &
+  --metrics-listen "127.0.0.1:$AM" "${AGG_UPLOAD[@]}" >> "$OUT/aggregator.log" 2>&1 &
 AGG_PID=$!; PIDS+=("$AGG_PID")
 
 wait_ready() {

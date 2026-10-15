@@ -73,6 +73,9 @@ const REJECT_REASONS: &[&str] = &[
     "QuotaExceeded",
     "BadGroup",
     "WrongParameters",
+    "WrongUpload",
+    "WrongInputShareCount",
+    "MalformedInputShare",
 ];
 
 /// The variant name at the start of a rejection message (`Display` of

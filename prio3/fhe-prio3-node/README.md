@@ -83,7 +83,7 @@ is refused with `BadMagic`.
 | --- | --- | --- | --- |
 | `GET /v1/status` | anyone | none | → `StatusReply` |
 | `GET /v1/group` | client → leader | none | → `GroupTicket` (silent batched tasks) |
-| `POST /v1/submit` | client → leader | none | `Report` → `SubmitOutcome` |
+| `POST /v1/submit` | client → leader | none | `Report` (or `ShareReport` for `upload = Shares` tasks) → `SubmitOutcome` |
 | `POST /v1/close` | operator → leader | token | `()` → `CloseReply{result (no policies), released_to}` |
 | `POST /v1/report` | leader → helper | token | `Report` → `Result<MaskCommit,String>` (verdict) / `SubmitOutcome` (silent) |
 | `POST /v1/mask-commits` | leader → helper | token | `MaskCommitsRequest` → `MaskMessage` (revealed once every mask commitment is in) |
@@ -102,6 +102,8 @@ is refused with `BadMagic`.
 | `POST /v1/release-commits` | leader → collector | token | `ReleaseCommitsRequest` → `ReleaseOpening` |
 | `POST /v1/release-reveals` | leader → collector | token | `ReleaseRevealsRequest` → `FinishReceipt{result (no policies)}` |
 | `GET /v1/result` | operator → collector | token | → `Option<BatchResult>` |
+| `POST /v1/share-contribute` | leader → helper / split-key collector | token | `ShareFlushRequest` → `ShareContribution` (share upload) |
+| `POST /v1/share-finish` | leader → helper | token | `ShareFinishRequest{request, contributions}` → `()` (share upload) |
 
 Verification flows (spec §3.4–§3.6, §4.4). *Verdict:* `/v1/report` (mask
 commitments), `/v1/mask-commits` (masks), `/v1/masks` (partial
@@ -122,6 +124,37 @@ itself first (`AUDIT.md` F-8).
 | `GET /v1/shard/{i}/material` | client → router | none | → `PublicMaterial` of shard `i`, evaluation keys stripped |
 | `GET /v1/shards` | anyone | none | → `Vec<Assignment>` |
 | `POST /v1/close-all` | operator → router | token | `()` → combined `BatchResult` |
+
+## Secret-shared upload (`--upload shares`)
+
+With `task-config --upload shares` clients send Prio3's report: their
+encoded measurement split into one additive share per key party, each
+sealed to that party's X25519 upload key (a few hundred bytes instead of a
+22 MiB ciphertext; the client needs the task only, no homomorphic
+material). Every key party makes its upload key first and the task lists
+the public keys in party order (aggregators, then the split-key collector):
+
+```sh
+FHE_PRIO3_SEAL_KEY=$SEAL0 fhe-prio3-node upload-key --out agg0.upload    # prints the public key
+FHE_PRIO3_SEAL_KEY=$SEAL1 fhe-prio3-node upload-key --out col.upload
+fhe-prio3-node task-config --out task.bin --type histogram:16 --aggregators 1 --mode silent \
+    --topology split --upload shares --upload-keys <agg0 hex>,<col hex>
+# ...keys as usual; then each node gets its upload key:
+fhe-prio3-node aggregator ... --upload-key agg0.upload
+fhe-prio3-node collector  ... --upload-key col.upload
+```
+
+The leader admits each report with cheap structural checks and assigns it
+a group; when every group of a verification batch is occupied (and at the
+close) it runs a flush: every key party opens its own inputs, encrypts its
+shares of the batch as one proven contribution (`/v1/share-contribute`),
+and the aggregators verify each other's proofs and run the validity check
+on the sum (`/v1/share-finish`). A report is durable once the leader
+answers; a flush that fails (a peer unreachable) is retried with the next
+report or the close. Trust: every key party can change the value of the
+reports of a flush (as Prio3's aggregators can); in a split-key task this
+includes the collector (spec, "Secret-shared upload"; `AUDIT.md` F-27).
+`loadtest/run.sh --upload shares` runs the load test with it.
 
 ## Persistence and restart
 

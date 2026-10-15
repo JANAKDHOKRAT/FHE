@@ -615,6 +615,7 @@ dependencies = [
  "openfhe-tbgv-rs",
  "postcard",
  "rand 0.8.8",
+ "rand_chacha",
  "rand_core 0.6.4",
  "serde",
  "sha2",

@@ -1,11 +1,15 @@
 //! Client library: obtains a group from the leader when the task batches,
-//! encrypts, signs when required, submits, and returns the outcome.
+//! encrypts (or, for a task whose clients upload shares, shares and seals),
+//! signs when required, submits, and returns the outcome.
 
 use crate::wire::*;
 use fhe_prio3::*;
 
 pub struct NetworkClient {
-    client: Client,
+    /// Ciphertext upload: the encrypting client.
+    client: Option<Client>,
+    /// Share upload: the sharing client (no homomorphic material).
+    shares: Option<ShareClient>,
     http: reqwest::Client,
     leader: String,
     batched: bool,
@@ -40,16 +44,29 @@ impl NetworkClient {
         ca_pem: &[u8],
         pinned: Option<&[[u8; 32]]>,
     ) -> anyhow::Result<Self> {
+        // the attestation covers the task digest, which binds the task's
+        // upload keys: with pinned aggregators, a client seals shares only
+        // to keys every aggregator signed for
         if let Some(p) = pinned {
             fhe_prio3::attest::verify_material(&task, material, p)?;
         }
-        let mut client = Client::new(task.clone(), &material.context, &material.public_key)?;
-        if let Some(id) = identity {
-            client = client.with_identity(id);
-        }
-        let batched = task.mode == VerificationMode::Silent && task.silent_batch_groups > 1;
+        let (client, shares) = if task.shares_upload() {
+            let mut s = ShareClient::new(task.clone())?;
+            if let Some(id) = identity {
+                s = s.with_identity(id);
+            }
+            (None, Some(s))
+        } else {
+            let mut c = Client::new(task.clone(), &material.context, &material.public_key)?;
+            if let Some(id) = identity {
+                c = c.with_identity(id);
+            }
+            (Some(c), None)
+        };
+        let batched = client.is_some() && task.mode == VerificationMode::Silent && task.silent_batch_groups > 1;
         Ok(Self {
             client,
+            shares,
             http: https_client(ca_pem)?,
             leader,
             batched,
@@ -57,14 +74,24 @@ impl NetworkClient {
     }
 
     pub async fn submit(&self, m: &Measurement) -> anyhow::Result<SubmitOutcome> {
+        if let Some(s) = &self.shares {
+            let report = s.shard(m)?;
+            return http_post(&self.http, &format!("{}/v1/submit", self.leader), None, &report).await;
+        }
+        let client = self.client.as_ref().ok_or_else(|| anyhow::anyhow!("no client for this task's upload"))?;
         let group = if self.batched {
             let t: GroupTicket = http_get(&self.http, &format!("{}/v1/group", self.leader), None).await?;
             t.group
         } else {
             0
         };
-        let report = self.client.shard_in_group(m, group)?;
+        let report = client.shard_in_group(m, group)?;
         http_post(&self.http, &format!("{}/v1/submit", self.leader), None, &report).await
+    }
+
+    /// Submits an already-built share report (tests of malformed submissions).
+    pub async fn submit_share_report(&self, report: &ShareReport) -> anyhow::Result<SubmitOutcome> {
+        http_post(&self.http, &format!("{}/v1/submit", self.leader), None, report).await
     }
 
     /// Submits an already-built report (tests of malformed submissions).
@@ -72,8 +99,14 @@ impl NetworkClient {
         http_post(&self.http, &format!("{}/v1/submit", self.leader), None, report).await
     }
 
-    pub fn inner(&self) -> &Client {
-        &self.client
+    /// The encrypting client (tasks whose clients upload ciphertexts).
+    pub fn inner(&self) -> Option<&Client> {
+        self.client.as_ref()
+    }
+
+    /// The sharing client (tasks whose clients upload shares).
+    pub fn share_client(&self) -> Option<&ShareClient> {
+        self.shares.as_ref()
     }
 }
 

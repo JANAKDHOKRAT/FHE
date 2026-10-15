@@ -41,6 +41,108 @@ impl Report {
     }
 }
 
+/// One key party's input share, sealed to its upload key (`shares.rs`):
+/// ephemeral X25519 public key, AES-256-GCM nonce and ciphertext (with tag).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SealedInput {
+    pub ephemeral: [u8; 32],
+    pub nonce: [u8; 12],
+    pub ciphertext: Vec<u8>,
+}
+
+/// A client's report under [`crate::config::Upload::Shares`]: its encoded
+/// measurement split into one additive share per key party, each sealed to
+/// that party. No ciphertext under the joint key: a few hundred bytes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShareReport {
+    pub task_id: [u8; 32],
+    pub report_id: ReportId,
+    /// Fresh per report; bound into every sealed input's associated data
+    /// and every seed's expansion.
+    pub nonce: [u8; 16],
+    /// One sealed input per key party, in party order.
+    pub inputs: Vec<SealedInput>,
+    /// Present when the task's `AuthPolicy` requires it.
+    pub auth: Option<crate::auth::ReportAuth>,
+}
+
+impl ShareReport {
+    /// Deterministic identifier binding the task, the nonce and every byte
+    /// of every sealed input: once a client has sent a report, the value
+    /// its shares add up to is fixed, before the validity check's
+    /// coefficients (derived from this id) exist.
+    pub fn compute_id(task_id: &[u8; 32], nonce: &[u8; 16], inputs: &[SealedInput]) -> ReportId {
+        let mut h = Sha256::new();
+        h.update(b"fhe-prio3/3 share report");
+        h.update(task_id);
+        h.update(nonce);
+        h.update((inputs.len() as u32).to_le_bytes());
+        for i in inputs {
+            h.update(i.ephemeral);
+            h.update(i.nonce);
+            h.update((i.ciphertext.len() as u64).to_le_bytes());
+            h.update(&i.ciphertext);
+        }
+        h.finalize().into()
+    }
+
+    /// Total size of the sealed inputs.
+    pub fn sealed_bytes(&self) -> usize {
+        self.inputs.iter().map(|i| 32 + 12 + i.ciphertext.len()).sum()
+    }
+}
+
+/// The leader's request for one verification batch of share reports (a
+/// "flush"): every report with the group it occupies, report `i` in group
+/// `i`. Every key party contributes its shares of exactly these reports.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShareFlushRequest {
+    pub task_id: [u8; 32],
+    /// Flushes are numbered from 0 within a batch; a party contributes to
+    /// each number once.
+    pub seq: u64,
+    pub reports: Vec<ShareReport>,
+}
+
+impl ShareFlushRequest {
+    /// Binds the task, the sequence number and every report id in group
+    /// order: what every contribution and its proofs are bound to.
+    pub fn digest(&self) -> [u8; 32] {
+        let mut h = Sha256::new();
+        h.update(b"fhe-prio3/3 share flush");
+        h.update(self.task_id);
+        h.update(self.seq.to_le_bytes());
+        h.update((self.reports.len() as u32).to_le_bytes());
+        for r in &self.reports {
+            h.update(r.report_id);
+        }
+        h.finalize().into()
+    }
+}
+
+/// One key party's shares of a flush, encrypted under the joint key: one
+/// packed fresh-shaped ciphertext per chunk (its effective ciphertext `2C`
+/// decodes to the party's shares at the reports' group slots), each with a
+/// proof of well-formedness (`wfe.rs`).
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ShareContribution {
+    pub task_id: [u8; 32],
+    pub party: usize,
+    pub seq: u64,
+    pub flush_digest: [u8; 32],
+    pub chunks: Vec<Vec<u8>>,
+    pub proofs: Vec<crate::wfe::Proof>,
+}
+
+impl ShareContribution {
+    pub fn digest(&self) -> [u8; 32] {
+        let mut h = Sha256::new();
+        h.update(b"fhe-prio3/3 share contribution");
+        h.update(encode(self).expect("serializable"));
+        h.finalize().into()
+    }
+}
+
 /// Verdict mode: aggregator `aggregator`'s commitment to its mask for one
 /// report, sent before any mask is revealed. Without it, an aggregator that
 /// saw the others' masks first could send `Enc(r) − Σ others` and fix the

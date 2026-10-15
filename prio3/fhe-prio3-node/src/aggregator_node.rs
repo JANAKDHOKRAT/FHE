@@ -41,6 +41,9 @@ pub struct AggregatorNodeConfig {
     pub db: PathBuf,
     pub registry: Option<Arc<dyn ClientRegistry>>,
     pub ca_pem: Vec<u8>,
+    /// Tasks whose clients upload shares: this aggregator's upload secret
+    /// (X25519; its public half is the task's `upload_keys[index]`).
+    pub upload_key: Option<[u8; 32]>,
 }
 
 struct Inner {
@@ -63,6 +66,10 @@ struct Inner {
     /// Report ids already in the store's `ids` table: (seen, accepted). The
     /// table holds a prefix of `Aggregator::id_logs`; a step appends the rest.
     persisted_ids: Mutex<(usize, usize)>,
+    /// Leader, share upload: held while admitting a share report and while
+    /// running a flush, so admissions wait for a running flush instead of
+    /// finding it full.
+    share_flush: tokio::sync::Mutex<()>,
 }
 
 #[derive(Clone)]
@@ -86,6 +93,12 @@ impl AggregatorNode {
     /// Builds the node, restoring persisted state if the database has any.
     pub fn new(cfg: AggregatorNodeConfig) -> anyhow::Result<Self> {
         let mut agg = Aggregator::new(cfg.task.clone(), &cfg.material, cfg.index, &cfg.share, cfg.registry.clone())?;
+        match (cfg.task.shares_upload(), cfg.upload_key) {
+            (true, Some(k)) => agg = agg.with_upload_key(UploadKey::from_secret_bytes(&k))?,
+            (true, None) => anyhow::bail!("the task's clients upload shares: this aggregator needs its upload key (--upload-key)"),
+            (false, Some(_)) => anyhow::bail!("the task's clients upload ciphertexts: no upload key is used"),
+            (false, None) => {}
+        }
         let mut store = Store::open(&cfg.db)?;
         match store.get(K_TASK)? {
             Some(bytes) => {
@@ -102,7 +115,7 @@ impl AggregatorNode {
         let (stored_seen, stored_accepted) = (store.ids(IdKind::Seen)?, store.ids(IdKind::Accepted)?);
         let persisted_ids = (stored_seen.len(), stored_accepted.len());
         if let Some(bytes) = store.get(K_STATE)? {
-            let mut st: AggregatorState = decode(&bytes)?;
+            let mut st = AggregatorState::decode(&bytes)?;
             if let Some(acc) = store.get(K_ACC)? {
                 st = st.with_accumulators(decode(&acc)?);
             }
@@ -169,6 +182,7 @@ impl AggregatorNode {
                 metrics,
                 persisted_accumulators: Mutex::new(None),
                 persisted_ids: Mutex::new(persisted_ids),
+                share_flush: tokio::sync::Mutex::new(()),
             }),
         })
     }
@@ -240,6 +254,8 @@ impl AggregatorNode {
             .route("/v1/gate-open", post(internal_gate_open).layer(gate))
             .route("/v1/gate-reveal", post(internal_gate_reveal).layer(gate))
             .route("/v1/gate-finish", post(internal_gate_finish).layer(gate))
+            .route("/v1/share-contribute", post(internal_share_contribute).layer(gate))
+            .route("/v1/share-finish", post(internal_share_finish).layer(gate))
             .with_state(self.clone())
             .merge(crate::metrics::health_routes(self.inner.metrics.clone()))
             .layer(axum::middleware::from_fn_with_state(self.inner.metrics.clone(), crate::metrics::track))
@@ -492,6 +508,86 @@ impl AggregatorNode {
         })
     }
 
+    /// Share upload, leader: admits a client's share report into the open
+    /// flush and runs the flush when every group is occupied. A flush left
+    /// unfinished (a peer was unreachable) is retried first. Once admitted
+    /// the report is durable: a failing flush is reported in the metrics and
+    /// the log and retried with the next report or the close, and the
+    /// client is told its report was accepted.
+    async fn drive_share_report(&self, report: ShareReport) -> std::result::Result<SubmitOutcome, HttpError> {
+        let _flush = self.inner.share_flush.lock().await;
+        let stuck = self
+            .with_agg("share_state", String::new(), vec![], |agg| {
+                Ok((agg.share_round().contributed.is_some() || agg.share_flush_ready(), false))
+            })
+            .await?;
+        if stuck {
+            self.phase("share_flush", self.drive_share_flush()).await?;
+        }
+        let detail = hex::encode(report.report_id);
+        let outcome = self
+            .with_agg("share_admit", detail, vec![], move |agg| match agg.admit_share_report(&report) {
+                Ok(()) => Ok((SubmitOutcome::Accepted, true)),
+                Err(Error::Reject(reason)) => Ok((SubmitOutcome::Rejected(reason.to_string()), false)),
+                Err(e) => Err(e),
+            })
+            .await?;
+        if outcome == SubmitOutcome::Accepted {
+            let ready = self
+                .with_agg("share_state", String::new(), vec![], |agg| Ok((agg.share_flush_ready(), false)))
+                .await?;
+            if ready && let Err(e) = self.phase("share_flush", self.drive_share_flush()).await {
+                tracing::warn!(error = %e.1, "share flush failed; retried with the next report or the close");
+            }
+        }
+        Ok(outcome)
+    }
+
+    /// Share upload, leader: one flush among the key parties. Every party
+    /// contributes (the helpers admit the flush's reports there); the
+    /// helpers finish first, then the leader, so a leader that restarts in
+    /// between finds its flush still contributed, asks again (each party
+    /// answers with the same contribution, deterministically) and finishes.
+    async fn drive_share_flush(&self) -> std::result::Result<(), HttpError> {
+        let Some(req) = self
+            .with_agg("share_flush_request", String::new(), vec![], |agg| Ok((agg.share_flush_request(), false)))
+            .await?
+        else {
+            return Ok(());
+        };
+        let detail = req.seq.to_string();
+        let r = req.clone();
+        let mut contributions = vec![
+            self.with_agg("share_contribute", detail.clone(), vec![], move |agg| Ok((agg.share_contribute(&r)?, true)))
+                .await?,
+        ];
+        let body = encode(&req)?;
+        let mut peers: Vec<(usize, String)> = self.helpers();
+        if self.inner.task.collector_holds_key() {
+            peers.push((self.inner.task.num_aggregators, self.inner.collectors[0].clone()));
+        }
+        for (party, url) in &peers {
+            let c: ShareContribution = decode(&self.peer_post_raw(url, "/v1/share-contribute", body.clone()).await?)?;
+            if c.party != *party {
+                return Err(HttpError(
+                    StatusCode::CONFLICT,
+                    format!("key party {party} answered with a contribution of party {}", c.party),
+                ));
+            }
+            contributions.push(c);
+        }
+        let finish = encode(&ShareFinishRequest {
+            request: req.clone(),
+            contributions: contributions.clone(),
+        })?;
+        for (_, url) in self.helpers() {
+            let () = decode(&self.peer_post_raw(&url, "/v1/share-finish", finish.clone()).await?)?;
+        }
+        drop(finish);
+        self.with_agg("share_finish", detail, vec![], move |agg| Ok((agg.share_finish(&req, &contributions)?, true)))
+            .await
+    }
+
     /// Silent mode: the verified count round. Every aggregator checks the
     /// decrypted count with its own blinded checks before trusting it.
     async fn drive_count(&self) -> std::result::Result<(), HttpError> {
@@ -653,6 +749,11 @@ impl AggregatorNode {
     /// Closes the batch on every aggregator, delivers the shares to the
     /// collector(s) and runs the verified release.
     async fn drive_close(&self) -> std::result::Result<CloseReply, HttpError> {
+        if self.inner.task.shares_upload() {
+            // the open flush (and any left unfinished) before the batch closes
+            let _flush = self.inner.share_flush.lock().await;
+            self.phase("share_flush", self.drive_share_flush()).await?;
+        }
         if self.inner.task.mode == VerificationMode::Silent && !self.inner.task.collector_holds_key() {
             self.phase("count", self.drive_count()).await?;
         }
@@ -766,9 +867,15 @@ async fn submit(State(node): State<AggregatorNode>, body: Bytes) -> std::result:
     if !node.is_leader() {
         return Err(HttpError(StatusCode::NOT_FOUND, "submit to the leader".into()));
     }
-    let report: Report = parse_body(&body).inspect_err(|_| node.inner.metrics.report("error", "Undecodable"))?;
     let m = &node.inner.metrics;
-    match node.drive_report(report).await {
+    let driven = if node.inner.task.shares_upload() {
+        let report: ShareReport = parse_body(&body).inspect_err(|_| m.report("error", "Undecodable"))?;
+        node.drive_share_report(report).await
+    } else {
+        let report: Report = parse_body(&body).inspect_err(|_| m.report("error", "Undecodable"))?;
+        node.drive_report(report).await
+    };
+    match driven {
         Ok(outcome) => {
             match &outcome {
                 SubmitOutcome::Accepted => m.report("accepted", "none"),
@@ -1003,6 +1110,40 @@ async fn internal_aggregate_share(
         .with_agg("sealed_share_for", format!("{c}"), vec![], move |agg| Ok((agg.sealed_share_for(c)?, true)))
         .await?;
     reply(&ShareReply::Sealed(s))
+}
+
+// ---- share upload, helper side --------------------------------------------
+
+async fn internal_share_contribute(
+    State(node): State<AggregatorNode>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> std::result::Result<axum::response::Response, HttpError> {
+    check_token(&headers, &node.inner.token)?;
+    let req: ShareFlushRequest = parse_body(&body)?;
+    let detail = req.seq.to_string();
+    reply(
+        &node
+            .with_agg("share_contribute", detail, vec![], move |agg| Ok((agg.share_contribute(&req)?, true)))
+            .await?,
+    )
+}
+
+async fn internal_share_finish(
+    State(node): State<AggregatorNode>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> std::result::Result<axum::response::Response, HttpError> {
+    check_token(&headers, &node.inner.token)?;
+    let req: ShareFinishRequest = parse_body(&body)?;
+    let detail = req.request.seq.to_string();
+    reply(
+        &node
+            .with_agg("share_finish", detail, vec![], move |agg| {
+                Ok((agg.share_finish(&req.request, &req.contributions)?, true))
+            })
+            .await?,
+    )
 }
 
 // ---- gated release, helper side ------------------------------------------

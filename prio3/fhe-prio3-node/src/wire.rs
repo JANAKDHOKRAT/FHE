@@ -186,6 +186,17 @@ pub struct GateRevealsRequest {
     pub reveals: Vec<fhe_prio3::GateReveal>,
 }
 
+/// Secret-shared upload (`fhe_prio3::shares`), leader -> every helper
+/// aggregator: every key party's contribution to one flush (reply: `()`,
+/// once the helper verified them and folded the flush in). The flush
+/// itself goes to every other key party (`/v1/share-contribute`, body: the
+/// `ShareFlushRequest`, reply: the party's `ShareContribution`).
+#[derive(Serialize, Deserialize)]
+pub struct ShareFinishRequest {
+    pub request: fhe_prio3::ShareFlushRequest,
+    pub contributions: Vec<fhe_prio3::ShareContribution>,
+}
+
 /// Body limit of the gated release's rounds: a round carries every key
 /// party's contribution (fresh ciphertexts, their proofs and, from a
 /// split-key aggregator, its accumulators).

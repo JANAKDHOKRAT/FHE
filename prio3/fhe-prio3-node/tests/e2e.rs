@@ -64,6 +64,23 @@ struct Cluster {
     /// Metrics listener of each node's latest start.
     agg_metrics: Vec<Option<SocketAddr>>,
     col_metrics: Vec<Option<SocketAddr>>,
+    /// Share-upload tasks: every key party's upload secret, by party.
+    upload_secrets: Vec<[u8; 32]>,
+}
+
+/// Deterministic upload secrets for the key parties of share-upload tests.
+fn upload_secrets(parties: usize) -> Vec<[u8; 32]> {
+    (0..parties).map(|i| [0x60 + i as u8; 32]).collect()
+}
+
+/// `task` with share upload, keyed by [`upload_secrets`].
+fn with_shares(mut task: TaskConfig) -> TaskConfig {
+    task.upload = Upload::Shares;
+    task.upload_keys = upload_secrets(task.num_key_parties())
+        .iter()
+        .map(|s| UploadKey::from_secret_bytes(s).public_key())
+        .collect();
+    task
 }
 
 /// One scrape of a node's `/metrics`: (series name, labels, value).
@@ -130,6 +147,11 @@ impl Cluster {
         let agg_urls = agg_ports.iter().map(|p| format!("https://localhost:{p}")).collect();
         let col_urls = col_ports.iter().map(|p| format!("https://localhost:{p}")).collect();
         let num_collectors = task.num_collectors();
+        let upload_secrets = if task.shares_upload() {
+            upload_secrets(task.num_key_parties())
+        } else {
+            Vec::new()
+        };
         Self {
             dir,
             tls,
@@ -146,6 +168,7 @@ impl Cluster {
             handles: Vec::new(),
             agg_metrics: vec![None; n],
             col_metrics: vec![None; num_collectors],
+            upload_secrets,
         }
     }
 
@@ -161,6 +184,7 @@ impl Cluster {
             db: self.dir.path().join(format!("agg{i}.db")),
             registry: None,
             ca_pem: self.tls.ca_pem.clone(),
+            upload_key: self.upload_secrets.get(i).copied(),
         }
     }
 
@@ -209,6 +233,7 @@ impl Cluster {
             token: self.token.clone(),
             db: self.dir.path().join(format!("collector{c}.db")),
             key_share: self.collector_share.clone(),
+            upload_key: self.task.collector_party().and_then(|p| self.upload_secrets.get(p).copied()),
         })
         .unwrap();
         self.col_metrics[c] = Some(spawn_metrics_server(node.metrics(), "127.0.0.1:0".parse().unwrap()).unwrap());
@@ -272,13 +297,13 @@ async fn verdict_count_over_tls_with_leader_restart() {
     assert_eq!(client.submit(&Measurement::Count(true)).await.unwrap(), SubmitOutcome::Accepted);
     assert_eq!(client.submit(&Measurement::Count(false)).await.unwrap(), SubmitOutcome::Accepted);
     // an invalid report is rejected by every node and the leader reports it
-    let bad = client.inner().shard_raw(&[vec![2]]).unwrap();
+    let bad = client.inner().unwrap().shard_raw(&[vec![2]]).unwrap();
     match client.submit_report(&bad).await.unwrap() {
         SubmitOutcome::Rejected(r) => assert!(r.contains("ValidityCheckFailed"), "{r}"),
         o => panic!("expected rejection, got {o:?}"),
     }
     // a replay is refused before any FHE work
-    let first = client.inner().shard(&Measurement::Count(true)).unwrap();
+    let first = client.inner().unwrap().shard(&Measurement::Count(true)).unwrap();
     assert_eq!(client.submit_report(&first).await.unwrap(), SubmitOutcome::Accepted);
     match client.submit_report(&first).await.unwrap() {
         SubmitOutcome::Rejected(r) => assert!(r.contains("Replay"), "{r}"),
@@ -292,7 +317,7 @@ async fn verdict_count_over_tls_with_leader_restart() {
     // after the message is refused, since a message has exactly one encoding)
     let resp = http.post(format!("{}/v1/submit", c.agg_urls[0])).body(vec![0xffu8; 3]).send().await.unwrap();
     assert_eq!(resp.status().as_u16(), 400, "undecodable body");
-    let mut other_task = client.inner().shard(&Measurement::Count(true)).unwrap();
+    let mut other_task = client.inner().unwrap().shard(&Measurement::Count(true)).unwrap();
     other_task.task_id = [0u8; 32];
     let body = fhe_prio3::messages::encode(&other_task).unwrap();
     let resp = http.post(format!("{}/v1/submit", c.agg_urls[0])).body(body.clone()).send().await.unwrap();
@@ -458,7 +483,7 @@ async fn silent_batched_sum_over_tls() {
     }
     // invalid (a non-bit slot claiming 101) report is admitted and contributes zero
     let bad = vec![0u64, 0, 0, 0, 0, 2, 1];
-    let r = client.inner().shard_raw_elements_in_group(&[bad], 1).unwrap();
+    let r = client.inner().unwrap().shard_raw_elements_in_group(&[bad], 1).unwrap();
     assert_eq!(client.submit_report(&r).await.unwrap(), SubmitOutcome::Accepted);
     assert_eq!(c.stored_reports(), vec![0, 0]);
     // every admitted report's id appended once on each aggregator
@@ -658,6 +683,7 @@ async fn two_collectors_with_policies_over_tls() {
         token: c.token.clone(),
         db: c.dir.path().join("bad.db"),
         key_share: None,
+        upload_key: None,
     });
     assert!(bad.is_err());
     let none = CollectorNode::new(CollectorNodeConfig {
@@ -668,6 +694,7 @@ async fn two_collectors_with_policies_over_tls() {
         token: c.token.clone(),
         db: c.dir.path().join("bad2.db"),
         key_share: None,
+        upload_key: None,
     });
     assert!(none.is_err());
 }
@@ -686,15 +713,15 @@ async fn three_aggregators_verdict_over_tls() {
     assert_eq!(client.submit(&Measurement::Sum(2)).await.unwrap(), SubmitOutcome::Accepted);
     // out of range: 101 needs a non-bit slot (2 * 32 + 37)
     let bad = vec![0u64, 0, 0, 0, 0, 2, 1];
-    match client.submit_report(&client.inner().shard_raw(&[bad]).unwrap()).await.unwrap() {
+    match client.submit_report(&client.inner().unwrap().shard_raw(&[bad]).unwrap()).await.unwrap() {
         SubmitOutcome::Rejected(r) => assert!(r.contains("ValidityCheckFailed"), "{r}"),
         o => panic!("expected rejection, got {o:?}"),
     }
     // Hostile chunks over the network: the leader parses them in safe Rust
     // and refuses them before any OpenFHE call; nothing is forwarded, and
     // the cluster keeps serving.
-    let codec = client.inner().codec();
-    let good = client.inner().shard(&Measurement::Sum(5)).unwrap();
+    let codec = client.inner().unwrap().codec();
+    let good = client.inner().unwrap().shard(&Measurement::Sum(5)).unwrap();
     let legacy = codec
         .decode(&good.chunks[0], fhe_prio3::packed::Expect::Exactly(codec.fresh_meta()))
         .unwrap()
@@ -776,6 +803,7 @@ async fn split_key_with_suppression_over_tls() {
         token: c.token.clone(),
         db: c.dir.path().join("noshare.db"),
         key_share: None,
+        upload_key: None,
     });
     assert!(no_share.err().unwrap().to_string().contains("key share"));
     c.start_all().await;
@@ -793,5 +821,90 @@ async fn split_key_with_suppression_over_tls() {
     c.start_collector(0).await;
     let again = c.result_of(0).await.unwrap().expect("stored result");
     assert_eq!(again, r);
+    c.stop_all();
+}
+
+/// Share upload over TLS with one aggregator and the key-holding collector:
+/// clients send a few hundred bytes; the aggregator runs a flush with the
+/// collector every four reports; the leader restarts with reports pending
+/// in its open flush and the collector restarts between flushes; the
+/// release is exact with small cells suppressed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn share_upload_split_key_over_tls() {
+    let _g = SERIAL.lock().await;
+    let mut task = TaskConfig::new_split_key([41u8; 32], MeasurementType::Histogram { length: 4 });
+    task.silent_batch_groups = 4;
+    task.repetitions = 4;
+    task.min_batch_size = 2;
+    task.min_cell_count = 2;
+    let task = with_shares(task);
+    let mut c = Cluster::new(task.clone());
+    // an aggregator or collector without its upload key does not start
+    let mut cfg = c.agg_config(0);
+    cfg.upload_key = None;
+    assert!(AggregatorNode::new(cfg).err().unwrap().to_string().contains("upload key"));
+    c.start_all().await;
+    let client = c.client();
+    let sc = client.share_client().expect("share upload client");
+    let r = sc.shard(&Measurement::Histogram(0)).unwrap();
+    let wire = fhe_prio3::messages::encode(&r).unwrap().len();
+    assert!(wire < 400, "a share report is {wire} bytes");
+    assert_eq!(client.submit_share_report(&r).await.unwrap(), SubmitOutcome::Accepted);
+    // the same bytes again: a replay
+    match client.submit_share_report(&r).await.unwrap() {
+        SubmitOutcome::Rejected(reason) => assert!(reason.starts_with("Replay"), "{reason}"),
+        o => panic!("replay accepted: {o:?}"),
+    }
+    for b in [0usize, 1, 3] {
+        assert_eq!(client.submit(&Measurement::Histogram(b)).await.unwrap(), SubmitOutcome::Accepted);
+    }
+    // four reports: one flush ran; two more pending, then the leader restarts
+    for b in [3usize, 3] {
+        assert_eq!(client.submit(&Measurement::Histogram(b)).await.unwrap(), SubmitOutcome::Accepted);
+    }
+    c.stop_all();
+    c.handles.clear();
+    c.start_all().await;
+    // an invalid encoding (a 2): admitted, zeroed under encryption
+    let bad = sc.shard_encoded(&[2, 0, 0, 0]).unwrap();
+    assert_eq!(client.submit_share_report(&bad).await.unwrap(), SubmitOutcome::Accepted);
+    assert_eq!(client.submit(&Measurement::Histogram(2)).await.unwrap(), SubmitOutcome::Accepted);
+    // a second flush ran (eight reports); one more is pending at the close
+    assert_eq!(client.submit(&Measurement::Histogram(0)).await.unwrap(), SubmitOutcome::Accepted);
+    let res = c.close().await.unwrap();
+    assert_eq!(res.aggregate, AggregateResult::Histogram(vec![3, 0, 0, 3]));
+    assert_eq!(res.suppressed, vec![1, 2]);
+    assert!(res.counts_withheld);
+    c.stop_all();
+}
+
+/// Share upload over TLS with two aggregators: the helper admits each
+/// flush's reports when the leader runs it, restarts between flushes, and
+/// both compute the same accumulators; the count round and the release are
+/// exact.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn share_upload_two_aggregators_over_tls() {
+    let _g = SERIAL.lock().await;
+    let mut task = TaskConfig::new_silent([42u8; 32], MeasurementType::Histogram { length: 4 }, 2);
+    task.silent_batch_groups = 4;
+    task.repetitions = 4;
+    task.min_batch_size = 3;
+    let task = with_shares(task);
+    let mut c = Cluster::new(task.clone());
+    c.start_all().await;
+    let client = c.client();
+    for b in [0usize, 1, 1, 2, 3] {
+        assert_eq!(client.submit(&Measurement::Histogram(b)).await.unwrap(), SubmitOutcome::Accepted);
+    }
+    c.stop_all();
+    c.handles.clear();
+    c.start_all().await;
+    let sc = client.share_client().unwrap();
+    let bad = sc.shard_encoded(&[1, 1, 0, 0]).unwrap();
+    assert_eq!(client.submit_share_report(&bad).await.unwrap(), SubmitOutcome::Accepted);
+    assert_eq!(client.submit(&Measurement::Histogram(1)).await.unwrap(), SubmitOutcome::Accepted);
+    let res = c.close().await.unwrap();
+    assert_eq!(res.aggregate, AggregateResult::Histogram(vec![1, 3, 1, 1]));
+    assert_eq!((res.report_count, res.valid_count), (7, 6));
     c.stop_all();
 }

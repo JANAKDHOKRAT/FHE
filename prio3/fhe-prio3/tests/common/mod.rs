@@ -314,3 +314,140 @@ impl Net {
         self.collect_for(0)
     }
 }
+
+/// Deterministic upload secrets for tests, one per key party.
+pub fn upload_secrets(parties: usize) -> Vec<[u8; 32]> {
+    (0..parties).map(|i| [0x40 + i as u8; 32]).collect()
+}
+
+/// `cfg` with secret-shared upload, its upload keys from [`upload_secrets`].
+pub fn with_share_upload(mut cfg: TaskConfig) -> TaskConfig {
+    cfg.upload = Upload::Shares;
+    cfg.upload_keys = upload_secrets(cfg.num_key_parties())
+        .iter()
+        .map(|s| UploadKey::from_secret_bytes(s).public_key())
+        .collect();
+    cfg
+}
+
+/// A deployment whose clients upload secret shares (`Upload::Shares`):
+/// every message crosses postcard, the leader admits reports and runs a
+/// flush whenever every group is occupied.
+pub struct ShareNet {
+    pub net: Net,
+    pub client: ShareClient,
+    pub upload_secrets: Vec<[u8; 32]>,
+}
+
+impl ShareNet {
+    pub fn from_local_keys(cfg: TaskConfig, k: &keys::LocalKeys) -> Self {
+        Self::from_local_keys_with_registry(cfg, k, None)
+    }
+
+    /// [`Self::from_local_keys`] with a client registry (signed reports).
+    /// The aggregators are built from the one copy of the full material
+    /// (no postcard round trip of the keys: at depth 27 a second copy of
+    /// the evaluation keys does not fit next to the first in 15 GiB).
+    pub fn from_local_keys_with_registry(cfg: TaskConfig, k: &keys::LocalKeys, registry: Option<Arc<dyn ClientRegistry>>) -> Self {
+        let secrets = upload_secrets(cfg.num_key_parties());
+        let aggs: Vec<Aggregator> = k
+            .aggregator_secrets
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                Aggregator::new(cfg.clone(), &k.material, i, s, registry.clone())
+                    .expect("aggregator")
+                    .with_upload_key(UploadKey::from_secret_bytes(&secrets[i]))
+                    .expect("upload key")
+            })
+            .collect();
+        let material = PublicMaterial {
+            context: k.material.context.clone(),
+            public_key: k.material.public_key.clone(),
+            joint_tag: k.material.joint_tag.clone(),
+            eval_mult_key: Vec::new(),
+            rotation_keys: Vec::new(),
+            rotation_indices: k.material.rotation_indices.clone(),
+            attestations: Vec::new(),
+        };
+        let collector = match cfg.collector_party() {
+            Some(p) => Collector::with_key_share(cfg.clone(), &material, k.collector_secret.as_ref().expect("split key"))
+                .expect("collector")
+                .with_upload_key(UploadKey::from_secret_bytes(&secrets[p]))
+                .expect("collector upload key"),
+            None => Collector::new(cfg.clone(), &material).expect("collector"),
+        };
+        let net = Net {
+            cfg: cfg.clone(),
+            client: Client::new(cfg.clone(), &material.context, &material.public_key).expect("client"),
+            material,
+            aggs,
+            collector,
+        };
+        let client = ShareClient::new(cfg).expect("share client");
+        Self {
+            net,
+            client,
+            upload_secrets: secrets,
+        }
+    }
+
+    /// The leader admits `r` (across postcard) and runs the flush when the
+    /// open one is full.
+    pub fn submit(&mut self, r: &ShareReport) -> Result<()> {
+        let r: ShareReport = decode(&encode(r).unwrap()).unwrap();
+        self.net.aggs[0].admit_share_report(&r)?;
+        if self.net.aggs[0].share_flush_ready() {
+            self.flush()?;
+        }
+        Ok(())
+    }
+
+    pub fn expect_accept(&mut self, r: &ShareReport) {
+        self.submit(r).expect("share report admitted");
+    }
+
+    pub fn expect_reject(&mut self, r: &ShareReport, reason: RejectReason) {
+        match self.submit(r) {
+            Err(Error::Reject(got)) => assert_eq!(got, reason),
+            other => panic!("expected {reason:?}, got {other:?}"),
+        }
+    }
+
+    /// Every key party's contribution to the leader's open flush, across
+    /// postcard (the leader's first).
+    pub fn contributions(&mut self, req: &ShareFlushRequest) -> Result<Vec<ShareContribution>> {
+        let req: ShareFlushRequest = decode(&encode(req).unwrap()).unwrap();
+        let mut out = Vec::new();
+        for a in self.net.aggs.iter_mut() {
+            out.push(a.share_contribute(&req)?);
+        }
+        if self.net.cfg.collector_holds_key() {
+            out.push(self.net.collector.share_contribute(&req)?);
+        }
+        Ok(out.into_iter().map(|c| decode(&encode(&c).unwrap()).unwrap()).collect())
+    }
+
+    /// Runs the open flush.
+    pub fn flush(&mut self) -> Result<()> {
+        self.flush_with(|_| {})
+    }
+
+    /// [`Self::flush`] with `hook` seeing (and able to change) the
+    /// contributions before every aggregator finishes with them.
+    pub fn flush_with(&mut self, mut hook: impl FnMut(&mut Vec<ShareContribution>)) -> Result<()> {
+        let Some(req) = self.net.aggs[0].share_flush_request() else { return Ok(()) };
+        let mut contributions = self.contributions(&req)?;
+        hook(&mut contributions);
+        for a in self.net.aggs.iter_mut() {
+            a.share_finish(&req, &contributions)?;
+        }
+        Ok(())
+    }
+
+    /// Runs any open flush, then the release (count round or gated).
+    pub fn collect_full(&mut self) -> Result<BatchResult> {
+        self.flush()?;
+        self.net.collect_full()
+    }
+}

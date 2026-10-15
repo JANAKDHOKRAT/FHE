@@ -1,0 +1,504 @@
+//! Collector node: receives one aggregate share per aggregator and, once
+//! all have arrived, runs the verified release (`fhe_prio3::vdec`): it
+//! answers the last share with blinded checks, answers the aggregators'
+//! commitments with the opening, and accepts the batch only if every
+//! aggregator's partial decryptions pass. Serves the result. Holds no key
+//! material, except in a split-key task, where it holds the second key
+//! share and takes part in the gated release (`/v1/gate-*`, persisted as
+//! the release is). The release in progress is persisted, so a restarted
+//! collector continues it.
+
+use crate::metrics::{BuildInfo, NodeMetrics};
+use crate::store::{IdKind, Store};
+use crate::wire::*;
+use axum::Router;
+use axum::body::Bytes;
+use axum::extract::{DefaultBodyLimit, State};
+use axum::http::{HeaderMap, StatusCode};
+use axum::routing::{get, post};
+use fhe_prio3::messages::{decode, encode};
+use fhe_prio3::*;
+use std::collections::BTreeMap;
+use std::net::SocketAddr;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+
+pub struct CollectorNodeConfig {
+    pub task: TaskConfig,
+    pub material: PublicMaterial,
+    /// This collector's id in the task's policies (0 without policies).
+    pub collector_id: u32,
+    /// This collector's sealing key; required when the task has policies
+    /// and must be the key the task declares for `collector_id`.
+    pub seal_key: Option<CollectorSealKey>,
+    pub token: String,
+    pub db: PathBuf,
+    /// Split-key tasks: this collector's unsealed `CollectorSecret` bytes.
+    pub key_share: Option<Vec<u8>>,
+    /// Split-key tasks whose clients upload shares: this collector's upload
+    /// secret (its public half is the task's upload key of its party).
+    pub upload_key: Option<[u8; 32]>,
+}
+
+struct Inner {
+    task: TaskConfig,
+    collector_id: u32,
+    seal_key: Option<CollectorSealKey>,
+    collector: Mutex<Collector>,
+    store: Mutex<Store>,
+    shares: Mutex<BTreeMap<usize, AggregateShare>>,
+    pending: Mutex<Option<PendingRelease>>,
+    result: Mutex<Option<BatchResult>>,
+    token: String,
+    metrics: Arc<NodeMetrics>,
+}
+
+impl Inner {
+    /// Locks one of this node's states; a poisoned lock (a panic in an
+    /// earlier step) also marks the node not ready.
+    fn lock<'a, T>(&self, m: &'a Mutex<T>, what: &str) -> std::result::Result<std::sync::MutexGuard<'a, T>, HttpError> {
+        guard(m, what).inspect_err(|_| self.metrics.set_ready(false))
+    }
+
+    /// Writes entries to the store, recording the commit.
+    fn put(&self, entries: &[(&str, Vec<u8>)]) -> std::result::Result<(), HttpError> {
+        let mut store = self.lock(&self.store, "store")?;
+        let t = std::time::Instant::now();
+        for (k, v) in entries {
+            store.put(k, v)?;
+        }
+        let bytes = entries.iter().map(|(_, v)| v.len()).sum();
+        self.metrics.committed(bytes, t.elapsed(), store.size_bytes().ok());
+        Ok(())
+    }
+}
+
+/// Runs a collector step on the blocking pool: timed (lock wait and step),
+/// counted as failed on an error or a panic, and a panic marks the node not
+/// ready (its locks are poisoned).
+async fn blocking_step<R: Send + 'static>(
+    inner: Arc<Inner>,
+    step: &'static str,
+    f: impl FnOnce(&Inner, &mut crate::metrics::StepTimer) -> std::result::Result<R, HttpError> + Send + 'static,
+) -> std::result::Result<R, HttpError> {
+    let metrics = inner.metrics.clone();
+    let joined = tokio::task::spawn_blocking(move || {
+        let mut timer = inner.metrics.step(step);
+        let r = f(&inner, &mut timer)?;
+        timer.succeeded();
+        Ok(r)
+    })
+    .await;
+    match joined {
+        Ok(r) => r,
+        Err(e) => {
+            metrics.set_ready(false);
+            Err(HttpError(StatusCode::INTERNAL_SERVER_ERROR, format!("task join: {e}")))
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct CollectorNode {
+    inner: Arc<Inner>,
+}
+
+impl CollectorNode {
+    pub fn new(cfg: CollectorNodeConfig) -> anyhow::Result<Self> {
+        let mut collector = match (&cfg.key_share, cfg.task.collector_holds_key()) {
+            (Some(k), true) => Collector::with_key_share(cfg.task.clone(), &cfg.material, k)?,
+            (None, false) => Collector::new(cfg.task.clone(), &cfg.material)?,
+            (None, true) => anyhow::bail!("split-key task: this collector holds a key share; pass it (--key-share)"),
+            (Some(_), false) => anyhow::bail!("this task gives the collector no key share"),
+        };
+        let needs_upload_key = cfg.task.shares_upload() && cfg.task.collector_holds_key();
+        match (needs_upload_key, cfg.upload_key) {
+            (true, Some(k)) => collector = collector.with_upload_key(UploadKey::from_secret_bytes(&k))?,
+            (true, None) => anyhow::bail!("the task's clients upload shares: this collector needs its upload key (--upload-key)"),
+            (false, Some(_)) => anyhow::bail!("this task gives the collector no upload key"),
+            (false, None) => {}
+        }
+        let c = cfg.collector_id as usize;
+        if cfg.task.collectors.is_empty() {
+            if c != 0 {
+                anyhow::bail!("task has a single collector, id 0");
+            }
+        } else {
+            let declared = cfg
+                .task
+                .collectors
+                .get(c)
+                .map(|p| p.seal_key)
+                .ok_or_else(|| anyhow::anyhow!("no collector {c} in the task"))?;
+            let key = cfg
+                .seal_key
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("task has release policies: this collector needs its sealing key"))?;
+            if key.public_key() != declared {
+                anyhow::bail!("sealing key is not the one the task declares for collector {c}");
+            }
+        }
+        let store = Store::open(&cfg.db)?;
+        if let Some(b) = store.get("gate")? {
+            collector.restore_gate_state(decode(&b)?);
+        }
+        // share upload: the round state under "shares", the ids it
+        // contributed to appended to the ids table (once each, not the whole
+        // list with every flush)
+        let stored_share_ids = store.ids(IdKind::Seen)?;
+        if let Some(b) = store.get("shares")? {
+            let mut st: CollectorShareState = decode(&b)?;
+            if !st.seen.is_empty() {
+                anyhow::bail!("database {} holds the collector's share log inside its state", cfg.db.display());
+            }
+            st.seen = stored_share_ids;
+            collector.restore_share_state(st)?;
+        } else if !stored_share_ids.is_empty() {
+            anyhow::bail!("database {} holds share-log ids without a share state", cfg.db.display());
+        }
+        let mut shares = BTreeMap::new();
+        for i in 0..cfg.task.num_aggregators {
+            if let Some(b) = store.get(&format!("share:{i}"))? {
+                shares.insert(i, decode::<AggregateShare>(&b)?);
+            }
+        }
+        let result = match store.get("result")? {
+            Some(b) => Some(decode::<BatchResult>(&b)?),
+            None => None,
+        };
+        let pending = match store.get("pending")? {
+            Some(b) => Some(decode::<PendingRelease>(&b)?),
+            None => None,
+        };
+        // Shares still waiting for the others will be unsharded: refuse to
+        // start on shares stored before the packed format. A batch whose
+        // result is already stored stays readable.
+        if result.is_none() {
+            for share in shares.values() {
+                collector.check_stored_share(share)?;
+            }
+        }
+        let metrics = NodeMetrics::new(BuildInfo {
+            role: "collector",
+            index: cfg.collector_id as usize,
+            task: Some(&cfg.task),
+        })?;
+        metrics.set_batch_field("shares_received", shares.len() as i64);
+        metrics.set_batch_field("result_ready", result.is_some() as i64);
+        metrics.set_db_size(store.size_bytes()?);
+        metrics.set_ready(true);
+        Ok(Self {
+            inner: Arc::new(Inner {
+                task: cfg.task,
+                collector_id: cfg.collector_id,
+                seal_key: cfg.seal_key,
+                collector: Mutex::new(collector),
+                store: Mutex::new(store),
+                shares: Mutex::new(shares),
+                pending: Mutex::new(pending),
+                result: Mutex::new(result),
+                token: cfg.token,
+                metrics,
+            }),
+        })
+    }
+
+    pub fn router(&self) -> Router {
+        Router::new()
+            .route("/v1/aggregate-share", post(receive_share))
+            .route("/v1/release-commits", post(release_commits))
+            .route("/v1/release-reveals", post(release_reveals))
+            .route("/v1/result", get(result))
+            .layer(DefaultBodyLimit::max(512 << 20))
+            .route("/v1/gate-start", post(gate_start))
+            .route("/v1/gate-contribute", post(gate_contribute))
+            .route("/v1/gate-share", post(gate_share))
+            .route("/v1/gate-check-commit", post(gate_check_commit))
+            .route("/v1/gate-open", post(gate_open))
+            .route("/v1/gate-reveal", post(gate_reveal))
+            .route("/v1/gate-finish", post(gate_finish))
+            .route("/v1/share-contribute", post(share_contribute))
+            .layer(DefaultBodyLimit::max(GATE_BODY_LIMIT))
+            .with_state(self.clone())
+            .merge(crate::metrics::health_routes(self.inner.metrics.clone()))
+            .layer(axum::middleware::from_fn_with_state(self.inner.metrics.clone(), crate::metrics::track))
+    }
+
+    /// This node's metrics (served by [`crate::metrics::serve_metrics`]).
+    pub fn metrics(&self) -> Arc<NodeMetrics> {
+        self.inner.metrics.clone()
+    }
+
+    pub async fn tls_config(cert: PathBuf, key: PathBuf) -> anyhow::Result<axum_server::tls_rustls::RustlsConfig> {
+        init_crypto();
+        Ok(axum_server::tls_rustls::RustlsConfig::from_pem_file(cert, key).await?)
+    }
+
+    pub async fn serve(&self, addr: SocketAddr, tls: Option<axum_server::tls_rustls::RustlsConfig>, handle: ServerHandle) -> anyhow::Result<()> {
+        init_crypto();
+        let app = self.router();
+        match tls {
+            Some(cfg) => axum_server::bind_rustls(addr, cfg).handle(handle).serve(app.into_make_service()).await?,
+            None => axum_server::bind(addr).handle(handle).serve(app.into_make_service()).await?,
+        }
+        Ok(())
+    }
+}
+
+/// Stores a share and, once every aggregator's share is present, answers
+/// with the checks of the verified release. Without policies the body is a
+/// plain `ShareEnvelope`; with policies it is a `SealedEnvelope` that only
+/// this collector can open, and the share must be released to this
+/// collector's id.
+async fn receive_share(State(node): State<CollectorNode>, headers: HeaderMap, body: Bytes) -> std::result::Result<axum::response::Response, HttpError> {
+    check_token(&headers, &node.inner.token)?;
+    let inner = node.inner.clone();
+    let share: AggregateShare = if inner.task.collectors.is_empty() {
+        let env: ShareEnvelope = parse_body(&body)?;
+        env.share
+    } else {
+        let env: SealedEnvelope = parse_body(&body)?;
+        // `new` refuses to build a policy collector without its key; if the
+        // invariant is ever broken the request fails, the process does not.
+        let key = inner.seal_key.as_ref().ok_or_else(|| {
+            HttpError(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "task has release policies but this collector holds no sealing key".into(),
+            )
+        })?;
+        if env.sealed.collector != inner.collector_id {
+            return Err(HttpError(
+                StatusCode::BAD_REQUEST,
+                format!("share sealed for collector {}, this is collector {}", env.sealed.collector, inner.collector_id),
+            ));
+        }
+        fhe_prio3::seal::open(&env.sealed, key)?
+    };
+    if share.collector != inner.collector_id {
+        return Err(HttpError(StatusCode::BAD_REQUEST, "share released to another collector".into()));
+    }
+    let out: ShareReceipt = blocking_step(inner, "receive_share", move |inner, timer| {
+        let n = inner.task.num_aggregators;
+        if share.aggregator >= n {
+            return Err(HttpError(StatusCode::BAD_REQUEST, "aggregator index out of range".into()));
+        }
+        // Lock order everywhere in this node: pending, shares, collector,
+        // store, result. `release_commits` and `release_reveals` take
+        // pending then collector then store; taking store before pending
+        // here could deadlock against a concurrent release round.
+        let mut pending = inner.lock(&inner.pending, "release")?;
+        let mut shares = inner.lock(&inner.shares, "shares")?;
+        timer.acquired();
+        if let Some(p) = pending.as_ref() {
+            // a retried delivery of the same batch: the same checks again
+            if p.shares
+                .iter()
+                .any(|s| s.aggregator == share.aggregator && encode(s).ok() == encode(&share).ok())
+            {
+                return Ok(ShareReceipt {
+                    complete: true,
+                    challenge: Some(p.challenge.clone()),
+                });
+            }
+            return Err(HttpError(StatusCode::CONFLICT, "a release is already in progress with other shares".into()));
+        }
+        let idx = share.aggregator;
+        let share_bytes = encode(&share)?;
+        let share_key = format!("share:{idx}");
+        let complete = shares.len() + usize::from(!shares.contains_key(&idx)) >= n;
+        if !complete {
+            // persist first: a share the store does not hold is not held
+            inner.put(&[(share_key.as_str(), share_bytes)])?;
+            shares.insert(idx, share);
+            inner.metrics.set_batch_field("shares_received", shares.len() as i64);
+            return Ok(ShareReceipt {
+                complete: false,
+                challenge: None,
+            });
+        }
+        // Last share: build the release challenge over every share and
+        // persist share and challenge together. If any step fails the share
+        // is taken back out of memory, so memory and store agree and the
+        // leader's retry starts the same way.
+        let previous = shares.insert(idx, share);
+        let built = (|| -> std::result::Result<PendingRelease, HttpError> {
+            let all: Vec<AggregateShare> = shares.values().cloned().collect();
+            let collector = inner.lock(&inner.collector, "collector")?;
+            let p = collector.release_challenge(inner.collector_id as usize, all)?;
+            inner.put(&[(share_key.as_str(), share_bytes.clone()), ("pending", encode(&p)?)])?;
+            Ok(p)
+        })();
+        let p = match built {
+            Ok(p) => p,
+            Err(e) => {
+                match previous {
+                    Some(earlier) => shares.insert(idx, earlier),
+                    None => shares.remove(&idx),
+                };
+                return Err(e);
+            }
+        };
+        let challenge = p.challenge.clone();
+        *pending = Some(p);
+        inner.metrics.set_batch_field("shares_received", shares.len() as i64);
+        Ok(ShareReceipt {
+            complete: true,
+            challenge: Some(challenge),
+        })
+    })
+    .await?;
+    reply(&out)
+}
+
+/// Every aggregator's commitments in: returns the opening.
+async fn release_commits(State(node): State<CollectorNode>, headers: HeaderMap, body: Bytes) -> std::result::Result<axum::response::Response, HttpError> {
+    check_token(&headers, &node.inner.token)?;
+    let req: ReleaseCommitsRequest = parse_body(&body)?;
+    let inner = node.inner.clone();
+    let out = blocking_step(inner, "release_open", move |inner, timer| {
+        let mut pending = inner.lock(&inner.pending, "release")?;
+        let p = pending
+            .as_mut()
+            .ok_or_else(|| HttpError(StatusCode::CONFLICT, "no release in progress".into()))?;
+        let collector = inner.lock(&inner.collector, "collector")?;
+        timer.acquired();
+        let opening = collector.release_open(p, req.commits)?;
+        inner.put(&[("pending", encode(&*p)?)])?;
+        Ok(opening)
+    })
+    .await?;
+    reply(&out)
+}
+
+/// Every aggregator's reveal in: verifies, stores and returns the result
+/// (the result is returned only on tasks without policies; with policies it
+/// is read from the collector by its own operator).
+async fn release_reveals(State(node): State<CollectorNode>, headers: HeaderMap, body: Bytes) -> std::result::Result<axum::response::Response, HttpError> {
+    check_token(&headers, &node.inner.token)?;
+    let req: ReleaseRevealsRequest = parse_body(&body)?;
+    let inner = node.inner.clone();
+    let out = blocking_step(inner, "release_finish", move |inner, timer| {
+        let pending = inner.lock(&inner.pending, "release")?;
+        timer.acquired();
+        let p = pending
+            .as_ref()
+            .ok_or_else(|| HttpError(StatusCode::CONFLICT, "no release in progress".into()))?;
+        let mut reveals = Vec::with_capacity(req.reveals.len());
+        for r in req.reveals {
+            reveals.push(match (r, inner.seal_key.as_ref()) {
+                (RevealEnvelope::Plain(r), None) => r,
+                (RevealEnvelope::Sealed(s), Some(key)) => {
+                    if s.collector != inner.collector_id {
+                        return Err(HttpError(StatusCode::BAD_REQUEST, "reveal sealed for another collector".into()));
+                    }
+                    fhe_prio3::seal::open_reveal(&s, key)?
+                }
+                _ => {
+                    return Err(HttpError(
+                        StatusCode::BAD_REQUEST,
+                        "reveal sealed where it should be plain, or the reverse".into(),
+                    ));
+                }
+            });
+        }
+        let r = inner.lock(&inner.collector, "collector")?.release_finish(p, &reveals)?;
+        inner.put(&[("result", encode(&r)?)])?;
+        *inner.lock(&inner.result, "result")? = Some(r.clone());
+        inner.metrics.set_batch_field("result_ready", 1);
+        Ok(FinishReceipt {
+            result: if inner.task.collectors.is_empty() { Some(r) } else { None },
+        })
+    })
+    .await?;
+    reply(&out)
+}
+
+async fn result(State(node): State<CollectorNode>, headers: HeaderMap) -> std::result::Result<axum::response::Response, HttpError> {
+    check_token(&headers, &node.inner.token)?;
+    let r = node.inner.lock(&node.inner.result, "result")?.clone();
+    reply(&r)
+}
+
+// ---- gated release (split-key tasks) --------------------------------------
+
+/// Runs one round of the gated release on the collector and persists its
+/// gate state before answering.
+async fn gate_step<R: serde::Serialize + Send + 'static>(
+    node: CollectorNode,
+    headers: HeaderMap,
+    step: &'static str,
+    f: impl FnOnce(&mut Collector) -> fhe_prio3::Result<R> + Send + 'static,
+) -> std::result::Result<axum::response::Response, HttpError> {
+    check_token(&headers, &node.inner.token)?;
+    if !node.inner.task.collector_holds_key() {
+        return Err(HttpError(StatusCode::NOT_FOUND, "this task gives the collector no key share".into()));
+    }
+    let inner = node.inner.clone();
+    let out = blocking_step(inner, step, move |inner, timer| {
+        let mut collector = inner.lock(&inner.collector, "collector")?;
+        timer.acquired();
+        let r = f(&mut collector)?;
+        inner.put(&[("gate", encode(collector.gate_state())?)])?;
+        Ok(r)
+    })
+    .await?;
+    reply(&out)
+}
+
+/// Split-key task with share upload: the collector's contribution to one
+/// flush, its share log persisted before the reply.
+async fn share_contribute(State(node): State<CollectorNode>, headers: HeaderMap, body: Bytes) -> std::result::Result<axum::response::Response, HttpError> {
+    check_token(&headers, &node.inner.token)?;
+    if !(node.inner.task.collector_holds_key() && node.inner.task.shares_upload()) {
+        return Err(HttpError(StatusCode::NOT_FOUND, "this task's collector takes no part in the upload".into()));
+    }
+    let req: ShareFlushRequest = parse_body(&body)?;
+    let inner = node.inner.clone();
+    let out = blocking_step(inner, "share_contribute", move |inner, timer| {
+        let mut collector = inner.lock(&inner.collector, "collector")?;
+        timer.acquired();
+        let before = collector.share_state().seen.len();
+        let r = collector.share_contribute(&req)?;
+        let st = collector.share_state();
+        let ids: Vec<(IdKind, [u8; 32])> = st.seen[before..].iter().map(|id| (IdKind::Seen, *id)).collect();
+        let mut round = st.clone();
+        round.seen.clear();
+        let entry = encode(&round)?;
+        let mut store = inner.lock(&inner.store, "store")?;
+        let t = std::time::Instant::now();
+        store.commit_step(&[("shares", entry.clone())], &[], &ids, "share_contribute", &req.seq.to_string())?;
+        inner.metrics.committed(entry.len() + 32 * ids.len(), t.elapsed(), store.size_bytes().ok());
+        Ok(r)
+    })
+    .await?;
+    reply(&out)
+}
+
+async fn gate_start(State(node): State<CollectorNode>, headers: HeaderMap, body: Bytes) -> std::result::Result<axum::response::Response, HttpError> {
+    let req: GateStartRequest = parse_body(&body)?;
+    gate_step(node, headers, "gate_commit", move |c| c.gate_commit(&req.leader)).await
+}
+async fn gate_contribute(State(node): State<CollectorNode>, headers: HeaderMap, body: Bytes) -> std::result::Result<axum::response::Response, HttpError> {
+    let req: GateCommitsRequest = parse_body(&body)?;
+    gate_step(node, headers, "gate_contribute", move |c| c.gate_contribute(&req.commits)).await
+}
+async fn gate_share(State(node): State<CollectorNode>, headers: HeaderMap, body: Bytes) -> std::result::Result<axum::response::Response, HttpError> {
+    let req: GateContributionsRequest = parse_body(&body)?;
+    gate_step(node, headers, "gate_share", move |c| c.gate_share(&req.contributions)).await
+}
+async fn gate_check_commit(State(node): State<CollectorNode>, headers: HeaderMap, body: Bytes) -> std::result::Result<axum::response::Response, HttpError> {
+    let req: GateSharesRequest = parse_body(&body)?;
+    gate_step(node, headers, "gate_check_commit", move |c| c.gate_check_commit(&req.shares)).await
+}
+async fn gate_open(State(node): State<CollectorNode>, headers: HeaderMap, body: Bytes) -> std::result::Result<axum::response::Response, HttpError> {
+    let req: GateCheckCommitsRequest = parse_body(&body)?;
+    gate_step(node, headers, "gate_open", move |c| c.gate_open(&req.commits)).await
+}
+async fn gate_reveal(State(node): State<CollectorNode>, headers: HeaderMap, body: Bytes) -> std::result::Result<axum::response::Response, HttpError> {
+    let req: GateOpeningsRequest = parse_body(&body)?;
+    gate_step(node, headers, "gate_reveal", move |c| c.gate_reveal(&req.openings)).await
+}
+async fn gate_finish(State(node): State<CollectorNode>, headers: HeaderMap, body: Bytes) -> std::result::Result<axum::response::Response, HttpError> {
+    let req: GateRevealsRequest = parse_body(&body)?;
+    gate_step(node, headers, "gate_finish", move |c| c.gate_finish(&req.reveals)).await
+}

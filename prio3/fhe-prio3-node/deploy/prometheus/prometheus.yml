@@ -1,0 +1,26 @@
+# Example Prometheus configuration for an fhe-prio3 deployment. Each node
+# serves its metrics on `--metrics-listen` (plain HTTP; keep it on a
+# private network). Job names must start with `fhe-prio3-` for the rules in
+# alerts.yml.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - alerts.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  - job_name: fhe-prio3-aggregator
+    static_configs:
+      - targets: ["aggregator-0.internal:9100", "aggregator-1.internal:9100"]
+  - job_name: fhe-prio3-collector
+    static_configs:
+      - targets: ["collector.internal:9100"]
+  - job_name: fhe-prio3-router
+    static_configs:
+      - targets: ["router.internal:9100"]

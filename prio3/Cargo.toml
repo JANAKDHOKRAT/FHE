@@ -1,4 +1,4 @@
 [workspace]
 members = ["libprio-rs", "fhe-vdaf-1", "fhe-vdaf-2", "fhe-vdaf-1-histogram"]
-exclude = ["openfhe-bgv-rs"]
+exclude = ["openfhe-bgv-rs", "openfhe-tbgv-rs", "fhe-prio3"]
 resolver = "3"

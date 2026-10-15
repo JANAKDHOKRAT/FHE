@@ -156,6 +156,17 @@ reports of a flush (as Prio3's aggregators can); in a split-key task this
 includes the collector (spec, "Secret-shared upload"; `AUDIT.md` F-27).
 `loadtest/run.sh --upload shares` runs the load test with it.
 
+Measured with it at the production parameters (one 4-vCPU, 15 GiB machine,
+the client threads, the aggregator and the collector together; the last
+row of the load-test table below): reports of 300 bytes, sharded and
+sealed in 0.18 ms; 2.86 reports/s against 1.05 to 1.53 with ciphertexts.
+The leader admits a report in 0.6 ms of lock time; the batch work happens
+in the flushes, 64 reports each: the leader contributes in 1.70 s and the
+collector in 1.92 s (open, encrypt, prove), and the leader finishes in
+18.4 s (verify the collector's proof, combine, run the circuit), which is
+also a submission's p99 (22.7 s; the report that completes a flush waits
+for it).
+
 ## Persistence and restart
 
 Every state-changing step (an accepted verdict-mode report, an admitted
@@ -302,6 +313,7 @@ parameters (ring 65536, depth 28, 64 groups, 7 repetitions; reports of
 | 160 reports, 16 invalid, `min_batch 3`, `min_cell 3`, 3 workers, every process killed with SIGKILL after 121 answers and resumed | exact; the aggregator restored 121 admitted reports (57 of them in the open verification ciphertext, rebuilt from the stored reports), the one report in flight was sent again and counted once | first run until the kill, then 42.3 s for the remaining 39 | 173.4 s | aggregator 9.32 GiB, 2.2 GiB; collector 4.35 GiB, 1.3 GiB |
 | 1024 reports, 512 invalid, `min_batch 1000`, `min_cell 100`, 2 workers | refused by the encrypted gate (512 valid < 1000, with 1024 admitted) | 911.6 s, 1.12 reports/s | 1158.2 s (gate 1060 s, of which the gates' products 957 s) | aggregator 9.15 GiB, 2.2 GiB; collector 4.40 GiB, 1.3 GiB |
 | **65,536 reports**, 65 invalid, `min_batch 1000`, `min_cell 100`, 3 workers (build `0372835`, before F-26) | **exact**: 65,471 valid; cells 0 to 8 (32,618 down to 131) exact, cells 9 to 15 (70, 30, 17, 4, 6, 1, 1) suppressed and listed, counts withheld. Interrupted twice and resumed: the machine restarted after 12,543 answers (the aggregator restored them all; the 3 reports in flight were sent again, each counted once); the kernel killed the aggregator in the release, after the gate had finished (aggregator up to 10.05 GiB, collector 4.64 GiB and the client threads on one 15 GiB machine), and the restarted close continued from the persisted gate outputs | the last 52,993 reports in 34,537 s, 1.53 reports/s; encryption mean 0.38 s (p99 0.52 s); submit p50 0.65 s, p99 19.5 s | gate 985 s (the gates' products 882 s); after the restart, the close completed in 165 s | aggregator 10.05 GiB, database 2.35 GiB; collector 4.64 GiB, 1.35 GiB |
+| 4096 reports, **`--upload shares`**, 64 invalid, `min_batch 1000`, `min_cell 100`, 2 workers (build `cf6fe89`) | **exact**: 4032 valid; cells 0 to 4 (2018, 1017, 487, 254, 133) exact, cells 5 to 15 suppressed and listed, counts withheld | 1434.1 s, 2.86 reports/s; reports of 300 bytes, sharding and sealing mean 0.18 ms; submit p50 1.3 ms, p99 22.7 s | 884.5 s (the aggregator's gate finish 725 s) | aggregator 9.51 GiB, 2.13 GiB; collector 3.99 GiB, 1.29 GiB |
 
 What the numbers say, from the nodes' own metrics:
 

@@ -1338,6 +1338,24 @@ the flooding with one party's contribution at the proof's masking range
 (128.8 with honest contributions, 128.8 with client ciphertexts), against
 the 57 bits required (40 plus the 17 bits of the extraction bound).
 
+*Measured at production size* (the node load test, `loadtest/run.sh
+--upload shares`: a split-key deployment as separate processes over TLS
+on one 4-vCPU, 15 GiB machine; ring 65536, depth 28, 64 groups, 7
+repetitions; `histogram:16`, 4096 reports, one in 64 invalid, `min_batch
+1000`, `min_cell 100`, 2 client workers). The release was exact (cells 0
+to 4, 2018 down to 133, released; cells 5 to 15 suppressed and listed;
+counts withheld). A report is 300 bytes; the client's sharding and
+sealing takes 0.18 ms (mean). The 4096 reports went in 1434 s, 2.86
+reports/s (ciphertext upload on the same machine: 1.05 to 1.53). The
+leader admits a report in 0.6 ms of lock time (ciphertext upload: 0.65 to
+0.80 s, its share of the batch verification included); the batch work moves
+to the 64 flushes, each costing the leader 1.70 s to contribute (open,
+encrypt, prove), the collector 1.92 s, and the leader 18.4 s to finish
+(verify the collector's proof, combine, run the depth-28 circuit), so a
+submission's p99 is the flush it completes (22.7 s; p50 1.3 ms). The close
+took 884 s (the aggregator's gate-finish step 725 s at `min_batch 1000`). Peaks: aggregator
+9.51 GiB resident, 2.13 GiB database; collector 3.99 GiB, 1.29 GiB.
+
 *Tests.* `src/shares.rs` (sharing, sealing, tampering, canonical shares,
 seed expansion, task validation), `tests/share_noise.rs`,
 `tests/shares_split.rs` (split key: exact releases, the cancelling vector

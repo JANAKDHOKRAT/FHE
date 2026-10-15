@@ -7,7 +7,8 @@ name: prio3
 # nightly). Gates on every change: rustfmt (prio3/rustfmt.toml), clippy with
 # warnings denied on every target, cargo-deny (RustSec advisories, licenses,
 # duplicate and wildcard versions, sources; prio3/deny.toml), line
-# coverage of the protocol crate's fast suites above a measured floor, and
+# coverage of the protocol crate's fast suites and its secret-shared upload
+# suites above a measured floor, and
 # the nodes' Prometheus alerting rules (checked and unit-tested by promtool).
 # Nightly and on demand: the OpenFHE pin is checked against upstream (tag
 # still at the pinned commit, no advisory published after the pinned
@@ -246,20 +247,24 @@ jobs:
           command: check
 
   # Line coverage of the protocol crate over its fast suites (unit tests,
-  # wire, protocol, policy, bounds, upgrade), with cargo-llvm-cov. The
-  # floor is the measured value at the time it was set, rounded down; a
-  # change that drops below it fails. The lcov report is kept as an
+  # wire, protocol, policy, bounds, upgrade, wfe, gate rounds) and the
+  # secret-shared upload's suites at small parameters (shares_split: the
+  # leader and the key-holding collector; shares_aggregators: the helper),
+  # with cargo-llvm-cov. The floor is the measured value at the time it was
+  # set, rounded down; a change that drops below it fails. The totals are
+  # posted as a notice on the check run; the lcov report is kept as an
   # artifact for review.
   coverage:
     name: coverage fhe-prio3
     needs: openfhe
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 120
     env:
       LD_LIBRARY_PATH: /home/runner/openfhe-install/lib
-      # Measured 72.09% of lines (6008 lines, 1677 uncovered) on 2026-09-30
-      # over these suites; the floor leaves two points for platform noise.
-      COVERAGE_FLOOR_LINES: "70"
+      # Measured 77.61% of lines (9339 lines, 2091 uncovered; shares.rs
+      # 96.47%) on 2026-10-15 over these suites with cargo-llvm-cov 0.9.1;
+      # the floor leaves two points for platform noise.
+      COVERAGE_FLOOR_LINES: "75"
     steps:
       - uses: actions/checkout@v4
       - name: restore OpenFHE
@@ -284,8 +289,10 @@ jobs:
         run: |
           cargo llvm-cov --manifest-path Cargo.toml --release --locked \
             --lib --bins --test wire --test protocol --test policy --test bounds --test upgrade --test wfe --test gate_rounds \
+            --test shares_split --test shares_aggregators \
             --lcov --output-path lcov.info -- --test-threads=1
           cargo llvm-cov report --manifest-path Cargo.toml --release --summary-only | tee coverage-summary.txt
+          echo "::notice title=coverage fhe-prio3::$(grep '^TOTAL' coverage-summary.txt | tr -s ' ')"
       - name: enforce floor
         working-directory: prio3/fhe-prio3
         run: cargo llvm-cov report --manifest-path Cargo.toml --release --fail-under-lines "$COVERAGE_FLOOR_LINES"

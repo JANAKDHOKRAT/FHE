@@ -956,6 +956,18 @@ async fn verdict_with_client_proofs_over_tls() {
         .await
         .unwrap();
     assert!(helper.as_ref().is_err_and(|r| r.contains("MissingProof")), "{:?}", helper.map(|_| ()));
+    // `Report || 0x00` is the encoding of a proven report with no proofs:
+    // refused for its proof count; a proven report with a byte after it is
+    // malformed
+    let mut zero_proofs = fhe_prio3::messages::encode(&good.report).unwrap();
+    zero_proofs.push(0);
+    let resp = http.post(format!("{}/v1/submit", c.agg_urls[0])).body(zero_proofs).send().await.unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    rejected(fhe_prio3::messages::decode(&resp.bytes().await.unwrap()).unwrap(), "WrongProofCount");
+    let mut trailing = fhe_prio3::messages::encode(&good).unwrap();
+    trailing.push(0);
+    let resp = http.post(format!("{}/v1/submit", c.agg_urls[0])).body(trailing).send().await.unwrap();
+    assert_eq!(resp.status().as_u16(), 400, "trailing byte after the proven report");
     // none of the refused reports was admitted anywhere: the honest one is
     assert_eq!(client.submit_proven_report(&good).await.unwrap(), SubmitOutcome::Accepted);
     rejected(client.submit_proven_report(&good).await.unwrap(), "Replay");

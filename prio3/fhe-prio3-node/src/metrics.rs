@@ -76,6 +76,10 @@ const REJECT_REASONS: &[&str] = &[
     "WrongUpload",
     "WrongInputShareCount",
     "MalformedInputShare",
+    "MissingProof",
+    "UnexpectedProof",
+    "WrongProofCount",
+    "InvalidProof",
 ];
 
 /// The variant name at the start of a rejection message (`Display` of
@@ -509,6 +513,7 @@ mod tests {
         assert_eq!(reject_label("Replay"), "Replay");
         assert_eq!(reject_label("TooLarge { limit: 3, got: 4 }"), "TooLarge");
         assert_eq!(reject_label("MalformedCiphertext(\"x\")"), "MalformedCiphertext");
+        assert_eq!(reject_label("InvalidProof { chunk: 1 }"), "InvalidProof");
         assert_eq!(reject_label("anything a client wrote"), "Other");
         assert_eq!(reject_label(""), "Other");
     }

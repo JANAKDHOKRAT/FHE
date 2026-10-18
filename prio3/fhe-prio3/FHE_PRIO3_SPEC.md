@@ -451,10 +451,12 @@ depend on honest inputs) are never decrypted.
    signed by a registered identity, each identity gets a fixed number of
    verified reports per batch, and the identity is recorded. What remains in
    verdict mode is one bit per adversary-controlled registered identity per
-   batch, attributable after the fact. The complete fix for verdict mode is
-   a zero-knowledge proof of plaintext knowledge attached to each
-   ciphertext, for which no production library exists for OpenFHE's RNS-BGV;
-   it is not implemented and not claimed.
+   batch, attributable after the fact. *Client proofs close it*
+   (`client_proofs`, "Client proofs in verdict mode" in §6b). Every chunk
+   carries a proof of knowledge of its opening, bound to the report id. A
+   related ciphertext is a new statement whose proof the forger cannot
+   make without opening the honest one (an assumption on Fiat–Shamir,
+   `SECURITY.md` §6b).
 2. **Ciphertext well-formedness.** The soundness bound is about the
    plaintext a ciphertext *decrypts to*; a ciphertext whose noise is beyond
    the correctness bound makes homomorphic evaluation inconsistent with
@@ -470,9 +472,15 @@ depend on honest inputs) are never decrypted.
    do not have a proof that this is `2^-124`; we state it as the heuristic it
    is. The decrypted output of such a check is, in the language of the
    threshold-FHE literature, a decryption-oracle query on an
-   adversarially formed ciphertext. The masks randomise it, the quotas
-   bound the number of queries per identity, and closing the batch bounds
-   the number of queries per key. In silent mode nothing per report is
+   adversarially formed ciphertext: the oracle of the IND-CPA^D
+   key-recovery attacks (ePrint 2024/116, 2024/127). Without client
+   proofs the masks randomise it, the quotas bound the number of queries
+   per identity, and closing the batch bounds the number of queries per
+   key. *With client proofs* the ciphertext the circuit runs on is the
+   proven `2C`. Its noise is bounded, and the measured margin at the
+   proof's extraction bound is 78.8 bits below the flooding at the check
+   value (`tests/client_proofs.rs`). A decryption a proven report reaches
+   does not fail. In silent mode nothing per report is
    decrypted; the malformed contribution corrupts the batch sum, which the
    consistency check detects and refuses.
 3. **Robustness against a malicious aggregator.** A wrong partial
@@ -1371,6 +1379,68 @@ its contribution, broken proofs either way, a helper restart mid-flush),
 `aggregator::tests::states_from_before_share_upload_decode`, node
 `e2e.rs::share_upload_split_key_over_tls` and
 `::share_upload_two_aggregators_over_tls`.
+
+### Client proofs in verdict mode (`client_proofs`, `wfe.rs`)
+
+A task option (`TaskConfig::with_client_proofs`, node `task-config
+--client-proofs auto|on|off`, `auto` = on for verdict mode with
+ciphertext upload, the only tasks that accept it). It closes the
+verdict-mode decryption-failure oracle and the related-report oracle
+(§4.3 items 1 and 2). The full argument is in `SECURITY.md` §6b.
+
+*Client.* For each chunk the client encodes its slots as `v / 2 mod t`
+(`SlotCodec::contribution_plaintext`) and encrypts with its own
+randomness (`wfe::encrypt_with_witness`). It builds the report (whose
+id hashes every chunk) and then proves each chunk (`wfe::prove`) under
+the context
+
+    "fhe-prio3/1 client chunk proof" || task digest || report id
+      || chunk index (u32 LE) || chunk count (u32 LE)
+
+The upload is a `ProvenReport { report, proofs }`, one proof per chunk.
+`Report` is unchanged, so plain tasks, stored silent-mode rows and old
+clients keep their encoding. A client of a proof task refuses to build a
+plain report.
+
+*Aggregator, step 1* (`Aggregator::prepare_init_proven`, or
+`prepare_init_with` for a report and proofs received apart). The checks
+run in this order (`Aggregator::admit`): upload kind; proofs present
+exactly when the task requires them (`MissingProof`, `UnexpectedProof`);
+batch closed; size; task; signature, enrolment and quota (the attempt is
+charged here); report id; group; replay; chunk count; batch full; one
+proof per chunk (`WrongProofCount`); packed decoding of every chunk;
+then every proof is verified (`InvalidProof { chunk }`). Only then is the
+report marked seen. A report refused for its proofs can therefore still
+be admitted with valid ones. The refused attempt is charged to the
+signer's quota, as every attempt is. Only a party holding the signed
+report before its admission could spend an honest client's quota this
+way, and over TLS that is the leader, which can drop the report anyway
+(denial of service by an aggregator, §4.3 item 3).
+The circuit then runs on `2C` (`wfe::effective`). A refused report costs
+no FHE evaluation, and the cheap refusals cost no proof verification.
+
+*Encoding.* The task binding is extended only when the option is on
+(`fhe-prio3/4 client proofs extension || true`), so the digests of
+existing tasks are unchanged. A task file written before the field
+existed decodes as the task without proofs. `attest::check_attested_task`,
+run by every node at startup, refuses a task file that is not the
+attested one (AUDIT F-30).
+
+*Node.* `/v1/submit` and the leader-to-helper `/v1/report` read a
+`ProvenReport` in proof tasks and a `Report` otherwise. A body of the
+other kind is read too, so that it is refused for its reason and not as
+undecodable. Helpers verify the proofs themselves. The public body limit
+is `Aggregator::max_submission_bytes` (the report plus `5 + chunks ·
+proof_size_bound(N)`). Metrics label the four new reasons.
+
+*Measured* (verdict parameters, `N = 32768`, one chunk, 4 cores): the
+proof is 3.0 MB for a 2.9 MB chunk. Client encryption takes 711 ms
+instead of 50 ms. An aggregator's step 1 takes 814 ms instead of
+555 ms. Noise margins are in `SECURITY.md` §6b (78.8 bits at the
+extraction bound, check value).
+
+*Tests.* `tests/client_proofs.rs`, `config::tests::client_proofs_binding_files_and_rules`,
+`attest::tests`, node `e2e.rs::verdict_with_client_proofs_over_tls`.
 
 ### Horizontal sharding (`sharding.rs`, node `router`)
 

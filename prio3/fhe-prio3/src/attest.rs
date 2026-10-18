@@ -141,6 +141,33 @@ pub fn verify_material(cfg: &TaskConfig, m: &PublicMaterial, pinned: &[[u8; 32]]
     Ok(())
 }
 
+/// Checks that every attestation the material carries signs this task
+/// (each under the key it names: this is not an identity check, which is
+/// [`verify_material`]'s, but a check that the task file read is the task
+/// the key parties attested). A node runs it on its own task file and
+/// material at startup, so a task file that differs from the attested one
+/// (edited, truncated to an older encoding without a field, or the file of
+/// another task) is refused instead of served.
+pub fn check_attested_task(cfg: &TaskConfig, m: &PublicMaterial) -> Result<()> {
+    let msg = material_message(cfg, m);
+    for a in &m.attestations {
+        let vk = VerifyingKey::from_bytes(&a.aggregator_key).map_err(|_| Error::Protocol("invalid aggregator public key".into()))?;
+        let sig_bytes: [u8; 64] = a
+            .signature
+            .as_slice()
+            .try_into()
+            .map_err(|_| Error::Protocol("attestation signature must be 64 bytes".into()))?;
+        vk.verify_strict(&msg, &Signature::from_bytes(&sig_bytes)).map_err(|_| {
+            Error::Config(format!(
+                "the material's attestation by key party {} is not for this task configuration (digest {})",
+                a.aggregator,
+                hex::encode(cfg.digest())
+            ))
+        })?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -213,5 +240,21 @@ mod tests {
         stripped.eval_mult_key.clear();
         stripped.rotation_keys.clear();
         verify_material(&cfg, &stripped, &pinned).unwrap();
+        // the task a node reads must be the attested one
+        check_attested_task(&cfg, &m).unwrap();
+        check_attested_task(&other_min, &m).unwrap_err();
+        let proofs = cfg.clone().with_client_proofs();
+        let mut pm = m.clone();
+        pm.attestations = ids.iter().enumerate().map(|(i, id)| attest(&proofs, &pm, i, id)).collect();
+        check_attested_task(&proofs, &pm).unwrap();
+        // the same file truncated by its last byte is the older encoding of
+        // the task without proofs: it decodes, and it is not the attested task
+        let file = postcard::to_allocvec(&proofs).unwrap();
+        let truncated = TaskConfig::decode(&file[..file.len() - 1]).unwrap();
+        assert!(!truncated.client_proofs);
+        check_attested_task(&truncated, &pm).unwrap_err();
+        let mut bad = pm.clone();
+        bad.attestations[1].signature.pop();
+        check_attested_task(&proofs, &bad).unwrap_err();
     }
 }

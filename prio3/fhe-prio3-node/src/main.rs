@@ -150,6 +150,14 @@ enum Cmd {
         /// then the collector of a split-key task).
         #[arg(long)]
         upload_keys: Option<String>,
+        /// Clients prove every ciphertext well formed (`auto`: on for
+        /// verdict mode with ciphertext upload, the only tasks that support
+        /// it; `on`; `off`). Without proofs a client chooses the noise of
+        /// the ciphertexts the aggregators decrypt for it and learns from
+        /// the verdict whether that decryption failed, the oracle of the
+        /// IND-CPA^D key-recovery attacks (SECURITY.md).
+        #[arg(long, default_value = "auto")]
+        client_proofs: String,
     },
     /// Generate a key party's upload key (secret sealed under
     /// FHE_PRIO3_SEAL_KEY) and print its public key, to be listed in the
@@ -599,6 +607,7 @@ async fn main() -> anyhow::Result<()> {
             min_cell,
             upload,
             upload_keys,
+            client_proofs,
         } => {
             let ty = parse_type(&r#type)?;
             let id: [u8; 32] = match task_id {
@@ -649,9 +658,18 @@ async fn main() -> anyhow::Result<()> {
                     );
                 }
             }
+            cfg.client_proofs = match client_proofs.as_str() {
+                "auto" => cfg.mode == VerificationMode::Verdict && cfg.upload == Upload::Ciphertext,
+                "on" => true,
+                "off" => false,
+                other => anyhow::bail!("client-proofs must be auto, on or off, got {other}"),
+            };
             cfg.validate()?;
             std::fs::write(&out, encode(&cfg)?)?;
             println!("wrote {} (digest {})", out.display(), hex::encode(cfg.digest()));
+            if cfg.client_proofs {
+                println!("client proofs: on (every chunk carries a proof of well-formed encryption)");
+            }
             if let Some(d) = cfg.moment_digit_bits() {
                 println!("moments: {d}-bit digits for batches of up to {}", cfg.max_batch_size);
             }

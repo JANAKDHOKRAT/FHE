@@ -908,3 +908,89 @@ async fn share_upload_two_aggregators_over_tls() {
     assert_eq!((res.report_count, res.valid_count), (7, 6));
     c.stop_all();
 }
+
+/// Verdict mode with client proofs over TLS: proven reports aggregate
+/// exactly; a report without proofs, with a proof bound to another report,
+/// or with a tampered proof is refused at the leader before any helper sees
+/// it; a helper verifies the proofs itself (a leader cannot vouch for
+/// them); the public body limit admits a report with its proofs; and a node
+/// refuses to start on a task file that is not the attested one (here the
+/// proof task's file cut to the older encoding without the flag).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn verdict_with_client_proofs_over_tls() {
+    let _g = SERIAL.lock().await;
+    let task = TaskConfig::new([13u8; 32], MeasurementType::Sum { max_measurement: 100 }, 2).with_client_proofs();
+    let mut c = Cluster::new(task.clone());
+    c.start_all().await;
+    let client = c.client();
+    let inner = client.inner().unwrap();
+    assert_eq!(client.submit(&Measurement::Sum(40)).await.unwrap(), SubmitOutcome::Accepted);
+    assert_eq!(client.submit(&Measurement::Sum(2)).await.unwrap(), SubmitOutcome::Accepted);
+    let rejected = |o: SubmitOutcome, want: &str| match o {
+        SubmitOutcome::Rejected(r) => assert!(r.contains(want), "expected {want}, got {r}"),
+        o => panic!("expected {want}, got {o:?}"),
+    };
+    // proven but invalid
+    let bad = inner.shard_raw_elements_proven(&[vec![2, 0, 0, 0, 0, 0, 0]]).unwrap();
+    rejected(client.submit_proven_report(&bad).await.unwrap(), "ValidityCheckFailed");
+    // a plain report, and a plain client, for a task that requires proofs
+    let good = inner.shard_proven(&Measurement::Sum(5)).unwrap();
+    rejected(client.submit_report(&good.report).await.unwrap(), "MissingProof");
+    assert!(inner.shard(&Measurement::Sum(5)).is_err());
+    // proofs bound to another report, and a tampered proof
+    let other = inner.shard_proven(&Measurement::Sum(5)).unwrap();
+    let mut swapped = good.clone();
+    swapped.proofs = other.proofs.clone();
+    rejected(client.submit_proven_report(&swapped).await.unwrap(), "InvalidProof");
+    let mut tampered = good.clone();
+    tampered.proofs[0].commitments[0] ^= 1;
+    rejected(client.submit_proven_report(&tampered).await.unwrap(), "InvalidProof");
+    // the helper verifies proofs itself: the same tampered report sent to
+    // it directly, with the internal token, is refused there
+    let http = https_client(&c.tls.ca_pem).unwrap();
+    let helper: std::result::Result<MaskCommit, String> = http_post(&http, &format!("{}/v1/report", c.agg_urls[1]), Some(&c.token), &tampered)
+        .await
+        .unwrap();
+    assert!(helper.as_ref().is_err_and(|r| r.contains("InvalidProof")), "{:?}", helper.map(|_| ()));
+    let helper: std::result::Result<MaskCommit, String> = http_post(&http, &format!("{}/v1/report", c.agg_urls[1]), Some(&c.token), &good.report)
+        .await
+        .unwrap();
+    assert!(helper.as_ref().is_err_and(|r| r.contains("MissingProof")), "{:?}", helper.map(|_| ()));
+    // none of the refused reports was admitted anywhere: the honest one is
+    assert_eq!(client.submit_proven_report(&good).await.unwrap(), SubmitOutcome::Accepted);
+    rejected(client.submit_proven_report(&good).await.unwrap(), "Replay");
+    let leader = Scrape::of(c.agg_metrics[0].unwrap()).await;
+    for (reason, n) in [("MissingProof", 1.0), ("InvalidProof", 2.0), ("ValidityCheckFailed", 1.0), ("Replay", 1.0)] {
+        assert_eq!(
+            leader.get("fhe_prio3_reports_total", &[("outcome", "rejected"), ("reason", reason)]),
+            n,
+            "{reason}"
+        );
+    }
+    assert_eq!(leader.get("fhe_prio3_reports_total", &[("outcome", "accepted"), ("reason", "none")]), 3.0);
+    let r = c.close().await.unwrap();
+    assert_eq!((r.aggregate, r.report_count, r.valid_count), (AggregateResult::Sum(47), 3, 3));
+    c.stop_all();
+
+    // startup: the material attested for the proof task, and the task file
+    // cut by its last byte (the encoding from before `client_proofs`)
+    let ids = [AggregatorIdentity::generate(), AggregatorIdentity::generate()];
+    let mut material = c.material.clone();
+    material.attestations = ids.iter().enumerate().map(|(i, id)| attest::attest(&task, &material, i, id)).collect();
+    let file = fhe_prio3::messages::encode(&task).unwrap();
+    let cut = TaskConfig::decode(&file[..file.len() - 1]).unwrap();
+    assert!(!cut.client_proofs);
+    let mut cfg = c.agg_config(0);
+    cfg.material = material.clone();
+    cfg.task = cut;
+    cfg.db = c.dir.path().join("cut.db");
+    let e = AggregatorNode::new(cfg)
+        .err()
+        .expect("a task file that is not the attested one is refused")
+        .to_string();
+    assert!(e.contains("not for this task configuration"), "{e}");
+    let mut cfg = c.agg_config(0);
+    cfg.material = material;
+    cfg.db = c.dir.path().join("attested.db");
+    AggregatorNode::new(cfg).unwrap();
+}

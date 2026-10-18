@@ -5,10 +5,12 @@ use crate::auth::ClientIdentity;
 use crate::config::{AuthPolicy, TaskConfig};
 use crate::error::{Error, Result};
 use crate::layout::Layout;
-use crate::messages::Report;
+use crate::messages::{ProvenReport, Report};
 use crate::packed::{Codec, Expect};
 use crate::types::Measurement;
+use crate::wfe::{self, SlotCodec};
 use openfhe_tbgv_rs::{Context, PublicKey};
+use rand::rngs::OsRng;
 
 pub struct Client {
     cfg: TaskConfig,
@@ -17,6 +19,9 @@ pub struct Client {
     layout: Layout,
     identity: Option<ClientIdentity>,
     codec: Codec,
+    /// [`TaskConfig::client_proofs`]: slot vectors to raw plaintext
+    /// polynomials, for the proven encryptions.
+    slot_codec: Option<SlotCodec>,
 }
 
 impl Client {
@@ -30,6 +35,7 @@ impl Client {
         let pk = ctx.deserialize_public_key(public_key)?;
         let layout = cfg.layout(ctx.row_slots())?;
         let codec = Codec::new(&ctx, &pk, public_key)?;
+        let slot_codec = if cfg.client_proofs { Some(SlotCodec::new(&ctx)?) } else { None };
         Ok(Self {
             cfg,
             ctx,
@@ -37,7 +43,88 @@ impl Client {
             layout,
             identity: None,
             codec,
+            slot_codec,
         })
+    }
+
+    /// One chunk's slots encrypted the plain way (no proof). Refused for a
+    /// task that requires proofs: its aggregators reject such reports.
+    fn encrypt_unproven(&self, slots: &[u64]) -> Result<Vec<u8>> {
+        if self.cfg.client_proofs {
+            return Err(Error::Config(
+                "this task requires client proofs (TaskConfig::client_proofs): use shard_proven".into(),
+            ));
+        }
+        let ct = self.ctx.encrypt(&self.pk, &self.ctx.plaintext(slots)?)?;
+        self.codec.encode(&ct)
+    }
+
+    /// The slot vector of one chunk of `group`: element `i` at its layout
+    /// position.
+    fn chunk_slots(&self, elems: &[u64], group: u32) -> Vec<u64> {
+        let mut slots = vec![0u64; self.layout.group_slot(group as usize, elems.len().max(1) - 1) + 1];
+        for (i, &v) in elems.iter().enumerate() {
+            slots[self.layout.group_slot(group as usize, i)] = v;
+        }
+        slots
+    }
+
+    /// Encrypts each chunk's slots so that its effective ciphertext `2C`
+    /// decodes to them, computes the report id over the chunks, then proves
+    /// every chunk well formed under a context bound to the task, the
+    /// report id and the chunk's position ([`ProvenReport::proof_context`]).
+    fn prove_chunks(&self, slots_per_chunk: &[Vec<u64>], group: u32) -> Result<ProvenReport> {
+        let sc = self
+            .slot_codec
+            .as_ref()
+            .ok_or_else(|| Error::Config("this task does not use client proofs (TaskConfig::client_proofs)".into()))?;
+        let n = self.ctx.ring_dim() as usize;
+        let reference = self.codec.reference();
+        let sf = reference.meta()?.scaling_factor_int;
+        let mut encrypted = Vec::with_capacity(slots_per_chunk.len());
+        let mut chunks = Vec::with_capacity(slots_per_chunk.len());
+        for slots in slots_per_chunk {
+            if slots.len() > n {
+                return Err(Error::Config(format!("{} slots for a ring of dimension {n}", slots.len())));
+            }
+            let mut full = vec![0u64; n];
+            full[..slots.len()].copy_from_slice(slots);
+            let coeffs = sc.contribution_plaintext(&full, sf);
+            let (ct, witness) = wfe::encrypt_with_witness(&self.ctx, &self.pk, reference, &coeffs, &mut OsRng)?;
+            chunks.push(self.codec.encode(&ct)?);
+            encrypted.push((ct, witness));
+        }
+        let report = self.finish(chunks, group)?;
+        let digest = self.cfg.digest();
+        let num_chunks = encrypted.len();
+        let mut proofs = Vec::with_capacity(num_chunks);
+        for (i, (ct, witness)) in encrypted.iter().enumerate() {
+            let context = ProvenReport::proof_context(&digest, &report.report_id, i, num_chunks);
+            proofs.push(wfe::prove(&self.ctx, &self.pk, reference, ct, witness, &context, &mut OsRng)?);
+        }
+        Ok(ProvenReport { report, proofs })
+    }
+
+    /// [`TaskConfig::client_proofs`]: encodes `m` and encrypts each chunk
+    /// with a proof of well-formed encryption.
+    pub fn shard_proven(&self, m: &Measurement) -> Result<ProvenReport> {
+        let encoded = self.cfg.measurement_type.encode(m)?;
+        let slots: Vec<Vec<u64>> = (0..self.layout.num_chunks)
+            .map(|c| self.chunk_slots(&encoded[self.layout.chunk_range(c)], 0))
+            .collect();
+        self.prove_chunks(&slots, 0)
+    }
+
+    /// Like [`Self::shard_raw_elements`], with proofs: a client that
+    /// proves its encryptions but encodes an invalid measurement (tests).
+    pub fn shard_raw_elements_proven(&self, elements_per_chunk: &[Vec<u64>]) -> Result<ProvenReport> {
+        let slots: Vec<Vec<u64>> = elements_per_chunk.iter().map(|e| self.chunk_slots(e, 0)).collect();
+        self.prove_chunks(&slots, 0)
+    }
+
+    /// Like [`Self::shard_raw`], with proofs (arbitrary slot vectors).
+    pub fn shard_raw_proven(&self, slots_per_chunk: &[Vec<u64>]) -> Result<ProvenReport> {
+        self.prove_chunks(slots_per_chunk, 0)
     }
 
     /// Attaches the signing identity used when the task requires authentication.
@@ -93,8 +180,7 @@ impl Client {
             for (i, &v) in elems.iter().enumerate() {
                 slots[self.layout.group_slot(group as usize, i)] = v;
             }
-            let ct = self.ctx.encrypt(&self.pk, &self.ctx.plaintext(&slots)?)?;
-            chunks.push(self.codec.encode(&ct)?);
+            chunks.push(self.encrypt_unproven(&slots)?);
         }
         self.finish(chunks, group)
     }
@@ -105,8 +191,7 @@ impl Client {
     pub fn shard_raw(&self, slots_per_chunk: &[Vec<u64>]) -> Result<Report> {
         let mut chunks = Vec::with_capacity(slots_per_chunk.len());
         for slots in slots_per_chunk {
-            let ct = self.ctx.encrypt(&self.pk, &self.ctx.plaintext(slots)?)?;
-            chunks.push(self.codec.encode(&ct)?);
+            chunks.push(self.encrypt_unproven(slots)?);
         }
         self.finish(chunks, 0)
     }
@@ -115,8 +200,7 @@ impl Client {
     pub fn shard_raw_in_group(&self, slots_per_chunk: &[Vec<u64>], group: u32) -> Result<Report> {
         let mut chunks = Vec::with_capacity(slots_per_chunk.len());
         for slots in slots_per_chunk {
-            let ct = self.ctx.encrypt(&self.pk, &self.ctx.plaintext(slots)?)?;
-            chunks.push(self.codec.encode(&ct)?);
+            chunks.push(self.encrypt_unproven(slots)?);
         }
         self.finish(chunks, group)
     }
@@ -130,12 +214,7 @@ impl Client {
     pub fn shard_raw_elements_in_group(&self, elements_per_chunk: &[Vec<u64>], group: u32) -> Result<Report> {
         let mut chunks = Vec::with_capacity(elements_per_chunk.len());
         for elems in elements_per_chunk {
-            let mut slots = vec![0u64; self.layout.group_slot(group as usize, elems.len().max(1) - 1) + 1];
-            for (i, &v) in elems.iter().enumerate() {
-                slots[self.layout.group_slot(group as usize, i)] = v;
-            }
-            let ct = self.ctx.encrypt(&self.pk, &self.ctx.plaintext(&slots)?)?;
-            chunks.push(self.codec.encode(&ct)?);
+            chunks.push(self.encrypt_unproven(&self.chunk_slots(elems, group))?);
         }
         self.finish(chunks, group)
     }

@@ -399,6 +399,12 @@ impl Codec {
         self.fresh
     }
 
+    /// This party's fresh encryption of zero (the statement shape of a
+    /// proof of well-formed encryption, [`crate::wfe`]).
+    pub fn reference(&self) -> &Ciphertext {
+        &self.reference
+    }
+
     /// Exact encoded length of an object with this metadata.
     pub fn encoded_len(&self, meta: &CiphertextMeta) -> usize {
         self.format.encoded_len(meta)

@@ -196,6 +196,23 @@ pub fn make_report(client: &Client, task: &TaskConfig, seed: u64, invalid_every:
     })
 }
 
+/// Report `i` of a run for a task with client proofs, built as
+/// [`make_report`] builds it, with every chunk proven (an invalid report's
+/// proofs are valid: they prove the encryption well formed, not the
+/// measurement valid).
+pub fn make_proven_report(client: &Client, task: &TaskConfig, seed: u64, invalid_every: u64, i: u64) -> anyhow::Result<ProvenReport> {
+    let m = measurement(&task.measurement_type, seed, i)?;
+    Ok(if is_invalid(invalid_every, i) {
+        let mut enc = task.measurement_type.encode(&m)?;
+        enc[0] = 2;
+        let layout = client.layout();
+        let chunks: Vec<Vec<u64>> = (0..layout.num_chunks).map(|c| enc[layout.chunk_range(c)].to_vec()).collect();
+        client.shard_raw_elements_proven(&chunks)?
+    } else {
+        client.shard_proven(&m)?
+    })
+}
+
 /// Report `i` of a run for a task whose clients upload shares (invalid
 /// reports as in [`make_report`]: a valid encoding with its first element 2).
 pub fn make_share_report(client: &ShareClient, task: &TaskConfig, seed: u64, invalid_every: u64, i: u64) -> anyhow::Result<ShareReport> {
@@ -592,6 +609,7 @@ pub async fn run(cfg: LoadConfig) -> anyhow::Result<LoadReport> {
                         s.group = t.elapsed().as_secs_f64();
                         let t = Instant::now();
                         let body = match (&client, &share_client) {
+                            (Some(c), _) if task.client_proofs => fhe_prio3::messages::encode(&make_proven_report(c, &task, seed, invalid_every, i)?)?,
                             (Some(c), _) => fhe_prio3::messages::encode(&make_report(c, &task, seed, invalid_every, i, group)?)?,
                             (None, Some(sc)) => fhe_prio3::messages::encode(&make_share_report(sc, &task, seed, invalid_every, i)?)?,
                             (None, None) => anyhow::bail!("no client for this task's upload"),

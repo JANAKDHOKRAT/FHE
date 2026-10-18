@@ -13,6 +13,8 @@ pub struct NetworkClient {
     http: reqwest::Client,
     leader: String,
     batched: bool,
+    /// The task requires client proofs: reports go out as `ProvenReport`.
+    proofs: bool,
 }
 
 /// Parses an aggregator key file: one 32-byte hex Ed25519 public key per
@@ -47,8 +49,11 @@ impl NetworkClient {
         // the attestation covers the task digest, which binds the task's
         // upload keys: with pinned aggregators, a client seals shares only
         // to keys every aggregator signed for
-        if let Some(p) = pinned {
-            fhe_prio3::attest::verify_material(&task, material, p)?;
+        match pinned {
+            Some(p) => fhe_prio3::attest::verify_material(&task, material, p)?,
+            // no identities to check, but a task file that is not the one
+            // the material was attested for is still refused
+            None => fhe_prio3::attest::check_attested_task(&task, material)?,
         }
         let (client, shares) = if task.shares_upload() {
             let mut s = ShareClient::new(task.clone())?;
@@ -65,6 +70,7 @@ impl NetworkClient {
         };
         let batched = client.is_some() && task.mode == VerificationMode::Silent && task.silent_batch_groups > 1;
         Ok(Self {
+            proofs: task.client_proofs,
             client,
             shares,
             http: https_client(ca_pem)?,
@@ -79,6 +85,10 @@ impl NetworkClient {
             return http_post(&self.http, &format!("{}/v1/submit", self.leader), None, &report).await;
         }
         let client = self.client.as_ref().ok_or_else(|| anyhow::anyhow!("no client for this task's upload"))?;
+        if self.proofs {
+            let report = client.shard_proven(m)?;
+            return http_post(&self.http, &format!("{}/v1/submit", self.leader), None, &report).await;
+        }
         let group = if self.batched {
             let t: GroupTicket = http_get(&self.http, &format!("{}/v1/group", self.leader), None).await?;
             t.group
@@ -96,6 +106,11 @@ impl NetworkClient {
 
     /// Submits an already-built report (tests of malformed submissions).
     pub async fn submit_report(&self, report: &Report) -> anyhow::Result<SubmitOutcome> {
+        http_post(&self.http, &format!("{}/v1/submit", self.leader), None, report).await
+    }
+
+    /// Submits an already-built proven report (tests of malformed submissions).
+    pub async fn submit_proven_report(&self, report: &ProvenReport) -> anyhow::Result<SubmitOutcome> {
         http_post(&self.http, &format!("{}/v1/submit", self.leader), None, report).await
     }
 

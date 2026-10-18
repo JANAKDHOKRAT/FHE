@@ -161,6 +161,18 @@ pub struct TaskConfig {
     /// party `i`'s input share to `upload_keys[i]`. Empty otherwise.
     #[serde(default)]
     pub upload_keys: Vec<[u8; 32]>,
+    /// Verdict mode: every report carries, per chunk, a zero-knowledge
+    /// proof that the chunk is a public-key encryption with short randomness
+    /// ([`crate::wfe`], [`crate::messages::ProvenReport`]), and the
+    /// aggregators evaluate the proven effective ciphertext `2C`. Without
+    /// it a client chooses the noise of what the aggregators decrypt for
+    /// it and learns, from the verdict, whether that decryption failed: a
+    /// decryption-failure oracle of the kind the IND-CPA^D key-recovery
+    /// attacks on exact and threshold FHE use (Checri et al., ePrint
+    /// 2024/116; Cheon et al., ePrint 2024/127). Absent in task files from
+    /// before it existed (off). Verdict mode with ciphertext upload only.
+    #[serde(default)]
+    pub client_proofs: bool,
 }
 
 /// The configuration fields that existed before `key_topology` and
@@ -227,12 +239,39 @@ struct TaskConfigV2 {
     min_cell_count: u64,
 }
 
+/// A task file written before `client_proofs` existed (postcard, field by
+/// field).
+#[derive(Deserialize)]
+struct TaskConfigV3 {
+    task_id: [u8; 32],
+    measurement_type: MeasurementType,
+    mode: VerificationMode,
+    auth: AuthPolicy,
+    num_aggregators: usize,
+    repetitions: usize,
+    min_batch_size: usize,
+    max_batch_size: u64,
+    max_report_bytes: usize,
+    plain_mod: u64,
+    security_bits: u32,
+    silent_batch_groups: usize,
+    moments: bool,
+    collectors: Vec<CollectorPolicy>,
+    key_topology: KeyTopology,
+    min_cell_count: u64,
+    upload: Upload,
+    upload_keys: Vec<[u8; 32]>,
+}
+
 /// Separates the legacy binding from the extension in tasks that use it.
 const BINDING_EXTENSION: &[u8] = b"fhe-prio3/2 task extension";
 
 /// Separates the upload extension (`upload`, `upload_keys`) in tasks whose
 /// upload is not the default.
 const BINDING_UPLOAD_EXTENSION: &[u8] = b"fhe-prio3/3 upload extension";
+
+/// Separates the client-proofs extension in tasks that require proofs.
+const BINDING_PROOFS_EXTENSION: &[u8] = b"fhe-prio3/4 client proofs extension";
 
 /// Whether an X25519 public key is a point a Diffie-Hellman with it can
 /// be contributory for (not one of the small-order points, for which every
@@ -264,16 +303,41 @@ impl TaskConfig {
             min_cell_count: 0,
             upload: Upload::Ciphertext,
             upload_keys: Vec::new(),
+            client_proofs: false,
         }
     }
 
     /// Decodes a task file (postcard): the current format, one written
-    /// before `upload` existed, or one written before `key_topology` and
-    /// `min_cell_count` existed (read with the missing fields at their
-    /// defaults, which keeps its digest).
+    /// before `client_proofs` existed, one written before `upload` existed,
+    /// or one written before `key_topology` and `min_cell_count` existed
+    /// (read with the missing fields at their defaults, which keeps its
+    /// digest).
     pub fn decode(bytes: &[u8]) -> Result<Self> {
         if let Ok(c) = crate::messages::decode::<TaskConfig>(bytes) {
             return Ok(c);
+        }
+        if let Ok(v) = crate::messages::decode::<TaskConfigV3>(bytes) {
+            return Ok(Self {
+                task_id: v.task_id,
+                measurement_type: v.measurement_type,
+                mode: v.mode,
+                auth: v.auth,
+                num_aggregators: v.num_aggregators,
+                repetitions: v.repetitions,
+                min_batch_size: v.min_batch_size,
+                max_batch_size: v.max_batch_size,
+                max_report_bytes: v.max_report_bytes,
+                plain_mod: v.plain_mod,
+                security_bits: v.security_bits,
+                silent_batch_groups: v.silent_batch_groups,
+                moments: v.moments,
+                collectors: v.collectors,
+                key_topology: v.key_topology,
+                min_cell_count: v.min_cell_count,
+                upload: v.upload,
+                upload_keys: v.upload_keys,
+                client_proofs: false,
+            });
         }
         if let Ok(v) = crate::messages::decode::<TaskConfigV2>(bytes) {
             return Ok(Self {
@@ -295,6 +359,7 @@ impl TaskConfig {
                 min_cell_count: v.min_cell_count,
                 upload: Upload::Ciphertext,
                 upload_keys: Vec::new(),
+                client_proofs: false,
             });
         }
         let l: LegacyTaskConfig = crate::messages::decode(bytes)?;
@@ -317,6 +382,7 @@ impl TaskConfig {
             min_cell_count: 0,
             upload: Upload::Ciphertext,
             upload_keys: Vec::new(),
+            client_proofs: false,
         })
     }
 
@@ -335,6 +401,12 @@ impl TaskConfig {
             KeyTopology::Aggregators => self.num_aggregators,
             KeyTopology::AggregatorAndCollector => self.num_aggregators + 1,
         }
+    }
+
+    /// The same task with [`Self::client_proofs`] on.
+    pub fn with_client_proofs(mut self) -> Self {
+        self.client_proofs = true;
+        self
     }
 
     /// Whether clients upload secret shares ([`Upload::Shares`]).
@@ -597,6 +669,12 @@ impl TaskConfig {
                 }
             }
         }
+        if self.client_proofs && (self.mode != VerificationMode::Verdict || self.upload != Upload::Ciphertext) {
+            return Err(Error::Config(
+                "client_proofs applies to verdict mode with ciphertext upload (share upload already proves every ciphertext; silent mode is not supported yet)"
+                    .into(),
+            ));
+        }
         if self.repetitions == 0 || self.repetitions > 64 {
             return Err(Error::Config("repetitions must be in 1..=64".into()));
         }
@@ -826,6 +904,10 @@ impl TaskConfig {
             out.extend_from_slice(BINDING_UPLOAD_EXTENSION);
             out.extend_from_slice(&postcard::to_allocvec(&(self.upload, &self.upload_keys)).expect("serializable"));
         }
+        if self.client_proofs {
+            out.extend_from_slice(BINDING_PROOFS_EXTENSION);
+            out.extend_from_slice(&postcard::to_allocvec(&self.client_proofs).expect("serializable"));
+        }
         out
     }
 
@@ -942,9 +1024,14 @@ mod tests {
         for t in [&c, &k, &s] {
             assert_eq!(&TaskConfig::decode(&postcard::to_allocvec(t).unwrap()).unwrap(), t);
         }
-        // neither format accepts a truncated or extended file
+        // no format accepts a file cut inside a field or extended; a file
+        // cut by exactly its last field is the older encoding without it
+        // (here the same task: the field is at its default), which is why a
+        // node checks its task against the attested digest
+        // (`attest::check_attested_task`)
         let cur = postcard::to_allocvec(&s).unwrap();
-        assert!(TaskConfig::decode(&cur[..cur.len() - 1]).is_err());
+        assert_eq!(TaskConfig::decode(&cur[..cur.len() - 1]).unwrap(), s);
+        assert!(TaskConfig::decode(&cur[..cur.len() - 2]).is_err());
         let mut longer = cur.clone();
         longer.push(0);
         assert!(TaskConfig::decode(&longer).is_err());
@@ -1000,6 +1087,53 @@ mod tests {
         assert_eq!(deep.gate_depth(), 15 + 2);
         deep.validate().unwrap();
         assert!(deep.gate_depth() <= deep.mult_depth());
+    }
+
+    #[test]
+    fn client_proofs_binding_files_and_rules() {
+        let h = MeasurementType::Histogram { length: 5 };
+        let v = TaskConfig::new([3; 32], h.clone(), 2);
+        let p = v.clone().with_client_proofs();
+        // off: the binding is the one before the field existed
+        let mut without = v.binding();
+        assert!(!without.windows(BINDING_PROOFS_EXTENSION.len()).any(|w| w == BINDING_PROOFS_EXTENSION));
+        // on: the same binding, extended
+        let with = p.binding();
+        assert_ne!(p.digest(), v.digest());
+        without.extend_from_slice(BINDING_PROOFS_EXTENSION);
+        without.extend_from_slice(&postcard::to_allocvec(&true).unwrap());
+        assert_eq!(with, without);
+        // a file written before the field existed is the task without proofs
+        let cur = postcard::to_allocvec(&v).unwrap();
+        assert_eq!(cur.last(), Some(&0)); // the trailing `false`
+        let v3 = &cur[..cur.len() - 1];
+        assert!(crate::messages::decode::<TaskConfig>(v3).is_err());
+        assert_eq!(TaskConfig::decode(v3).unwrap(), v);
+        assert_eq!(TaskConfig::decode(v3).unwrap().digest(), v.digest());
+        for t in [&v, &p] {
+            assert_eq!(&TaskConfig::decode(&postcard::to_allocvec(t).unwrap()).unwrap(), t);
+        }
+        // a flag byte other than 0 or 1 is not a task
+        let mut two = postcard::to_allocvec(&p).unwrap();
+        *two.last_mut().unwrap() = 2;
+        assert!(TaskConfig::decode(&two).is_err());
+        // verdict mode with ciphertext upload only
+        p.validate().unwrap();
+        assert!(TaskConfig::new_silent([3; 32], h.clone(), 2).with_client_proofs().validate().is_err());
+        assert!(TaskConfig::new_split_key([3; 32], h.clone()).with_client_proofs().validate().is_err());
+        let mut shares = p.clone();
+        shares.upload = Upload::Shares;
+        shares.upload_keys = vec![[9; 32]; 2];
+        assert!(shares.validate().is_err());
+        let mut shares_plain = shares.clone();
+        shares_plain.client_proofs = false;
+        assert!(
+            shares_plain
+                .validate()
+                .map_err(|e| e.to_string())
+                .err()
+                .is_none_or(|e| !e.contains("client_proofs"))
+        );
     }
 
     #[test]

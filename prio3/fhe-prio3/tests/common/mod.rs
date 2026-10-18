@@ -99,6 +99,27 @@ impl Net {
     /// as a verdict too).
     pub fn run_report(&mut self, report: &Report) -> Vec<Verdict> {
         let report: Report = decode(&encode(report).unwrap()).unwrap();
+        self.run(&report, None)
+    }
+
+    /// [`Self::run_report`] for a task with client proofs.
+    pub fn run_proven(&mut self, report: &ProvenReport) -> Vec<Verdict> {
+        let report: ProvenReport = decode(&encode(report).unwrap()).unwrap();
+        self.run(&report.report, Some(&report))
+    }
+
+    pub fn expect_accept_proven(&mut self, report: &ProvenReport) {
+        let v = self.run_proven(report);
+        assert!(v.iter().all(|v| *v == Verdict::Accepted), "expected acceptance, got {v:?}");
+    }
+
+    pub fn expect_reject_proven(&mut self, report: &ProvenReport, reason: RejectReason) {
+        let v = self.run_proven(report);
+        assert!(v.iter().all(|v| *v == Verdict::Rejected(reason.clone())), "expected {reason:?}, got {v:?}");
+    }
+
+    fn run(&mut self, report: &Report, proven: Option<&ProvenReport>) -> Vec<Verdict> {
+        let report = report.clone();
         if self.cfg.mode == VerificationMode::Silent {
             let verdicts: Vec<Verdict> = self
                 .aggs
@@ -114,7 +135,11 @@ impl Net {
         let mut mask_commits: Vec<MaskCommit> = Vec::new();
         let mut early = Vec::new();
         for a in self.aggs.iter_mut() {
-            match a.prepare_init(&report) {
+            let init = match proven {
+                Some(p) => a.prepare_init_proven(p),
+                None => a.prepare_init(&report),
+            };
+            match init {
                 Ok(m) => mask_commits.push(decode(&encode(&m).unwrap()).unwrap()),
                 Err(Error::Reject(r)) => early.push(Verdict::Rejected(r)),
                 Err(e) => panic!("prepare_init failed: {e}"),

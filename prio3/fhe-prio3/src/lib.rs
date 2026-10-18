@@ -51,8 +51,8 @@ pub use config::{AuthPolicy, CollectorPolicy, KeyTopology, TaskConfig, Upload, V
 pub use error::{Error, RejectReason, Result};
 pub use messages::{
     AggregateShare, CountCommit, CountOpening, CountReveal, CountShare, GateCheckCommit, GateCommit, GateContribution, GateOpening, GateReveal, GateShare,
-    MaskCommit, MaskMessage, PublicMaterial, ReleaseChallenge, ReleaseCommit, ReleaseOpening, ReleaseReveal, Report, SealedInput, ShareContribution,
-    ShareFlushRequest, ShareReport, VerifierCommit, VerifierMessage,
+    MaskCommit, MaskMessage, ProvenReport, PublicMaterial, ReleaseChallenge, ReleaseCommit, ReleaseOpening, ReleaseReveal, Report, SealedInput,
+    ShareContribution, ShareFlushRequest, ShareReport, VerifierCommit, VerifierMessage,
 };
 pub use seal::{CollectorSealKey, SealedShare};
 pub use shares::{ShareClient, UploadKey};

@@ -295,11 +295,13 @@ deviations), `fhe-prio3-node/tests/ceremony_node.rs` (three processes).
 
 ### 6.1 Leakage by design
 
-* Verdict mode reveals, per report, whether it was valid. A malicious
-  aggregator can form related reports by ciphertext malleability, which
-  gives it a validity oracle bounded by authentication quotas (spec §4.3,
-  item 1). Mask commitments (§4.1) are what keep this at one bit per
-  forged report. Silent mode reveals no per-report bit.
+* Verdict mode reveals, per report, whether it was valid. Without client
+  proofs a malicious aggregator can form related reports by ciphertext
+  malleability, which gives it a validity oracle bounded by
+  authentication quotas (spec §4.3, item 1). Mask commitments (§4.1) are
+  what keep this at one bit per forged report. With client proofs (§6b)
+  a related report needs a proof the forger cannot make. Silent mode
+  reveals no per-report bit.
 * The aggregate of each batch of at least `min_batch_size` valid reports;
   the count of valid reports; to each collector, what its policy names.
   In batched silent mode every accumulator carries each report's gated
@@ -440,10 +442,11 @@ of the design were each found insufficient by measurement and replaced:
   learns nothing extra with release policies: shares and reveals are
   sealed).
 * **Well-formedness of client ciphertexts** (spec §4.3, item 2): the
-  soundness bound concerns the plaintext a ciphertext decrypts to. A
-  noise-malformed ciphertext is a heuristic concern in verdict mode; in
-  silent mode it corrupts the batch, which the consistency and release
-  checks refuse.
+  soundness bound concerns the plaintext a ciphertext decrypts to. In
+  verdict mode without client proofs a noise-malformed ciphertext is a
+  decryption-failure oracle (§6b); with them it is refused. In silent
+  mode it corrupts the batch, which the consistency and release checks
+  refuse.
 * **Implementation.** The C++ shim and OpenFHE are in the trusted base.
   Received bytes never reach OpenFHE's deserializer (packed format, fuzzed
   in CI), but the shim is memory-unsafe code reviewed only by us.
@@ -543,6 +546,106 @@ refresh is what makes the gates fit (base chain unchanged at depth 28).
   count in §5's list (one per refreshed accumulator plus `κ` checks per
   verifier).
 
+## 6b. Client proofs in verdict mode (`client_proofs`, `wfe.rs`)
+
+**The attack without them.** A verdict-mode client chooses the
+randomness `(u, e0, e1)` of the ciphertexts the aggregators evaluate and
+decrypt, and learns from the verdict whether that decryption came out
+right. With noise placed near the correctness bound, a failed or
+successful decryption tells it something about the joint secret: the
+decryption-failure oracle of the IND-CPA^D key-recovery attacks on exact
+FHE, threshold variants included (Checri, Sirdey, Boudguiga, Bultel,
+ePrint 2024/116; Cheon, Choe, Passelègue, Stehlé, Suvanto, ePrint
+2024/127). The countermeasure those papers give is that a decryption
+must never depend on noise an adversary placed; HElib's noise tracking
+(refusing to output when the noise could have caused a failure) is the
+same idea. The flooding check (§4.4) does not help here: a decryption
+failure is a wrong value, not oversized partials.
+
+**The countermeasure.** With `client_proofs` every chunk carries a
+proof (`wfe.rs`) that the client knows `(m, u, e0, e1)` with `C =
+Enc(m; u, e0, e1)`. The proof's Fiat–Shamir context is the domain,
+the task digest, the report id (a hash of every chunk), the chunk index
+and the chunk count (`ProvenReport::proof_context`, fixed-length
+fields). Every aggregator verifies every proof itself, after the
+cheap checks (upload kind, batch state, size, task, signature and
+quota, report id, replay, chunk count, packed decoding) and before the
+report is marked seen. A report refused for its proofs can still be
+admitted with valid ones. The refused attempt is charged to the signer's
+quota like every attempt. Only a holder of the signed report before its
+admission (over TLS, the leader, which can drop it anyway) could spend an
+honest client's quota this way. The circuit then runs on the effective ciphertext `2C`, which the
+extraction argument bounds (`wfe.rs`): `2C = Enc(m''; u'', e0'',
+e1'')` with `|u''| <= 2N B_U` and `|e''| <= 2N (B_E + 1)`. The client
+encodes `v / 2 mod t` so that `2C` decrypts to `v`
+(`SlotCodec::contribution_plaintext`).
+
+**Why that closes the oracle (measured, not assumed).** The fresh
+noise is `m + t (e u + e0 + e1 s)`, linear in `(u, e0, e1)`. `e0`
+enters directly, so its worst case at the extraction bound is `N (1 +
+1/B_E)` times the `2 B_E` of a doubled masking-range ciphertext,
+below `2^16 = 2N` at `N = 32768`. `e u` and `e1 s` multiply the
+client's choice by the joint secret `s` and the joint public-key error
+`e`, which the client does not know and which are independent of its
+choice. Their distribution therefore scales with `||u||_2` and
+`||e1||_2`, at most `sqrt(3) N < 2N` times that of a doubled
+masking-range ciphertext. `tests/client_proofs.rs` builds doubled
+masking-range ciphertexts (uniform `u` in `±B_U`, `e` in `±B_E`),
+runs them through the real verdict circuit and release, and reads the
+exact noise with the joint secret. The released sum is linear in the
+inputs, and the check value is quadratic. So the extraction bound costs
+`log2(2N) = 16` bits on the first and 32 on the second. Measured
+(verdict parameters, `N = 32768`, margin = bits below one party's
+flooding range `Q'`):
+
+| | check value | released sum |
+|---|---|---|
+| honest proven reports | 119.0 bits | 283.2 bits |
+| masking-range inputs | 110.8 bits | 256.8 bits |
+| masking-range inputs at the extraction bound | **78.8 bits** | **240.8 bits** |
+
+The test requires at least 64 bits at the extraction bound. The noise of
+every decryption a proven report reaches therefore stays more than `2^64`
+(measured: `2^78`) below the flooding range, which is itself below the
+correctness bound. Decryption does not fail, so the verdict carries no
+failure information. Each decryption's statistical distance from that of a noise-free ciphertext is below `2^-79`
+(`|e| / Q'` for flooding uniform on a range of width `Q'`).
+Masking-range inputs are also aggregated exactly, and invalid ones are
+still refused.
+
+**What else the proofs close.**
+* *Related reports by a malicious aggregator* (spec §4.3 item 1, AUDIT
+  F-11). `C + Enc(δ)` is a new statement with a new report id; the
+  honest client's proof is bound to the old one. Forging a proof for
+  it means, by the extraction argument, opening `2C` (the honest
+  plaintext). This rests on the simulation-extractability of the
+  Fiat–Shamir proof in the random-oracle model, which we assume for
+  this protocol rather than prove. Tested: a related ciphertext, a
+  chunk moved between reports with its proof, another report's proof,
+  a proof under another task, chunk index or chunk count.
+* *A leader vouching for helpers.* Helpers receive the proofs with the
+  report and verify them themselves (`fhe-prio3-node/tests/e2e.rs`).
+
+**Soundness and cost.** `R = 5` repetitions at `N = 32768`, so a
+cheating prover passes one Fiat–Shamir attempt with probability
+`(1/2N)^R = 2^-80`. A forgery is offline grinding, about `2^80` hash
+and encryption attempts per forged report, and one forged report is
+one oracle query. Measured on a 4-core machine (one chunk): client
+encryption 50 ms without proofs and 711 ms with. An aggregator's step 1
+takes 555 ms without and 814 ms with. A proof is 3.0 MB, for a 2.9 MB
+chunk (`proof_size_bound` bounds every encoding; the public body limit
+uses `Aggregator::max_submission_bytes`).
+
+**Scope.** Verdict mode with ciphertext upload only (`validate`).
+Share upload already proves every ciphertext it encrypts, and silent
+mode decrypts nothing per report. In the library, `TaskConfig::new`
+keeps proofs off, which leaves existing tasks' digests unchanged. The
+node's `task-config` turns them on for verdict tasks unless told
+`--client-proofs off`. A node refuses to start on a task file that is
+not the one its material was attested for
+(`attest::check_attested_task`). Such a file could be the proof task's
+file cut by its last byte, which decodes as the same task without proofs.
+
 ## 7. Evidence map
 
 | Claim | Tests |
@@ -562,4 +665,5 @@ refresh is what makes the gates fit (base chain unchanged at depth 28).
 | P2 split key | `tests/split_key.rs` (each share alone decrypts noise, the refresh returns a raw report masked, below-minimum batches refused, exact aggregates), `fhe-prio3-node/tests/ceremony_node.rs::aggregator_and_collector_machines_generate_a_split_key`, `fhe-prio3-node/tests/e2e.rs::split_key_with_suppression_over_tls` |
 | P3 suppression | `tests/suppression.rs`, `tests/split_key.rs::small_cells_are_suppressed_with_the_split_key` |
 | R3 gate integrity | `tests/split_key.rs::a_shifted_partial_of_the_count_is_caught`, `tests/suppression.rs::a_shifted_partial_of_y_is_caught` |
+| client proofs (verdict, §6b) | `tests/client_proofs.rs` (exact aggregates; malformed, misplaced and related proofs; noisy and unprovable ciphertexts; check order; size bounds; noise at the extraction bound), `config::tests::client_proofs_binding_files_and_rules`, `attest::tests`, `fhe-prio3-node/tests/e2e.rs::verdict_with_client_proofs_over_tls` |
 | contribution well-formedness | `tests/wfe.rs`, `tests/gate_noise.rs`, `tests/split_key.rs::malformed_or_replayed_contributions_are_refused`, `tests/suppression.rs::a_mask_cancelling_another_is_refused` |

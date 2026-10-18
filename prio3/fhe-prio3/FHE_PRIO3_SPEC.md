@@ -1427,9 +1427,13 @@ run by every node at startup, refuses a task file that is not the
 attested one (AUDIT F-30).
 
 *Node.* `/v1/submit` and the leader-to-helper `/v1/report` read a
-`ProvenReport` in proof tasks and a `Report` otherwise. A body of the
-other kind is read too, so that it is refused for its reason and not as
-undecodable. Helpers verify the proofs themselves. The public body limit
+`ProvenReport` in proof tasks and exactly a `Report` otherwise. A proof
+task also reads a plain `Report`, so that a client without proofs is
+refused as `MissingProof`. The fallback is one-way: `Report || 0x00` is
+the encoding of a `ProvenReport` with no proofs, so a plain task that
+tried it would accept a report with a trailing byte. In a proof task
+that body is refused as `WrongProofCount`. Helpers verify the proofs
+themselves. The public body limit
 is `Aggregator::max_submission_bytes` (the report plus `5 + chunks ·
 proof_size_bound(N)`). Metrics label the four new reasons.
 

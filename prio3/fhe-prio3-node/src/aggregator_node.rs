@@ -384,9 +384,6 @@ impl AggregatorNode {
         let detail = hex::encode(id);
         if self.inner.task.mode == VerificationMode::Silent {
             // Local admission first: a report we refuse is not forwarded.
-            if proofs.is_some() {
-                return Ok(SubmitOutcome::Rejected(RejectReason::UnexpectedProof.to_string()));
-            }
             let r = report.clone();
             let outcome = self
                 .with_agg(
@@ -923,9 +920,6 @@ async fn internal_report(State(node): State<AggregatorNode>, headers: HeaderMap,
     let detail = hex::encode(report.report_id);
     let bytes = body.to_vec();
     if node.inner.task.mode == VerificationMode::Silent {
-        if proofs.is_some() {
-            return reply(&SubmitOutcome::Rejected(RejectReason::UnexpectedProof.to_string()));
-        }
         let out = node
             .with_agg(
                 "silent_admit",
@@ -1245,19 +1239,25 @@ async fn internal_gate_finish(State(node): State<AggregatorNode>, headers: Heade
     reply(&())
 }
 
-/// Reads a submitted report: a `ProvenReport` in tasks with client proofs,
-/// a `Report` otherwise. A body of the other kind is read too (both
-/// encodings are canonical and reject trailing bytes, so a body is at most
-/// one of them), so that a report without proofs to a task that requires
-/// them, or with proofs to one that does not, is refused for that reason
-/// by the aggregator instead of as undecodable.
+/// Reads a submitted report. A task without client proofs reads exactly a
+/// `Report`: every other body, a report with any byte after it included, is
+/// malformed. A task with them reads a `ProvenReport` and, failing that, a
+/// plain `Report`, so that a client without proofs is refused as
+/// `MissingProof` instead of as undecodable. That fallback is one-way on
+/// purpose: `Report || 0x00` *is* the encoding of a `ProvenReport` with no
+/// proofs, so trying `ProvenReport` in a plain task would accept a report
+/// with a trailing byte. In a proof task the two readings cannot overlap: a
+/// `Report`'s bytes end before a `ProvenReport`'s proof list, and anything
+/// longer is read as a `ProvenReport` (and refused for its proof count).
 fn parse_submission(body: &Bytes, proofs_expected: bool) -> std::result::Result<(Report, Option<Vec<Proof>>), HttpError> {
-    let proven = |b: &Bytes| decode::<ProvenReport>(b).map(|p| (p.report, Some(p.proofs)));
-    let plain = |b: &Bytes| decode::<Report>(b).map(|r| (r, None));
-    let first = if proofs_expected { proven(body) } else { plain(body) };
-    first
-        .or_else(|e| if proofs_expected { plain(body) } else { proven(body) }.map_err(|_| e))
-        .map_err(|e| HttpError(StatusCode::BAD_REQUEST, format!("malformed body: {e}")))
+    let malformed = |e: fhe_prio3::Error| HttpError(StatusCode::BAD_REQUEST, format!("malformed body: {e}"));
+    if !proofs_expected {
+        return decode::<Report>(body).map(|r| (r, None)).map_err(malformed);
+    }
+    match decode::<ProvenReport>(body) {
+        Ok(p) => Ok((p.report, Some(p.proofs))),
+        Err(e) => decode::<Report>(body).map(|r| (r, None)).map_err(|_| malformed(e)),
+    }
 }
 
 /// The body a leader forwards to its helpers: what [`parse_submission`]
@@ -1270,4 +1270,83 @@ fn encode_submission(report: &Report, proofs: Option<&[Proof]>) -> std::result::
         })?,
         None => encode(report)?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn report() -> Report {
+        let chunks = vec![vec![1u8, 2, 3], vec![4u8; 40]];
+        Report {
+            task_id: [7; 32],
+            report_id: Report::compute_id(&[7; 32], 0, &chunks),
+            group: 0,
+            chunks,
+            auth: None,
+        }
+    }
+
+    fn proof() -> Proof {
+        Proof {
+            commitments: [9; 32],
+            responses: vec![fhe_prio3::wfe::Response {
+                zm: vec![1, 2],
+                zu: vec![-1, 0],
+                ze0: vec![3, -4],
+                ze1: vec![0, 5],
+            }],
+        }
+    }
+
+    /// `Report || 0x00` is the encoding of a `ProvenReport` with no proofs:
+    /// a plain task must refuse it as malformed (one encoding per message),
+    /// a proof task reads it as a proven report with zero proofs.
+    #[test]
+    fn submissions_have_one_reading() {
+        let r = report();
+        let plain = Bytes::from(encode(&r).unwrap());
+        let mut trailing = encode(&r).unwrap();
+        trailing.push(0);
+        let trailing = Bytes::from(trailing);
+        assert_eq!(
+            encode(&ProvenReport {
+                report: r.clone(),
+                proofs: vec![]
+            })
+            .unwrap(),
+            trailing.to_vec()
+        );
+        let proven = ProvenReport {
+            report: r.clone(),
+            proofs: vec![proof(), proof()],
+        };
+        let proven_bytes = Bytes::from(encode(&proven).unwrap());
+        let mut proven_trailing = proven_bytes.to_vec();
+        proven_trailing.push(0);
+
+        // plain task: exactly a Report
+        let (got, proofs) = parse_submission(&plain, false).unwrap();
+        assert_eq!((got.report_id, proofs.is_none()), (r.report_id, true));
+        assert_eq!(parse_submission(&trailing, false).err().unwrap().0, StatusCode::BAD_REQUEST);
+        assert_eq!(parse_submission(&proven_bytes, false).err().unwrap().0, StatusCode::BAD_REQUEST);
+        // proof task: a ProvenReport, or a plain Report (refused later as MissingProof)
+        let (got, proofs) = parse_submission(&proven_bytes, true).unwrap();
+        assert_eq!((got.report_id, proofs.map(|p| p.len())), (r.report_id, Some(2)));
+        let (got, proofs) = parse_submission(&plain, true).unwrap();
+        assert_eq!((got.report_id, proofs.is_none()), (r.report_id, true));
+        let (_, proofs) = parse_submission(&trailing, true).unwrap();
+        assert_eq!(proofs.map(|p| p.len()), Some(0));
+        assert_eq!(parse_submission(&Bytes::from(proven_trailing), true).err().unwrap().0, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            parse_submission(&Bytes::from_static(&[0xff; 3]), true).err().unwrap().0,
+            StatusCode::BAD_REQUEST
+        );
+        // what a leader forwards reads back the same
+        for (task_proofs, p) in [(false, None), (true, Some(&proven.proofs[..]))] {
+            let b = Bytes::from(encode_submission(&r, p).unwrap());
+            let (got, proofs) = parse_submission(&b, task_proofs).unwrap();
+            assert_eq!((got.report_id, proofs.map(|p| p.len())), (r.report_id, p.map(|p| p.len())));
+        }
+    }
 }

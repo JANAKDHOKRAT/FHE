@@ -6,14 +6,25 @@ use crate::aggregator::{Aggregator, Verdict};
 use crate::collector::Collector;
 use crate::error::{Error, Result};
 use crate::messages::{
-    AggregateShare, GateCheckCommit, GateCommit, GateContribution, GateOpening, GateReveal, GateShare, MaskCommit, MaskMessage, Report, VerifierCommit,
-    VerifierMessage,
+    AggregateShare, GateCheckCommit, GateCommit, GateContribution, GateOpening, GateReveal, GateShare, MaskCommit, MaskMessage, ProvenReport, Report,
+    VerifierCommit, VerifierMessage,
 };
 use crate::types::BatchResult;
 
 /// Verdict mode: mask commitments, masks, partial commitments, partials, verdicts.
 pub fn verdict(aggs: &mut [Aggregator], report: &Report) -> Result<Vec<Verdict>> {
     let mask_commits: Vec<MaskCommit> = aggs.iter_mut().map(|a| a.prepare_init(report)).collect::<Result<_>>()?;
+    verdict_after_init(aggs, report, mask_commits)
+}
+
+/// [`verdict`] for a task with client proofs: every aggregator verifies the
+/// proofs itself in [`Aggregator::prepare_init_proven`].
+pub fn verdict_proven(aggs: &mut [Aggregator], report: &ProvenReport) -> Result<Vec<Verdict>> {
+    let mask_commits: Vec<MaskCommit> = aggs.iter_mut().map(|a| a.prepare_init_proven(report)).collect::<Result<_>>()?;
+    verdict_after_init(aggs, &report.report, mask_commits)
+}
+
+fn verdict_after_init(aggs: &mut [Aggregator], report: &Report, mask_commits: Vec<MaskCommit>) -> Result<Vec<Verdict>> {
     let masks: Vec<MaskMessage> = aggs
         .iter_mut()
         .map(|a| {

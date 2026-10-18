@@ -96,6 +96,7 @@ jobs:
           - { name: protocol-shares-split, dir: prio3/fhe-prio3, args: "--test shares_split" }
           - { name: protocol-shares-aggregators, dir: prio3/fhe-prio3, args: "--test shares_aggregators" }
           - { name: protocol-shares-moments, dir: prio3/fhe-prio3, args: "--test shares_moments" }
+          - { name: protocol-client-proofs, dir: prio3/fhe-prio3, args: "--test client_proofs" }
           - { name: node, dir: prio3/fhe-prio3-node, args: "" }
     env:
       LD_LIBRARY_PATH: /home/runner/openfhe-install/lib
@@ -249,8 +250,8 @@ jobs:
   # Line coverage of the protocol crate over its fast suites (unit tests,
   # wire, protocol, policy, bounds, upgrade, wfe, gate rounds) and the
   # secret-shared upload's suites at small parameters (shares_split: the
-  # leader and the key-holding collector; shares_aggregators: the helper),
-  # with cargo-llvm-cov. The floor is the measured value at the time it was
+  # leader and the key-holding collector; shares_aggregators: the helper)
+  # and verdict mode's client proofs (client_proofs), with cargo-llvm-cov. The floor is the measured value at the time it was
   # set, rounded down; a change that drops below it fails. The totals are
   # posted as a notice on the check run; the lcov report is kept as an
   # artifact for review.
@@ -289,7 +290,7 @@ jobs:
         run: |
           cargo llvm-cov --manifest-path Cargo.toml --release --locked \
             --lib --bins --test wire --test protocol --test policy --test bounds --test upgrade --test wfe --test gate_rounds \
-            --test shares_split --test shares_aggregators \
+            --test shares_split --test shares_aggregators --test client_proofs \
             --lcov --output-path lcov.info -- --test-threads=1
           cargo llvm-cov report --manifest-path Cargo.toml --release --summary-only | tee coverage-summary.txt
           echo "::notice title=coverage fhe-prio3::$(grep '^TOTAL' coverage-summary.txt | tr -s ' ')"

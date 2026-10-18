@@ -125,6 +125,22 @@ itself first (`AUDIT.md` F-8).
 | `GET /v1/shards` | anyone | none | → `Vec<Assignment>` |
 | `POST /v1/close-all` | operator → router | token | `()` → combined `BatchResult` |
 
+## Client proofs (`--client-proofs`, verdict mode)
+
+In verdict mode, `task-config` makes every client prove each ciphertext
+well formed by default (`--client-proofs auto`: on for verdict mode with
+ciphertext upload; `on`; `off`). Without proofs a client chooses the noise
+of the ciphertexts the aggregators decrypt for it, and the verdict tells
+it whether that decryption failed. That is the decryption-failure oracle
+of the IND-CPA^D key-recovery attacks (`../fhe-prio3/SECURITY.md` §6b,
+`AUDIT.md` F-29). Clients then send a `ProvenReport` (the report and one
+proof per chunk: 3.0 MB per 2.9 MB chunk). Every aggregator verifies the
+proofs itself before any homomorphic work, and `submit` and the load test
+build proven reports on their own. A report without proofs is refused as
+`MissingProof`, and a bad proof as `InvalidProof` (metric label of the
+same name). A node refuses to start when its task file is not the one its
+material was attested for (F-30).
+
 ## Secret-shared upload (`--upload shares`)
 
 With `task-config --upload shares` clients send Prio3's report: their

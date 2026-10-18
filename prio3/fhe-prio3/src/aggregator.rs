@@ -41,12 +41,13 @@ use crate::keys;
 use crate::layout::Layout;
 use crate::messages::{
     AggregateShare, CountCommit, CountOpening, CountReveal, CountShare, GateCheckCommit, GateCommit, GateContribution, GateOpening, GateReveal, GateShare,
-    MaskCommit, MaskMessage, PublicMaterial, ReleaseChallenge, ReleaseCommit, ReleaseOpening, ReleaseReveal, Report, ReportId, ShareContribution,
+    MaskCommit, MaskMessage, ProvenReport, PublicMaterial, ReleaseChallenge, ReleaseCommit, ReleaseOpening, ReleaseReveal, Report, ReportId, ShareContribution,
     ShareFlushRequest, ShareReport, VerifierCommit, VerifierMessage, batch_digest,
 };
 use crate::packed::{Codec, Expect, WireError, check_stored};
 use crate::vdec;
 use crate::verify::{Challenge, Circuit};
+use crate::wfe;
 use openfhe_tbgv_rs::{Ciphertext, CiphertextMeta, Context, PartialDecryption, PublicKey, SecretShare};
 use rand::rngs::OsRng;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -496,7 +497,19 @@ impl Aggregator {
     /// messages or the `n` count shares of one request are smaller still.
     pub fn max_message_bytes(&self) -> usize {
         let masks = (self.cfg.num_aggregators - 1) * self.codec.fresh_len();
-        self.max_report_bytes().max(masks)
+        self.max_submission_bytes().max(masks)
+    }
+
+    /// Largest encoded submission: the report, plus with
+    /// [`TaskConfig::client_proofs`] one proof per chunk
+    /// ([`wfe::proof_size_bound`]) and the proof list's length prefix.
+    pub fn max_submission_bytes(&self) -> usize {
+        let proofs = if self.cfg.client_proofs {
+            5 + self.layout.num_chunks * wfe::proof_size_bound(self.ctx.ring_dim() as usize)
+        } else {
+            0
+        };
+        self.max_report_bytes() + proofs
     }
 
     /// The packed-ciphertext codec of this aggregator.
@@ -528,9 +541,20 @@ impl Aggregator {
 
     /// Cheap checks first, FHE work last. On success the report id and the
     /// client's quota are consumed even if verification later fails.
-    fn admit(&mut self, report: &Report) -> std::result::Result<Vec<Ciphertext>, RejectReason> {
+    ///
+    /// With [`TaskConfig::client_proofs`] every chunk must come with its
+    /// proof of well-formed encryption (`proofs`), verified after the cheap
+    /// checks and the quota (the most expensive step before the FHE work);
+    /// the returned chunks are then the effective ciphertexts `2C`, whose
+    /// randomness the proofs bound.
+    fn admit(&mut self, report: &Report, proofs: Option<&[wfe::Proof]>) -> std::result::Result<Vec<Ciphertext>, RejectReason> {
         if self.cfg.shares_upload() {
             return Err(RejectReason::WrongUpload);
+        }
+        match (self.cfg.client_proofs, proofs.is_some()) {
+            (true, false) => return Err(RejectReason::MissingProof),
+            (false, true) => return Err(RejectReason::UnexpectedProof),
+            _ => {}
         }
         if self.closed {
             return Err(RejectReason::BatchClosed);
@@ -581,9 +605,26 @@ impl Aggregator {
         if self.admitted >= self.cfg.max_batch_size {
             return Err(RejectReason::BatchFull);
         }
+        if let Some(proofs) = proofs
+            && proofs.len() != report.chunks.len()
+        {
+            return Err(RejectReason::WrongProofCount {
+                expected: report.chunks.len(),
+                got: proofs.len(),
+            });
+        }
         let mut chunks = Vec::with_capacity(report.chunks.len());
         for bytes in &report.chunks {
             chunks.push(self.load_fresh(bytes)?);
+        }
+        if let Some(proofs) = proofs {
+            let digest = self.cfg.digest();
+            let n = chunks.len();
+            for (i, (ct, proof)) in chunks.iter_mut().zip(proofs).enumerate() {
+                let context = ProvenReport::proof_context(&digest, &report.report_id, i, n);
+                wfe::verify(&self.ctx, &self.pk, self.codec.reference(), ct, proof, &context).map_err(|_| RejectReason::InvalidProof { chunk: i })?;
+                *ct = wfe::effective(&self.ctx, ct).map_err(|e| RejectReason::MalformedCiphertext(format!("effective ciphertext of chunk {i}: {e}")))?;
+            }
         }
         self.mark_seen(report.report_id);
         self.admitted += 1;
@@ -619,11 +660,27 @@ impl Aggregator {
 
     /// Verdict mode, step 1. Returns this aggregator's commitment to its mask
     /// for the report, or the deterministic reason the report is refused.
+    /// Refused with [`RejectReason::MissingProof`] when the task requires
+    /// client proofs ([`Self::prepare_init_proven`]).
     pub fn prepare_init(&mut self, report: &Report) -> Result<MaskCommit> {
+        self.prepare_init_with(report, None)
+    }
+
+    /// [`Self::prepare_init`] for a task with [`TaskConfig::client_proofs`]:
+    /// every chunk's proof is verified, and the check runs on the proven
+    /// effective ciphertexts `2C`.
+    pub fn prepare_init_proven(&mut self, report: &ProvenReport) -> Result<MaskCommit> {
+        self.prepare_init_with(&report.report, Some(&report.proofs))
+    }
+
+    /// [`Self::prepare_init`] with the report's proofs, if it carries any
+    /// (`None` is a plain [`Report`]; a node that received the report and
+    /// its proofs apart, as a leader forwarding them, calls this).
+    pub fn prepare_init_with(&mut self, report: &Report, proofs: Option<&[wfe::Proof]>) -> Result<MaskCommit> {
         if self.cfg.mode != VerificationMode::Verdict {
             return Err(Error::Protocol("prepare_init is only valid in verdict mode".into()));
         }
-        let chunks = self.admit(report).map_err(Error::Reject)?;
+        let chunks = self.admit(report, proofs).map_err(Error::Reject)?;
         let challenge = Challenge::derive(&self.cfg, &self.field, &self.layout, &self.verify_key, &report.report_id, 0);
         let s = self.circuit.check_sum(&chunks, &challenge)?;
         let mask = self.circuit.make_mask(&self.pk, &self.field, &mut self.rng)?;
@@ -893,7 +950,7 @@ impl Aggregator {
         if self.cfg.mode != VerificationMode::Silent {
             return Err(Error::Protocol("process_silent is only valid in silent mode".into()));
         }
-        let chunks = self.admit(report).map_err(Error::Reject)?;
+        let chunks = self.admit(report, None).map_err(Error::Reject)?;
         let group = report.group as usize;
         if self.silent_batch.used_groups.contains(&group) {
             self.flush_silent_batch()?;

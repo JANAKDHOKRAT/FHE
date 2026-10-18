@@ -62,6 +62,22 @@ pub enum RejectReason {
         expected: usize,
         got: usize,
     },
+    /// The task requires a proof of well-formed encryption per chunk
+    /// (`TaskConfig::client_proofs`) and the report carries none.
+    MissingProof,
+    /// Proofs sent to a task that does not use them.
+    UnexpectedProof,
+    /// A proof count other than the report's chunk count.
+    WrongProofCount {
+        expected: usize,
+        got: usize,
+    },
+    /// The proof of chunk `chunk` does not verify: the chunk is not shown
+    /// to be a well-formed encryption, or the proof is for another report,
+    /// task or chunk.
+    InvalidProof {
+        chunk: usize,
+    },
 }
 
 impl std::fmt::Display for RejectReason {

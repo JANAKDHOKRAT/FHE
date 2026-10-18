@@ -41,6 +41,37 @@ impl Report {
     }
 }
 
+/// A report of a task with [`crate::config::TaskConfig::client_proofs`]:
+/// the [`Report`] (unchanged, so its id still covers exactly its ciphertext
+/// bytes) and, per chunk, a proof that the chunk is a public-key encryption
+/// with short randomness ([`crate::wfe`]). Each proof is bound to the task
+/// digest, the report id and the chunk's position
+/// ([`ProvenReport::proof_context`]): it verifies for no other report, task
+/// or chunk. The aggregators evaluate the effective ciphertext `2C` of each
+/// chunk, whose randomness the proof bounds.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ProvenReport {
+    pub report: Report,
+    pub proofs: Vec<crate::wfe::Proof>,
+}
+
+impl ProvenReport {
+    pub const PROOF_DOMAIN: &'static [u8] = b"fhe-prio3/1 client chunk proof";
+
+    /// The context chunk `chunk` (of `num_chunks`) of report `report_id`
+    /// is proven under, in the task of digest `task_digest`. Every field
+    /// has a fixed length, so distinct inputs give distinct contexts.
+    pub fn proof_context(task_digest: &[u8; 32], report_id: &ReportId, chunk: usize, num_chunks: usize) -> Vec<u8> {
+        let mut c = Vec::with_capacity(Self::PROOF_DOMAIN.len() + 72);
+        c.extend_from_slice(Self::PROOF_DOMAIN);
+        c.extend_from_slice(task_digest);
+        c.extend_from_slice(report_id);
+        c.extend_from_slice(&(chunk as u32).to_le_bytes());
+        c.extend_from_slice(&(num_chunks as u32).to_le_bytes());
+        c
+    }
+}
+
 /// One key party's input share, sealed to its upload key (`shares.rs`):
 /// ephemeral X25519 public key, AES-256-GCM nonce and ciphertext (with tag).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

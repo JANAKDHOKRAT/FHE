@@ -165,24 +165,23 @@ fn enc(ctx: &Context, pk: &PublicKey, reference: &Ciphertext, m: &[u64], u: &[i3
 }
 
 /// Encrypts the raw plaintext polynomial `m` (coefficients in `[0, t)`)
-/// with fresh short randomness and proves it well formed. `reference` is a
-/// fresh encryption (its metadata is the statement's); `context` binds the
-/// proof to its use (task, batch, party, role), so it cannot be replayed
-/// as another party's or another value's.
-pub fn encrypt_proven(
-    ctx: &Context,
-    pk: &PublicKey,
-    reference: &Ciphertext,
-    m: &[u64],
-    context: &[u8],
-    rng: &mut impl rand::RngCore,
-) -> Result<(Ciphertext, Proof)> {
+/// with fresh short randomness (ternary `u`, centered-binomial `e0, e1`)
+/// and returns the ciphertext with its witness, for a caller that proves it
+/// later ([`prove`]) under a context that depends on the ciphertext itself
+/// (a client binds its proofs to the report id, a hash over every chunk).
+/// `reference` is a fresh encryption (its metadata is the statement's).
+pub fn encrypt_with_witness(ctx: &Context, pk: &PublicKey, reference: &Ciphertext, m: &[u64], rng: &mut impl rand::RngCore) -> Result<(Ciphertext, Witness)> {
+    let mut rng = StdRng::from_rng(rng).map_err(|e| Error::Protocol(format!("seeding the encryption sampler: {e}")))?;
+    sample_and_encrypt(ctx, pk, reference, m, &mut rng)
+}
+
+/// Draws the witness from `rng` (in the order `u`, `e0`, `e1`) and encrypts.
+fn sample_and_encrypt(ctx: &Context, pk: &PublicKey, reference: &Ciphertext, m: &[u64], rng: &mut StdRng) -> Result<(Ciphertext, Witness)> {
     let n = ctx.ring_dim() as usize;
     let t = ctx.plain_mod();
     if m.len() != n || m.iter().any(|&x| x >= t) {
         return Err(Error::Protocol("wfe: plaintext must have the ring dimension and coefficients below t".into()));
     }
-    let mut rng = StdRng::from_rng(rng).map_err(|e| Error::Protocol(format!("seeding the proof sampler: {e}")))?;
     let cbd = |rng: &mut StdRng| -> i32 {
         const MASK: u64 = (1 << crate::vdec::ETA) - 1;
         let w: u64 = rng.r#gen();
@@ -191,12 +190,42 @@ pub fn encrypt_proven(
     let w = Witness {
         m: m.to_vec(),
         u: (0..n).map(|_| rng.gen_range(-BETA_U..=BETA_U)).collect(),
-        e0: (0..n).map(|_| cbd(&mut rng)).collect(),
-        e1: (0..n).map(|_| cbd(&mut rng)).collect(),
+        e0: (0..n).map(|_| cbd(rng)).collect(),
+        e1: (0..n).map(|_| cbd(rng)).collect(),
     };
     let c = enc(ctx, pk, reference, &w.m, &w.u, &w.e0, &w.e1)?;
+    Ok((c, w))
+}
+
+/// Encrypts the raw plaintext polynomial `m` (coefficients in `[0, t)`)
+/// with fresh short randomness and proves it well formed. `reference` is a
+/// fresh encryption (its metadata is the statement's); `context` binds the
+/// proof to its use (task, batch, party, role), so it cannot be replayed
+/// as another party's or another value's. For a given `rng` state the
+/// output is the one earlier builds produced (share-upload contributions
+/// are reproduced from a seed after a restart).
+pub fn encrypt_proven(
+    ctx: &Context,
+    pk: &PublicKey,
+    reference: &Ciphertext,
+    m: &[u64],
+    context: &[u8],
+    rng: &mut impl rand::RngCore,
+) -> Result<(Ciphertext, Proof)> {
+    let mut rng = StdRng::from_rng(rng).map_err(|e| Error::Protocol(format!("seeding the proof sampler: {e}")))?;
+    let (c, w) = sample_and_encrypt(ctx, pk, reference, m, &mut rng)?;
     let proof = prove(ctx, pk, reference, &c, &w, context, &mut rng)?;
     Ok((c, proof))
+}
+
+/// An upper bound on the postcard encoding of a [`Proof`] at ring
+/// dimension `n` with plaintext modulus below `2^32`: the 32-byte
+/// commitment hash, a length prefix (at most 5 bytes), and per repetition
+/// four length prefixes (5 bytes each) and `n` coefficients of each of the
+/// four vectors, each a varint of at most 5 bytes (`zm < t < 2^32`; the
+/// others zig-zag encoded, magnitudes below `B_E < 2^30`).
+pub fn proof_size_bound(n: usize) -> usize {
+    32 + 5 + repetitions(n) * (4 * 5 + 4 * 5 * n)
 }
 
 /// Proves `c = Enc(w)`. Exposed for tests (a prover with a malformed

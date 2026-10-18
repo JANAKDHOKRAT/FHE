@@ -20,6 +20,7 @@ use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
 use fhe_prio3::messages::{decode, encode};
+use fhe_prio3::wfe::Proof;
 use fhe_prio3::*;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -57,7 +58,9 @@ struct Inner {
     http: reqwest::Client,
     next_group: AtomicU32,
     groups: u32,
-    max_report_bytes: usize,
+    /// Largest body a client may submit: one report and, in tasks with
+    /// client proofs, its proofs (`Aggregator::max_submission_bytes`).
+    max_submission_bytes: usize,
     max_message_bytes: usize,
     metrics: Arc<NodeMetrics>,
     /// Accumulator generation of the last committed `K_ACC`; `None` until
@@ -92,6 +95,10 @@ fn report_key(id: &fhe_prio3::messages::ReportId) -> String {
 impl AggregatorNode {
     /// Builds the node, restoring persisted state if the database has any.
     pub fn new(cfg: AggregatorNodeConfig) -> anyhow::Result<Self> {
+        // the task file must be the one the key parties attested: a file
+        // edited, or cut to an older encoding without a field (e.g.
+        // `client_proofs`), would otherwise be served with weaker checks
+        attest::check_attested_task(&cfg.task, &cfg.material)?;
         let mut agg = Aggregator::new(cfg.task.clone(), &cfg.material, cfg.index, &cfg.share, cfg.registry.clone())?;
         match (cfg.task.shares_upload(), cfg.upload_key) {
             (true, Some(k)) => agg = agg.with_upload_key(UploadKey::from_secret_bytes(&k))?,
@@ -147,7 +154,7 @@ impl AggregatorNode {
             store.commit_step(&[], &stale, &[], "prune_reports", &stale.len().to_string())?;
         }
         let groups = agg.layout().groups as u32;
-        let max_report_bytes = agg.max_report_bytes();
+        let max_submission_bytes = agg.max_submission_bytes();
         let max_message_bytes = agg.max_message_bytes();
         if cfg.collectors.len() != cfg.task.num_collectors() {
             anyhow::bail!(
@@ -177,7 +184,7 @@ impl AggregatorNode {
                 http,
                 next_group: AtomicU32::new(0),
                 groups,
-                max_report_bytes,
+                max_submission_bytes,
                 max_message_bytes,
                 metrics,
                 persisted_accumulators: Mutex::new(None),
@@ -217,13 +224,14 @@ impl AggregatorNode {
     }
 
     /// Body limits: the public submit endpoint accepts at most one report
-    /// (its exact packed size plus 64 KiB for the envelope and signature);
+    /// (its exact packed size, with its proofs in tasks that require them,
+    /// plus 64 KiB for the envelope and signature);
     /// internal endpoints, reachable only with the token, accept the largest
     /// message another aggregator can legitimately send
     /// (`Aggregator::max_message_bytes`, e.g. the masks of every other
     /// aggregator in one request) plus the same slack.
     pub fn router(&self) -> Router {
-        let public = DefaultBodyLimit::max(self.inner.max_report_bytes + (64 << 10));
+        let public = DefaultBodyLimit::max(self.inner.max_submission_bytes + (64 << 10));
         let internal = DefaultBodyLimit::max(self.inner.max_message_bytes + (64 << 10));
         // verifiable decryption: check ciphertexts of every aggregator (count
         // round) or of every released accumulator group (release)
@@ -368,11 +376,17 @@ impl AggregatorNode {
     // ---- leader orchestration ------------------------------------------
 
     /// Verdict mode: three rounds with every helper; silent mode: forward.
-    async fn drive_report(&self, report: Report) -> std::result::Result<SubmitOutcome, HttpError> {
+    /// `proofs` are the client's proofs of its chunks (tasks with
+    /// `client_proofs`); every helper receives them with the report and
+    /// verifies them itself.
+    async fn drive_report(&self, report: Report, proofs: Option<Vec<Proof>>) -> std::result::Result<SubmitOutcome, HttpError> {
         let id = report.report_id;
         let detail = hex::encode(id);
         if self.inner.task.mode == VerificationMode::Silent {
             // Local admission first: a report we refuse is not forwarded.
+            if proofs.is_some() {
+                return Ok(SubmitOutcome::Rejected(RejectReason::UnexpectedProof.to_string()));
+            }
             let r = report.clone();
             let outcome = self
                 .with_agg(
@@ -398,13 +412,17 @@ impl AggregatorNode {
             return Ok(SubmitOutcome::Accepted);
         }
 
-        // Verdict mode, round 1: everyone commits to its mask.
+        // Verdict mode, round 1: everyone commits to its mask. Helpers get
+        // the body the leader admitted: the report, with its proofs if any.
+        let forwarded = encode_submission(&report, proofs.as_deref())?;
         let r = report.clone();
         let mine = self
-            .with_agg("verdict_init", detail.clone(), vec![], move |agg| match agg.prepare_init(&r) {
-                Ok(m) => Ok((Ok(m), false)),
-                Err(Error::Reject(reason)) => Ok((Err(reason), false)),
-                Err(e) => Err(e),
+            .with_agg("verdict_init", detail.clone(), vec![], move |agg| {
+                match agg.prepare_init_with(&r, proofs.as_deref()) {
+                    Ok(m) => Ok((Ok(m), false)),
+                    Err(Error::Reject(reason)) => Ok((Err(reason), false)),
+                    Err(e) => Err(e),
+                }
             })
             .await?;
         let my_commit = match mine {
@@ -413,7 +431,7 @@ impl AggregatorNode {
         };
         let mut mask_commits = vec![my_commit];
         for (i, url) in self.helpers() {
-            let m: std::result::Result<MaskCommit, String> = self.peer_post(&url, "/v1/report", &report).await?;
+            let m: std::result::Result<MaskCommit, String> = decode(&self.peer_post_raw(&url, "/v1/report", forwarded.clone()).await?)?;
             match m {
                 Ok(m) if m.aggregator == i => mask_commits.push(m),
                 Ok(m) => return Err(HttpError(StatusCode::CONFLICT, format!("helper {i} answered as aggregator {}", m.aggregator))),
@@ -872,8 +890,8 @@ async fn submit(State(node): State<AggregatorNode>, body: Bytes) -> std::result:
         let report: ShareReport = parse_body(&body).inspect_err(|_| m.report("error", "Undecodable"))?;
         node.drive_share_report(report).await
     } else {
-        let report: Report = parse_body(&body).inspect_err(|_| m.report("error", "Undecodable"))?;
-        node.drive_report(report).await
+        let (report, proofs) = parse_submission(&body, node.inner.task.client_proofs).inspect_err(|_| m.report("error", "Undecodable"))?;
+        node.drive_report(report, proofs).await
     };
     match driven {
         Ok(outcome) => {
@@ -901,10 +919,13 @@ async fn close(State(node): State<AggregatorNode>, headers: HeaderMap) -> std::r
 
 async fn internal_report(State(node): State<AggregatorNode>, headers: HeaderMap, body: Bytes) -> std::result::Result<axum::response::Response, HttpError> {
     check_token(&headers, &node.inner.token)?;
-    let report: Report = parse_body(&body)?;
+    let (report, proofs) = parse_submission(&body, node.inner.task.client_proofs)?;
     let detail = hex::encode(report.report_id);
     let bytes = body.to_vec();
     if node.inner.task.mode == VerificationMode::Silent {
+        if proofs.is_some() {
+            return reply(&SubmitOutcome::Rejected(RejectReason::UnexpectedProof.to_string()));
+        }
         let out = node
             .with_agg(
                 "silent_admit",
@@ -920,10 +941,12 @@ async fn internal_report(State(node): State<AggregatorNode>, headers: HeaderMap,
         return reply(&out);
     }
     let out: std::result::Result<MaskCommit, String> = node
-        .with_agg("verdict_init", detail, vec![], move |agg| match agg.prepare_init(&report) {
-            Ok(m) => Ok((Ok(m), false)),
-            Err(Error::Reject(r)) => Ok((Err(r.to_string()), false)),
-            Err(e) => Err(e),
+        .with_agg("verdict_init", detail, vec![], move |agg| {
+            match agg.prepare_init_with(&report, proofs.as_deref()) {
+                Ok(m) => Ok((Ok(m), false)),
+                Err(Error::Reject(r)) => Ok((Err(r.to_string()), false)),
+                Err(e) => Err(e),
+            }
         })
         .await?;
     reply(&out)
@@ -1220,4 +1243,31 @@ async fn internal_gate_finish(State(node): State<AggregatorNode>, headers: Heade
     node.with_agg("gate_finish", String::new(), vec![], move |agg| Ok((agg.gate_finish(&req.reveals)?, true)))
         .await?;
     reply(&())
+}
+
+/// Reads a submitted report: a `ProvenReport` in tasks with client proofs,
+/// a `Report` otherwise. A body of the other kind is read too (both
+/// encodings are canonical and reject trailing bytes, so a body is at most
+/// one of them), so that a report without proofs to a task that requires
+/// them, or with proofs to one that does not, is refused for that reason
+/// by the aggregator instead of as undecodable.
+fn parse_submission(body: &Bytes, proofs_expected: bool) -> std::result::Result<(Report, Option<Vec<Proof>>), HttpError> {
+    let proven = |b: &Bytes| decode::<ProvenReport>(b).map(|p| (p.report, Some(p.proofs)));
+    let plain = |b: &Bytes| decode::<Report>(b).map(|r| (r, None));
+    let first = if proofs_expected { proven(body) } else { plain(body) };
+    first
+        .or_else(|e| if proofs_expected { plain(body) } else { proven(body) }.map_err(|_| e))
+        .map_err(|e| HttpError(StatusCode::BAD_REQUEST, format!("malformed body: {e}")))
+}
+
+/// The body a leader forwards to its helpers: what [`parse_submission`]
+/// reads back.
+fn encode_submission(report: &Report, proofs: Option<&[Proof]>) -> std::result::Result<Vec<u8>, HttpError> {
+    Ok(match proofs {
+        Some(p) => encode(&ProvenReport {
+            report: report.clone(),
+            proofs: p.to_vec(),
+        })?,
+        None => encode(report)?,
+    })
 }

@@ -29,8 +29,20 @@ async fn wait_listening(handle: &ServerHandle) {
         .expect("server did not start listening");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn loadtest_against_a_split_key_deployment() {
+/// A split-key deployment in this process: the collector and the
+/// aggregator over real TLS sockets, each with its metrics listener.
+struct Deployment {
+    dir: tempfile::TempDir,
+    ca_pem: Vec<u8>,
+    material: PublicMaterial,
+    token: String,
+    agg_port: u16,
+    agg_metrics: SocketAddr,
+    col_metrics: SocketAddr,
+    handles: Vec<ServerHandle>,
+}
+
+async fn deploy(task: &TaskConfig, registry: Option<std::sync::Arc<dyn ClientRegistry>>) -> Deployment {
     let dir = tempfile::tempdir().unwrap();
     // TLS: a CA and a localhost leaf
     let mut ca_params = rcgen::CertificateParams::new(vec![]).unwrap();
@@ -47,11 +59,6 @@ async fn loadtest_against_a_split_key_deployment() {
     std::fs::write(&key, leaf_key.serialize_pem()).unwrap();
     let ca_pem = ca.pem().into_bytes();
 
-    let mut task = TaskConfig::new_split_key([0x5a; 32], MeasurementType::Histogram { length: 4 });
-    task.silent_batch_groups = 1;
-    task.repetitions = 4;
-    task.min_batch_size = 2;
-    task.min_cell_count = 2;
     let keys::LocalKeys {
         material,
         aggregator_secrets,
@@ -81,7 +88,7 @@ async fn loadtest_against_a_split_key_deployment() {
         collectors: vec![format!("https://localhost:{col_port}")],
         token: token.clone(),
         db: dir.path().join("aggregator.db"),
-        registry: None,
+        registry,
         ca_pem: ca_pem.clone(),
         upload_key: None,
     })
@@ -101,6 +108,35 @@ async fn loadtest_against_a_split_key_deployment() {
         handles.push(handle);
     }
 
+    Deployment {
+        dir,
+        ca_pem,
+        material,
+        token,
+        agg_port,
+        agg_metrics,
+        col_metrics,
+        handles,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn loadtest_against_a_split_key_deployment() {
+    let mut task = TaskConfig::new_split_key([0x5a; 32], MeasurementType::Histogram { length: 4 });
+    task.silent_batch_groups = 1;
+    task.repetitions = 4;
+    task.min_batch_size = 2;
+    task.min_cell_count = 2;
+    let Deployment {
+        dir,
+        ca_pem,
+        material,
+        token,
+        agg_port,
+        agg_metrics,
+        col_metrics,
+        handles,
+    } = deploy(&task, None).await;
     let reports = 20;
     let state = dir.path().join("client-state");
     let cfg = |reports: u64, close: bool, timeline: &str| LoadConfig {
@@ -111,7 +147,7 @@ async fn loadtest_against_a_split_key_deployment() {
         token: token.clone(),
         reports,
         workers: 2,
-        seed: 3,
+        workload: loadtest::Workload::Seeded(3),
         invalid_every: 5,
         metrics: vec![
             ("aggregator".into(), format!("http://{agg_metrics}")),
@@ -130,7 +166,7 @@ async fn loadtest_against_a_split_key_deployment() {
     // report 19 (invalid: 19 % 5 == 4) built exactly as the tool builds it,
     // committed by the leader, left pending in the client state
     let client = Client::new(task.clone(), &material.context, &material.public_key).unwrap();
-    let r19 = loadtest::make_report(&client, &task, 3, 5, reports - 1, 0).unwrap();
+    let r19 = loadtest::make_report(&client, &task, &loadtest::Workload::Seeded(3), 5, reports - 1, 0).unwrap();
     let bytes = fhe_prio3::messages::encode(&r19).unwrap();
     let http = fhe_prio3_node::wire::https_client(&ca_pem).unwrap();
     let out: fhe_prio3_node::wire::SubmitOutcome = fhe_prio3_node::wire::http_post(&http, &format!("https://localhost:{agg_port}/v1/submit"), None, &r19)
@@ -177,4 +213,105 @@ async fn loadtest_against_a_split_key_deployment() {
     assert_eq!(col[r#"fhe_prio3_batch{field="result_ready"}"#], 1.0);
     let timeline = std::fs::read_to_string(dir.path().join("timeline.jsonl")).unwrap();
     assert!(timeline.lines().count() >= 2, "{timeline}");
+}
+
+/// A measurement file whose reports are attributed to named senders
+/// (hospitals): each sender is enrolled with its own identity, the
+/// aggregator admits only their signed reports and enforces the per-sender
+/// quota, and the released result is the file's histogram with the small
+/// cells suppressed. The file's digest is in the report. (The file here
+/// tests the tool; production runs use `loadtest/run.sh --measurements`.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn loadtest_from_a_measurement_file_with_enrolled_senders() {
+    let mut task = TaskConfig::new_split_key([0x5b; 32], MeasurementType::Histogram { length: 4 });
+    task.silent_batch_groups = 1;
+    task.repetitions = 4;
+    task.min_batch_size = 2;
+    task.min_cell_count = 2;
+    task.auth = AuthPolicy::Required {
+        max_reports_per_client_per_batch: 3,
+    };
+    let senders: Vec<(&str, ClientIdentity)> = ["h-a", "h-b", "h-c"].into_iter().map(|n| (n, ClientIdentity::generate())).collect();
+    let registry: std::sync::Arc<dyn ClientRegistry> = StaticRegistry::new(senders.iter().map(|(_, id)| id.public_key()));
+    let d = deploy(&task, Some(registry)).await;
+    let text = "# sender measurement\n\
+                h-a histogram:0\nh-b histogram:0\nh-c histogram:1\nh-a histogram:0\n\
+                h-b histogram:3\nh-a histogram:1\nh-c histogram:0\n";
+    let listed = loadtest::Listed::parse(text, |name| {
+        senders
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, id)| id.secret_bytes())
+            .ok_or_else(|| anyhow::anyhow!("no identity for {name}"))
+    })
+    .unwrap();
+    let sha = listed.sha256.clone();
+    let workload = loadtest::Workload::Listed(std::sync::Arc::new(listed));
+    let state = d.dir.path().join("client-state");
+    let cfg = |close: bool| LoadConfig {
+        task: task.clone(),
+        material: fhe_prio3_node::router::client_material(&d.material),
+        leader: format!("https://localhost:{}", d.agg_port),
+        ca_pem: d.ca_pem.clone(),
+        token: d.token.clone(),
+        reports: 7,
+        workers: 2,
+        workload: workload.clone(),
+        invalid_every: 0,
+        metrics: vec![
+            ("aggregator".into(), format!("http://{}", d.agg_metrics)),
+            ("collector".into(), format!("http://{}", d.col_metrics)),
+        ],
+        scrape_every: Duration::from_secs(1),
+        timeline: None,
+        close,
+        close_timeout: Duration::from_secs(3600),
+        state_dir: Some(state.clone()),
+    };
+    // every report delivered, signed by its sender
+    let first = loadtest::run(cfg(false)).await.unwrap();
+    assert_eq!((first.outcomes.accepted, first.outcomes.failed), (7, 0), "{:?}", first.outcomes.rejected);
+    assert_eq!(first.measurements_sha256.as_deref(), Some(sha.as_str()));
+    assert_eq!(first.seed, None);
+    let per_sender = first.per_sender.clone().unwrap();
+    assert_eq!(
+        per_sender.into_iter().collect::<Vec<_>>(),
+        vec![("h-a".to_string(), 3), ("h-b".to_string(), 2), ("h-c".to_string(), 2)]
+    );
+
+    // the aggregator holds senders to the registry and the quota
+    let http = fhe_prio3_node::wire::https_client(&d.ca_pem).unwrap();
+    let submit = |client: Client| {
+        let r = client.shard(&Measurement::Histogram(0)).unwrap();
+        let http = http.clone();
+        let url = format!("https://localhost:{}/v1/submit", d.agg_port);
+        async move {
+            fhe_prio3_node::wire::http_post::<_, fhe_prio3_node::wire::SubmitOutcome>(&http, &url, None, &r)
+                .await
+                .unwrap()
+        }
+    };
+    let client = || Client::new(task.clone(), &d.material.context, &d.material.public_key).unwrap();
+    let stranger = submit(client().with_identity(ClientIdentity::generate())).await;
+    assert!(
+        matches!(&stranger, fhe_prio3_node::wire::SubmitOutcome::Rejected(r) if r.contains("UnknownClient")),
+        "{stranger:?}"
+    );
+    let over = submit(client().with_identity(ClientIdentity::from_secret_bytes(&senders[0].1.secret_bytes()))).await;
+    assert!(
+        matches!(&over, fhe_prio3_node::wire::SubmitOutcome::Rejected(r) if r.contains("QuotaExceeded")),
+        "{over:?}"
+    );
+
+    // the close: the file's histogram [4, 2, 0, 1], cells below 2 suppressed
+    let report = loadtest::run(cfg(true)).await.unwrap();
+    for h in d.handles {
+        h.shutdown();
+    }
+    assert_eq!(report.verdict, Ok(()), "{:?}", report.close_error);
+    assert_eq!(report.expected.elements, vec![4, 2, 0, 1]);
+    let r = report.result.as_ref().expect("released result");
+    assert_eq!(r.aggregate, AggregateResult::Histogram(vec![4, 2, 0, 0]));
+    assert_eq!(r.suppressed, vec![2, 3]);
+    assert!(r.counts_withheld);
 }

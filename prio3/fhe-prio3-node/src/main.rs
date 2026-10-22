@@ -15,6 +15,7 @@ use fhe_prio3::*;
 use fhe_prio3_node::aggregator_node::{AggregatorNode, AggregatorNodeConfig};
 use fhe_prio3_node::client::NetworkClient;
 use fhe_prio3_node::collector_node::{CollectorNode, CollectorNodeConfig};
+use fhe_prio3_node::loadtest::parse_measurement;
 use fhe_prio3_node::secret;
 use fhe_prio3_node::wire::ServerHandle;
 use std::path::PathBuf;
@@ -240,10 +241,11 @@ enum Cmd {
         upload_key: Option<PathBuf>,
     },
     /// Load test of a running deployment: `--workers` client threads
-    /// encrypt and submit `--reports` deterministic measurements, the batch
-    /// is closed and the released result compared with the expected one;
-    /// the nodes' metrics are scraped throughout. Writes a JSON report and
-    /// exits non-zero unless the result is exactly the expected one.
+    /// encrypt and submit `--reports` deterministic measurements (or the
+    /// measurements of a file, `--measurements`), the batch is closed and
+    /// the released result compared with the expected one; the nodes'
+    /// metrics are scraped throughout. Writes a JSON report and exits
+    /// non-zero unless the result is exactly the expected one.
     Loadtest {
         #[arg(long)]
         task: PathBuf,
@@ -256,14 +258,26 @@ enum Cmd {
         /// Operator token (for the close).
         #[arg(long)]
         token: String,
+        /// Reports to send (with `--measurements`: the file's count, which
+        /// this must equal if given).
         #[arg(long)]
-        reports: u64,
+        reports: Option<u64>,
         /// Client threads, one OpenFHE context each (set OMP_NUM_THREADS=1
         /// for one core per thread). Default: the available cores.
         #[arg(long)]
         workers: Option<usize>,
-        #[arg(long, default_value_t = 1)]
+        #[arg(long, default_value_t = 1, conflicts_with = "measurements")]
         seed: u64,
+        /// The measurements to send, one per line in the `submit` syntax
+        /// (`histogram:2`), optionally preceded by the sender's name
+        /// (`hospital-a histogram:2`): a real dataset instead of the
+        /// generator.
+        #[arg(long)]
+        measurements: Option<PathBuf>,
+        /// With named senders: the directory of their identity files,
+        /// `<name>.key` as written by `client-identity`.
+        #[arg(long, requires = "measurements")]
+        identities: Option<PathBuf>,
         /// Every n-th report is invalid (a non-bit slot); 0 = none.
         #[arg(long, default_value_t = 0)]
         invalid_every: u64,
@@ -486,18 +500,6 @@ fn parse_policy(spec: &str) -> anyhow::Result<CollectorPolicy> {
         elements,
         moments,
         seal_key: key,
-    })
-}
-
-fn parse_measurement(s: &str) -> anyhow::Result<Measurement> {
-    let (kind, v) = s.split_once(':').ok_or_else(|| anyhow::anyhow!("value must be kind:value"))?;
-    Ok(match kind {
-        "count" => Measurement::Count(v == "1"),
-        "sum" => Measurement::Sum(v.parse()?),
-        "sumvec" => Measurement::SumVec(v.split(',').map(|x| x.parse::<u64>()).collect::<std::result::Result<Vec<u64>, _>>()?),
-        "histogram" => Measurement::Histogram(v.parse()?),
-        "multihot" => Measurement::MultihotCountVec(v.split(',').map(|x| x == "1").collect()),
-        _ => anyhow::bail!("unknown measurement kind {kind}"),
     })
 }
 
@@ -835,6 +837,8 @@ async fn main() -> anyhow::Result<()> {
             reports,
             workers,
             seed,
+            measurements,
+            identities,
             invalid_every,
             metrics,
             scrape_every_secs,
@@ -853,6 +857,31 @@ async fn main() -> anyhow::Result<()> {
                 })
                 .collect::<anyhow::Result<Vec<_>>>()?;
             let workers = workers.unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1));
+            use fhe_prio3_node::loadtest::{Listed, Workload};
+            let (workload, reports) = match measurements {
+                Some(path) => {
+                    let text = std::fs::read_to_string(&path)?;
+                    let listed = Listed::parse(&text, |name| {
+                        let dir = identities
+                            .as_ref()
+                            .ok_or_else(|| anyhow::anyhow!("the measurement file names senders: give --identities DIR"))?;
+                        let p = dir.join(format!("{name}.key"));
+                        let b = hex::decode(std::fs::read_to_string(&p).map_err(|e| anyhow::anyhow!("{}: {e}", p.display()))?.trim())?;
+                        b.as_slice().try_into().map_err(|_| anyhow::anyhow!("{}: an identity is 32 bytes", p.display()))
+                    })?;
+                    let n = listed.measurements.len() as u64;
+                    if let Some(r) = reports
+                        && r != n
+                    {
+                        anyhow::bail!("--reports {r} but {} has {n} measurements", path.display());
+                    }
+                    (Workload::Listed(std::sync::Arc::new(listed)), n)
+                }
+                None => (
+                    Workload::Seeded(seed),
+                    reports.ok_or_else(|| anyhow::anyhow!("give --reports or --measurements"))?,
+                ),
+            };
             let report = fhe_prio3_node::loadtest::run(fhe_prio3_node::loadtest::LoadConfig {
                 task: read_task(&task)?,
                 material: read(&material)?,
@@ -861,7 +890,7 @@ async fn main() -> anyhow::Result<()> {
                 token,
                 reports,
                 workers,
-                seed,
+                workload,
                 invalid_every,
                 metrics,
                 scrape_every: std::time::Duration::from_secs(scrape_every_secs),

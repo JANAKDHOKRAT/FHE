@@ -304,6 +304,12 @@ impl ShareClient {
         self
     }
 
+    /// Replaces the signing identity: one client submitting on behalf of
+    /// several enrolled senders signs each report as its sender.
+    pub fn set_identity(&mut self, identity: crate::auth::ClientIdentity) {
+        self.identity = Some(identity);
+    }
+
     pub fn config(&self) -> &TaskConfig {
         &self.cfg
     }

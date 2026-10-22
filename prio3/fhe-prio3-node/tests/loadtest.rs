@@ -63,7 +63,7 @@ async fn deploy(task: &TaskConfig, registry: Option<std::sync::Arc<dyn ClientReg
         material,
         aggregator_secrets,
         collector_secret,
-    } = keys::run_local_key_ceremony(&task).unwrap();
+    } = keys::run_local_key_ceremony(task).unwrap();
     let (agg_port, col_port) = (free_port(), free_port());
     let token = "loadt0k3n".to_string();
 

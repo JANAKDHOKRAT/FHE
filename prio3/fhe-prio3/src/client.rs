@@ -133,6 +133,12 @@ impl Client {
         self
     }
 
+    /// Replaces the signing identity: one client submitting on behalf of
+    /// several enrolled senders signs each report as its sender.
+    pub fn set_identity(&mut self, identity: ClientIdentity) {
+        self.identity = Some(identity);
+    }
+
     pub fn layout(&self) -> &Layout {
         &self.layout
     }

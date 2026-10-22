@@ -312,6 +312,25 @@ databases (their crash recovery) and the load test from its client state.
 `tests/loadtest.rs` checks the replay path (a report the leader committed
 but whose answer was never journaled is counted once).
 
+**Real data.** `--measurements FILE` (on `loadtest` and on `run.sh`) sends
+the measurements of a file instead of the generator's: one per line in the
+`submit` syntax (`histogram:2`), optionally preceded by the sender's name
+(`hospital-a histogram:2`); blank lines and `#` comments are skipped, and
+every line must name a sender or none may. The file is checked against the
+task before anything is sent (every measurement fits the task's type and
+range), and the expected result is computed from the same file. Named
+senders are enrolled: `run.sh` gives each its own `client-identity`, passes
+their public keys to the aggregator (`--clients`) and sets the task's
+per-sender quota to the largest sender's report count, so each report is
+signed by its sender and admitted only as that sender's. The report records
+the file's SHA-256 and the reports per sender (`measurements_sha256`,
+`per_sender`), and `run.sh` copies the file into its output directory.
+
+```sh
+loadtest/run.sh --out /tmp/cohort --measurements cohort.txt --type histogram:3 \
+    --min-batch 20 --min-cell 11 --keys keygen
+```
+
 `--keys ceremony` runs the distributed ceremony (one process per key
 party); at the production parameters its two processes do not fit on one
 15 GiB machine (AUDIT.md F-25), so single-machine runs use `--keys keygen`

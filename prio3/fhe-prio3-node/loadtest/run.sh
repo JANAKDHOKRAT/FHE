@@ -28,15 +28,24 @@
 # run (DIR/run.env, readable by its owner only: it holds the seal keys and
 # the token of this throwaway deployment).
 #
-# Usage: loadtest/run.sh --out DIR --reports N [--type histogram:16]
-#          [--min-batch K] [--min-cell C] [--workers W] [--invalid-every M]
-#          [--seed S] [--keys ceremony|keygen] [--upload ciphertext|shares]
+# With `--measurements FILE` the reports carry the measurements of a file
+# (a real dataset) instead of the generator's: one per line in the `submit`
+# syntax, optionally preceded by the sender's name. Named senders (hospitals,
+# say) are enrolled: each gets its own client identity, the aggregator
+# admits only their signed reports, and the task's per-sender quota is the
+# largest sender's report count. The file is copied into DIR and its SHA-256
+# recorded, so the report names the exact data it ran on.
+#
+# Usage: loadtest/run.sh --out DIR (--reports N | --measurements FILE)
+#          [--type histogram:16] [--min-batch K] [--min-cell C] [--workers W]
+#          [--invalid-every M] [--seed S] [--keys ceremony|keygen]
+#          [--upload ciphertext|shares]
 #        loadtest/run.sh --resume --out DIR
 # Exit status: that of the load test (0 only when the released result is
 # exactly the expected one).
 set -euo pipefail
 
-OUT="" REPORTS="" TYPE="histogram:16" MIN_BATCH=1 MIN_CELL=0 WORKERS=2 INVALID_EVERY=0 SEED=1 KEYS=ceremony UPLOAD=ciphertext RESUME=0
+OUT="" REPORTS="" TYPE="histogram:16" MIN_BATCH=1 MIN_CELL=0 WORKERS=2 INVALID_EVERY=0 SEED=1 KEYS=ceremony UPLOAD=ciphertext RESUME=0 MEASUREMENTS=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --resume) RESUME=1; shift ;;
@@ -50,6 +59,7 @@ while [[ $# -gt 0 ]]; do
     --seed) SEED="$2"; shift 2 ;;
     --keys) KEYS="$2"; shift 2 ;;
     --upload) UPLOAD="$2"; shift 2 ;;
+    --measurements) MEASUREMENTS="$2"; shift 2 ;;
     *) echo "unknown argument $1" >&2; exit 2 ;;
   esac
 done
@@ -62,7 +72,11 @@ if (( RESUME )); then
   # shellcheck disable=SC1091
   source "$OUT/run.env"
 else
-  [[ -n "$OUT" && -n "$REPORTS" ]] || { echo "usage: $0 --out DIR --reports N [options]" >&2; exit 2; }
+  [[ -n "$OUT" && ( -n "$REPORTS" || -n "$MEASUREMENTS" ) ]] || { echo "usage: $0 --out DIR (--reports N | --measurements FILE) [options]" >&2; exit 2; }
+  if [[ -n "$MEASUREMENTS" ]]; then
+    [[ -f "$MEASUREMENTS" ]] || { echo "no measurement file $MEASUREMENTS" >&2; exit 2; }
+    [[ -z "$REPORTS" ]] || { echo "--reports is the measurement file's count: give one or the other" >&2; exit 2; }
+  fi
   [[ "$KEYS" == ceremony || "$KEYS" == keygen ]] || { echo "--keys is ceremony or keygen" >&2; exit 2; }
   [[ "$UPLOAD" == ciphertext || "$UPLOAD" == shares ]] || { echo "--upload is ciphertext or shares" >&2; exit 2; }
   [[ ! -e "$OUT/run.env" ]] || { echo "$OUT holds a run: continue it with --resume, or use another --out" >&2; exit 2; }
@@ -75,6 +89,7 @@ else
   [[ "$KEYS" == keygen ]] && SEAL1="$SEAL0"
 fi
 UPLOAD="${UPLOAD:-ciphertext}"
+MEASUREMENTS="${MEASUREMENTS:-}"
 
 free_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()'; }
 
@@ -113,8 +128,32 @@ if (( ! RESUME )); then
   grep -m1 'model name' /proc/cpuinfo || true
   grep -E 'MemTotal|MemAvailable' /proc/meminfo
   echo "binary: $BIN"
-  echo "args: reports=$REPORTS type=$TYPE min_batch=$MIN_BATCH min_cell=$MIN_CELL workers=$WORKERS invalid_every=$INVALID_EVERY seed=$SEED keys=$KEYS upload=$UPLOAD"
+  echo "args: reports=$REPORTS type=$TYPE min_batch=$MIN_BATCH min_cell=$MIN_CELL workers=$WORKERS invalid_every=$INVALID_EVERY seed=$SEED keys=$KEYS upload=$UPLOAD measurements=${MEASUREMENTS:-none}"
 } > "$OUT/machine.txt"
+
+# ---- measurements and senders -------------------------------------------------
+AUTH_ARGS=()
+if [[ -n "$MEASUREMENTS" ]]; then
+  cp "$MEASUREMENTS" "$OUT/measurements.txt"
+  MEASUREMENTS="$OUT/measurements.txt"
+  # the lines the load test reads: neither empty nor a comment
+  REPORTS="$(grep -cvE '^[[:space:]]*(#|$)' "$MEASUREMENTS")"
+  echo "measurements: $REPORTS reports, sha256 $(sha256sum "$MEASUREMENTS" | cut -d' ' -f1)" >> "$OUT/machine.txt"
+  # named senders: the first field of two-field lines
+  SENDERS="$(grep -vE '^[[:space:]]*(#|$)' "$MEASUREMENTS" | awk 'NF == 2 { print $1 }' | sort | uniq -c)"
+  if [[ -n "$SENDERS" ]]; then
+    log "enrolling $(echo "$SENDERS" | wc -l) senders"
+    mkdir -p "$OUT/clients"
+    : > "$OUT/clients.txt"
+    QUOTA=0
+    while read -r n name; do
+      "$BIN" client-identity --out "$OUT/clients/$name.key" >> "$OUT/clients.txt"
+      (( n > QUOTA )) && QUOTA=$n
+      echo "sender $name: $n reports" >> "$OUT/machine.txt"
+    done <<< "$SENDERS"
+    AUTH_ARGS=(--auth-quota "$QUOTA")
+  fi
+fi
 
 # ---- TLS ----------------------------------------------------------------------
 log "TLS material"
@@ -138,7 +177,7 @@ if [[ "$UPLOAD" == shares ]]; then
 fi
 log "task"
 "$BIN" task-config --out "$OUT/task.bin" --type "$TYPE" --aggregators 1 --mode silent \
-  --topology split --min-batch "$MIN_BATCH" --min-cell "$MIN_CELL" "${UPLOAD_ARGS[@]}" | tee "$OUT/task.txt"
+  --topology split --min-batch "$MIN_BATCH" --min-cell "$MIN_CELL" "${UPLOAD_ARGS[@]}" "${AUTH_ARGS[@]}" | tee "$OUT/task.txt"
 
 # ---- keys: party 0 = aggregator, party 1 = collector ---------------------
 T0=$(date +%s)
@@ -194,8 +233,8 @@ ls -l "$MATERIAL" >> "$OUT/machine.txt"
 ( umask 077
   {
     printf 'TOKEN=%q\nSEAL0=%q\nSEAL1=%q\nMATERIAL=%q\nKEYS=%q\nUPLOAD=%q\n' "$TOKEN" "$SEAL0" "$SEAL1" "$MATERIAL" "$KEYS" "$UPLOAD"
-    printf 'REPORTS=%q\nTYPE=%q\nMIN_BATCH=%q\nMIN_CELL=%q\nWORKERS=%q\nINVALID_EVERY=%q\nSEED=%q\n' \
-      "$REPORTS" "$TYPE" "$MIN_BATCH" "$MIN_CELL" "$WORKERS" "$INVALID_EVERY" "$SEED"
+    printf 'REPORTS=%q\nTYPE=%q\nMIN_BATCH=%q\nMIN_CELL=%q\nWORKERS=%q\nINVALID_EVERY=%q\nSEED=%q\nMEASUREMENTS=%q\n' \
+      "$REPORTS" "$TYPE" "$MIN_BATCH" "$MIN_CELL" "$WORKERS" "$INVALID_EVERY" "$SEED" "$MEASUREMENTS"
   } > "$OUT/run.env" )
 else
   log "resuming the run in $OUT"
@@ -207,7 +246,9 @@ while [[ -e "$OUT/report-$RUN.json" || -e "$OUT/loadtest-$RUN.log" ]]; do RUN=$(
 
 # ---- nodes ---------------------------------------------------------------------
 AP="$(free_port)"; CP="$(free_port)"; AM="$(free_port)"; CM="$(free_port)"
-AGG_UPLOAD=() COL_UPLOAD=()
+AGG_UPLOAD=() COL_UPLOAD=() AGG_CLIENTS=()
+# enrolled senders: the aggregator admits only their signed reports
+[[ -f "$OUT/clients.txt" ]] && AGG_CLIENTS=(--clients "$OUT/clients.txt")
 if [[ "$UPLOAD" == shares ]]; then
   AGG_UPLOAD=(--upload-key "$OUT/m0/upload.key")
   COL_UPLOAD=(--upload-key "$OUT/m1/upload.key")
@@ -225,7 +266,7 @@ FHE_PRIO3_SEAL_KEY="$SEAL0" "$BIN" aggregator --index 0 --task "$OUT/task.bin" -
   --share "$OUT/m0/share-0.sealed" --db "$OUT/aggregator.db" --listen "127.0.0.1:$AP" \
   --aggregators "https://localhost:$AP" --collectors "https://localhost:$CP" --token "$TOKEN" \
   --tls-cert "$OUT/server.pem" --tls-key "$OUT/server.key" --ca "$OUT/ca.pem" \
-  --metrics-listen "127.0.0.1:$AM" "${AGG_UPLOAD[@]}" >> "$OUT/aggregator.log" 2>&1 &
+  --metrics-listen "127.0.0.1:$AM" "${AGG_UPLOAD[@]}" "${AGG_CLIENTS[@]}" >> "$OUT/aggregator.log" 2>&1 &
 AGG_PID=$!; PIDS+=("$AGG_PID")
 
 wait_ready() {
@@ -244,9 +285,15 @@ log "nodes ready"
 
 # ---- load -------------------------------------------------------------------------
 set +e
+if [[ -n "$MEASUREMENTS" ]]; then
+  WORKLOAD=(--measurements "$MEASUREMENTS")
+  [[ -d "$OUT/clients" ]] && WORKLOAD+=(--identities "$OUT/clients")
+else
+  WORKLOAD=(--reports "$REPORTS" --seed "$SEED")
+fi
 OMP_NUM_THREADS=1 "$BIN" loadtest --task "$OUT/task.bin" --material "$OUT/client-material.bin" \
   --leader "https://localhost:$AP" --ca "$OUT/ca.pem" --token "$TOKEN" \
-  --reports "$REPORTS" --workers "$WORKERS" --seed "$SEED" --invalid-every "$INVALID_EVERY" \
+  "${WORKLOAD[@]}" --workers "$WORKERS" --invalid-every "$INVALID_EVERY" \
   --metrics "aggregator=http://127.0.0.1:$AM" --metrics "collector=http://127.0.0.1:$CM" \
   --state-dir "$OUT/client-state" \
   --timeline "$OUT/timeline-$RUN.jsonl" --out "$OUT/report-$RUN.json" 2>&1 | tee "$OUT/loadtest-$RUN.log"

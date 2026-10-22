@@ -4,7 +4,8 @@
 //! its own client (its own OpenFHE context), takes a group ticket when the
 //! task batches, encrypts a measurement, submits it, and records how long
 //! each step took. The measurements are a deterministic function of a seed,
-//! so the exact aggregate is known in advance; after the batch is closed the
+//! or read from a file (a real dataset, [`Listed`]), so the exact aggregate
+//! is known in advance; after the batch is closed the
 //! released result is compared with it, including the small cells that must
 //! be suppressed and a batch below the minimum that must be refused. While
 //! it runs, the nodes' `/metrics` are scraped into a timeline (resident
@@ -37,7 +38,8 @@ pub struct LoadConfig {
     pub reports: u64,
     /// Encryption threads, one client (and OpenFHE context) each.
     pub workers: usize,
-    pub seed: u64,
+    /// Where the measurements come from.
+    pub workload: Workload,
     /// Every `invalid_every`-th report is invalid (a non-bit slot); 0: none.
     pub invalid_every: u64,
     /// `(name, base URL)` of each node's metrics listener.
@@ -180,11 +182,186 @@ pub fn is_invalid(invalid_every: u64, i: u64) -> bool {
     invalid_every > 0 && i % invalid_every == invalid_every - 1
 }
 
+/// Measurements read from a file, one per report in file order: a real
+/// dataset instead of [`measurement`]'s generator. Each report may be
+/// attributed to a named sender (a hospital, say), enrolled with its own
+/// identity: the report is then signed by that sender, so the aggregator's
+/// authentication and per-sender quota apply to it exactly as to a real
+/// sender's report.
+pub struct Listed {
+    pub measurements: Vec<Measurement>,
+    /// Sender names, by index.
+    pub senders: Vec<String>,
+    /// Per report, the index of its sender in `senders`; empty when the
+    /// reports are not attributed.
+    pub signers: Vec<usize>,
+    /// The senders' identity secrets, by index (as `client-identity`
+    /// writes them).
+    pub identities: Vec<[u8; 32]>,
+    /// SHA-256 of the file, so that the report names the exact data.
+    pub sha256: String,
+}
+
+impl Listed {
+    /// Parses a measurement file. A line is a measurement in the `submit`
+    /// syntax (`histogram:2`), or a sender name and a measurement separated
+    /// by white space; every line has the same form. Empty lines and lines
+    /// starting with `#` are skipped. With senders, `identity_of(name)`
+    /// returns that sender's identity secret.
+    pub fn parse(text: &str, mut identity_of: impl FnMut(&str) -> anyhow::Result<[u8; 32]>) -> anyhow::Result<Self> {
+        use sha2::Digest;
+        let mut measurements = Vec::new();
+        let mut senders: Vec<String> = Vec::new();
+        let mut signers = Vec::new();
+        let mut attributed: Option<bool> = None;
+        for (n, line) in text.lines().enumerate() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            let (sender, value) = match fields.as_slice() {
+                [v] => (None, *v),
+                [s, v] => (Some(*s), *v),
+                _ => anyhow::bail!("line {}: expected `measurement` or `sender measurement`, got {line:?}", n + 1),
+            };
+            match (attributed, sender.is_some()) {
+                (None, a) => attributed = Some(a),
+                (Some(a), b) if a != b => anyhow::bail!("line {}: every line must name its sender, or none may", n + 1),
+                _ => {}
+            }
+            measurements.push(parse_measurement(value).map_err(|e| anyhow::anyhow!("line {}: {e}", n + 1))?);
+            if let Some(name) = sender {
+                if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+                    anyhow::bail!("line {}: a sender name is letters, digits, '-' and '_', got {name:?}", n + 1);
+                }
+                let idx = match senders.iter().position(|s| s == name) {
+                    Some(i) => i,
+                    None => {
+                        senders.push(name.to_string());
+                        senders.len() - 1
+                    }
+                };
+                signers.push(idx);
+            }
+        }
+        if measurements.is_empty() {
+            anyhow::bail!("the measurement file has no measurements");
+        }
+        let identities = senders.iter().map(|s| identity_of(s)).collect::<anyhow::Result<Vec<_>>>()?;
+        Ok(Self {
+            measurements,
+            senders,
+            signers,
+            identities,
+            sha256: hex::encode(sha2::Sha256::digest(text.as_bytes())),
+        })
+    }
+
+    /// Reports per sender, in sender order.
+    pub fn per_sender(&self) -> Vec<u64> {
+        let mut c = vec![0u64; self.senders.len()];
+        for &s in &self.signers {
+            c[s] += 1;
+        }
+        c
+    }
+
+    /// Checks the file against the task before anything is sent: every
+    /// measurement is one the task encodes (its type and range), the
+    /// reports are attributed exactly when the task authenticates senders,
+    /// and no sender has more reports than its quota.
+    pub fn check(&self, task: &TaskConfig) -> anyhow::Result<()> {
+        for (i, m) in self.measurements.iter().enumerate() {
+            task.measurement_type
+                .encode(m)
+                .map_err(|e| anyhow::anyhow!("measurement {} ({m:?}) does not fit the task: {e}", i + 1))?;
+        }
+        match (&task.auth, self.signers.is_empty()) {
+            (AuthPolicy::Open, false) => {
+                anyhow::bail!("the file names senders but the task does not authenticate them (task-config --auth-quota)")
+            }
+            (AuthPolicy::Required { .. }, true) => anyhow::bail!("the task authenticates senders: every line must name one"),
+            (
+                AuthPolicy::Required {
+                    max_reports_per_client_per_batch,
+                },
+                false,
+            ) => {
+                for (s, n) in self.senders.iter().zip(self.per_sender()) {
+                    if n > *max_reports_per_client_per_batch as u64 {
+                        anyhow::bail!("sender {s} has {n} reports, above the task's quota of {max_reports_per_client_per_batch}");
+                    }
+                }
+            }
+            (AuthPolicy::Open, true) => {}
+        }
+        Ok(())
+    }
+}
+
+/// Where a run's measurements come from.
+#[derive(Clone)]
+pub enum Workload {
+    /// [`measurement`] of this seed.
+    Seeded(u64),
+    /// A measurement file ([`Listed`]).
+    Listed(Arc<Listed>),
+}
+
+impl Workload {
+    /// The measurement of report `i`.
+    pub fn measurement(&self, ty: &MeasurementType, i: u64) -> anyhow::Result<Measurement> {
+        match self {
+            Workload::Seeded(seed) => measurement(ty, *seed, i),
+            Workload::Listed(l) => l
+                .measurements
+                .get(i as usize)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("report {i}: the measurement file has {} measurements", l.measurements.len())),
+        }
+    }
+
+    /// The identity that signs report `i`, when the reports are attributed.
+    pub fn signer(&self, i: u64) -> Option<ClientIdentity> {
+        match self {
+            Workload::Listed(l) => l.signers.get(i as usize).map(|&s| ClientIdentity::from_secret_bytes(&l.identities[s])),
+            Workload::Seeded(_) => None,
+        }
+    }
+}
+
+/// A measurement in the `submit` syntax: `count:1`, `sum:7`,
+/// `sumvec:1,2,3`, `histogram:4`, `multihot:1,0,1`.
+pub fn parse_measurement(s: &str) -> anyhow::Result<Measurement> {
+    let (kind, v) = s.split_once(':').ok_or_else(|| anyhow::anyhow!("value must be kind:value"))?;
+    Ok(match kind {
+        "count" => match v {
+            "0" => Measurement::Count(false),
+            "1" => Measurement::Count(true),
+            _ => anyhow::bail!("a count is 0 or 1, got {v:?}"),
+        },
+        "sum" => Measurement::Sum(v.parse()?),
+        "sumvec" => Measurement::SumVec(v.split(',').map(|x| x.parse::<u64>()).collect::<std::result::Result<Vec<u64>, _>>()?),
+        "histogram" => Measurement::Histogram(v.parse()?),
+        "multihot" => Measurement::MultihotCountVec(
+            v.split(',')
+                .map(|x| match x {
+                    "0" => Ok(false),
+                    "1" => Ok(true),
+                    _ => Err(anyhow::anyhow!("a multihot entry is 0 or 1, got {x:?}")),
+                })
+                .collect::<anyhow::Result<Vec<bool>>>()?,
+        ),
+        _ => anyhow::bail!("unknown measurement kind {kind}"),
+    })
+}
+
 /// Report `i` of a run, in `group`: the encrypted measurement, or for an
 /// invalid one a valid encoding with its first element set to 2 (not a bit,
 /// so the validity check zeroes or rejects it).
-pub fn make_report(client: &Client, task: &TaskConfig, seed: u64, invalid_every: u64, i: u64, group: u32) -> anyhow::Result<Report> {
-    let m = measurement(&task.measurement_type, seed, i)?;
+pub fn make_report(client: &Client, task: &TaskConfig, workload: &Workload, invalid_every: u64, i: u64, group: u32) -> anyhow::Result<Report> {
+    let m = workload.measurement(&task.measurement_type, i)?;
     Ok(if is_invalid(invalid_every, i) {
         let mut enc = task.measurement_type.encode(&m)?;
         enc[0] = 2;
@@ -200,8 +377,8 @@ pub fn make_report(client: &Client, task: &TaskConfig, seed: u64, invalid_every:
 /// [`make_report`] builds it, with every chunk proven (an invalid report's
 /// proofs are valid: they prove the encryption well formed, not the
 /// measurement valid).
-pub fn make_proven_report(client: &Client, task: &TaskConfig, seed: u64, invalid_every: u64, i: u64) -> anyhow::Result<ProvenReport> {
-    let m = measurement(&task.measurement_type, seed, i)?;
+pub fn make_proven_report(client: &Client, task: &TaskConfig, workload: &Workload, invalid_every: u64, i: u64) -> anyhow::Result<ProvenReport> {
+    let m = workload.measurement(&task.measurement_type, i)?;
     Ok(if is_invalid(invalid_every, i) {
         let mut enc = task.measurement_type.encode(&m)?;
         enc[0] = 2;
@@ -215,8 +392,8 @@ pub fn make_proven_report(client: &Client, task: &TaskConfig, seed: u64, invalid
 
 /// Report `i` of a run for a task whose clients upload shares (invalid
 /// reports as in [`make_report`]: a valid encoding with its first element 2).
-pub fn make_share_report(client: &ShareClient, task: &TaskConfig, seed: u64, invalid_every: u64, i: u64) -> anyhow::Result<ShareReport> {
-    let m = measurement(&task.measurement_type, seed, i)?;
+pub fn make_share_report(client: &ShareClient, task: &TaskConfig, workload: &Workload, invalid_every: u64, i: u64) -> anyhow::Result<ShareReport> {
+    let m = workload.measurement(&task.measurement_type, i)?;
     Ok(if is_invalid(invalid_every, i) {
         let mut enc = task.measurement_type.encode(&m)?;
         enc[0] = 2;
@@ -235,7 +412,7 @@ pub struct Expected {
 }
 
 impl Expected {
-    pub fn of(ty: &MeasurementType, seed: u64, reports: u64, invalid_every: u64) -> anyhow::Result<Self> {
+    pub fn of(ty: &MeasurementType, workload: &Workload, reports: u64, invalid_every: u64) -> anyhow::Result<Self> {
         let mut e = Expected {
             elements: vec![0; ty.num_elements()],
             valid: 0,
@@ -247,11 +424,11 @@ impl Expected {
                 continue;
             }
             e.valid += 1;
-            match measurement(ty, seed, i)? {
+            match workload.measurement(ty, i)? {
                 Measurement::Count(b) => e.elements[0] += b as u128,
                 Measurement::Sum(v) => e.elements[0] += v as u128,
-                Measurement::Histogram(b) => e.elements[b] += 1,
-                _ => unreachable!("measurement() makes only these"),
+                Measurement::Histogram(b) if b < e.elements.len() => e.elements[b] += 1,
+                other => anyhow::bail!("report {i}: the load test checks count, sum and histogram results of the task's type, not {other:?}"),
             }
         }
         Ok(e)
@@ -388,7 +565,12 @@ pub struct LoadReport {
     pub min_cell_count: u64,
     pub reports: u64,
     pub workers: usize,
-    pub seed: u64,
+    /// The generator's seed, or `None` for a measurement file.
+    pub seed: Option<u64>,
+    /// SHA-256 of the measurement file, when the run used one.
+    pub measurements_sha256: Option<String>,
+    /// Reports per enrolled sender, when the file names senders.
+    pub per_sender: Option<BTreeMap<String, u64>>,
     pub invalid_every: u64,
     pub report_bytes: usize,
     /// Totals over every run of this client state.
@@ -490,7 +672,13 @@ impl Scraper {
 
 /// Runs the load test; the report says whether it passed.
 pub async fn run(cfg: LoadConfig) -> anyhow::Result<LoadReport> {
-    let expected = Expected::of(&cfg.task.measurement_type, cfg.seed, cfg.reports, cfg.invalid_every)?;
+    if let Workload::Listed(l) = &cfg.workload {
+        if l.measurements.len() as u64 != cfg.reports {
+            anyhow::bail!("--reports {} but the measurement file has {}", cfg.reports, l.measurements.len());
+        }
+        l.check(&cfg.task)?;
+    }
+    let expected = Expected::of(&cfg.task.measurement_type, &cfg.workload, cfg.reports, cfg.invalid_every)?;
     let batched = cfg.task.mode == VerificationMode::Silent && cfg.task.silent_batch_groups > 1 && !cfg.task.shares_upload();
     let http = https_client(&cfg.ca_pem)?;
     let plain = reqwest::Client::builder().timeout(Duration::from_secs(30)).build()?;
@@ -572,7 +760,7 @@ pub async fn run(cfg: LoadConfig) -> anyhow::Result<LoadReport> {
     let mut threads = Vec::new();
     for w in 0..cfg.workers {
         // share upload: no homomorphic material, no group tickets
-        let (client, share_client) = if cfg.task.shares_upload() {
+        let (mut client, mut share_client) = if cfg.task.shares_upload() {
             (None, Some(ShareClient::new(cfg.task.clone())?))
         } else {
             (Some(Client::new(cfg.task.clone(), &cfg.material.context, &cfg.material.public_key)?), None)
@@ -586,7 +774,14 @@ pub async fn run(cfg: LoadConfig) -> anyhow::Result<LoadReport> {
             progress.clone(),
             state.clone(),
         );
-        let (http, leader, task, n, seed, invalid_every) = (http.clone(), cfg.leader.clone(), cfg.task.clone(), cfg.reports, cfg.seed, cfg.invalid_every);
+        let (http, leader, task, n, workload, invalid_every) = (
+            http.clone(),
+            cfg.leader.clone(),
+            cfg.task.clone(),
+            cfg.reports,
+            cfg.workload.clone(),
+            cfg.invalid_every,
+        );
         threads.push(std::thread::Builder::new().name(format!("loadtest-{w}")).spawn(move || -> anyhow::Result<()> {
             loop {
                 let Some(work) = queue.lock().expect("queue").pop_front() else {
@@ -608,10 +803,18 @@ pub async fn run(cfg: LoadConfig) -> anyhow::Result<LoadReport> {
                         };
                         s.group = t.elapsed().as_secs_f64();
                         let t = Instant::now();
+                        // an attributed report is signed by its sender
+                        if let Some(id) = workload.signer(i) {
+                            match (client.as_mut(), share_client.as_mut()) {
+                                (Some(c), _) => c.set_identity(id),
+                                (None, Some(sc)) => sc.set_identity(id),
+                                (None, None) => {}
+                            }
+                        }
                         let body = match (&client, &share_client) {
-                            (Some(c), _) if task.client_proofs => fhe_prio3::messages::encode(&make_proven_report(c, &task, seed, invalid_every, i)?)?,
-                            (Some(c), _) => fhe_prio3::messages::encode(&make_report(c, &task, seed, invalid_every, i, group)?)?,
-                            (None, Some(sc)) => fhe_prio3::messages::encode(&make_share_report(sc, &task, seed, invalid_every, i)?)?,
+                            (Some(c), _) if task.client_proofs => fhe_prio3::messages::encode(&make_proven_report(c, &task, &workload, invalid_every, i)?)?,
+                            (Some(c), _) => fhe_prio3::messages::encode(&make_report(c, &task, &workload, invalid_every, i, group)?)?,
+                            (None, Some(sc)) => fhe_prio3::messages::encode(&make_share_report(sc, &task, &workload, invalid_every, i)?)?,
                             (None, None) => anyhow::bail!("no client for this task's upload"),
                         };
                         s.encrypt = t.elapsed().as_secs_f64();
@@ -756,7 +959,18 @@ pub async fn run(cfg: LoadConfig) -> anyhow::Result<LoadReport> {
         min_cell_count: cfg.task.min_cell_count,
         reports: cfg.reports,
         workers: cfg.workers,
-        seed: cfg.seed,
+        seed: match &cfg.workload {
+            Workload::Seeded(seed) => Some(*seed),
+            Workload::Listed(_) => None,
+        },
+        measurements_sha256: match &cfg.workload {
+            Workload::Listed(l) => Some(l.sha256.clone()),
+            Workload::Seeded(_) => None,
+        },
+        per_sender: match &cfg.workload {
+            Workload::Listed(l) if !l.senders.is_empty() => Some(l.senders.iter().cloned().zip(l.per_sender()).collect()),
+            _ => None,
+        },
         invalid_every: cfg.invalid_every,
         report_bytes: report_bytes.load(Ordering::Relaxed) as usize,
         submit_wall_seconds: submit_wall,
@@ -795,8 +1009,8 @@ mod tests {
     #[test]
     fn measurements_are_reproducible_and_skewed() {
         let ty = MeasurementType::Histogram { length: 16 };
-        let e = Expected::of(&ty, 7, 65536, 0).unwrap();
-        assert_eq!(e, Expected::of(&ty, 7, 65536, 0).unwrap());
+        let e = Expected::of(&ty, &Workload::Seeded(7), 65536, 0).unwrap();
+        assert_eq!(e, Expected::of(&ty, &Workload::Seeded(7), 65536, 0).unwrap());
         assert_eq!(e.elements.iter().sum::<u128>(), 65536);
         // about half in bucket 0, a quarter in bucket 1, ...: large cells and
         // cells of a handful of reports in one run
@@ -809,7 +1023,7 @@ mod tests {
                 _ => unreachable!(),
             }
         }
-        let with_invalid = Expected::of(&ty, 7, 100, 10).unwrap();
+        let with_invalid = Expected::of(&ty, &Workload::Seeded(7), 100, 10).unwrap();
         assert_eq!((with_invalid.valid, with_invalid.invalid), (90, 10));
     }
 
@@ -859,6 +1073,90 @@ mod tests {
             Ok(())
         );
         assert!(e.check(&t, 18, &Err("collector: batch below minimum size".into())).is_err());
+    }
+
+    /// A measurement file: parsing, attribution to senders, the checks
+    /// against the task, and the expected result it implies.
+    #[test]
+    fn measurement_files_parse_check_and_give_the_expected_result() {
+        let ids: std::collections::HashMap<&str, [u8; 32]> = [("h1", [1u8; 32]), ("h2", [2u8; 32])].into();
+        let lookup = |n: &str| ids.get(n).copied().ok_or_else(|| anyhow::anyhow!("no identity for {n}"));
+        let text = "# hospital measurement\nh1 histogram:0\n\nh2 histogram:2\nh1 histogram:0\nh2 histogram:0\n";
+        let l = Listed::parse(text, lookup).unwrap();
+        assert_eq!(
+            l.measurements,
+            vec![
+                Measurement::Histogram(0),
+                Measurement::Histogram(2),
+                Measurement::Histogram(0),
+                Measurement::Histogram(0)
+            ]
+        );
+        assert_eq!(
+            (l.senders.clone(), l.signers.clone(), l.per_sender()),
+            (vec!["h1".to_string(), "h2".to_string()], vec![0, 1, 0, 1], vec![2, 2])
+        );
+        assert_eq!(l.identities, vec![[1u8; 32], [2u8; 32]]);
+        assert_eq!(l.sha256.len(), 64);
+        let w = Workload::Listed(Arc::new(l));
+        assert_eq!(w.signer(1).unwrap().public_key(), ClientIdentity::from_secret_bytes(&[2u8; 32]).public_key());
+        assert!(w.measurement(&MeasurementType::Histogram { length: 3 }, 4).is_err());
+
+        // expected result, and the suppression it implies at k = 3
+        let ty = MeasurementType::Histogram { length: 3 };
+        let e = Expected::of(&ty, &w, 4, 0).unwrap();
+        assert_eq!((e.elements.clone(), e.valid, e.invalid), (vec![3, 0, 1], 4, 0));
+        let mut t = TaskConfig::new_split_key([1; 32], ty.clone());
+        t.min_cell_count = 3;
+        t.min_batch_size = 2;
+        assert_eq!(e.check(&t, 4, &Ok(result(vec![3, 0, 0], vec![1, 2], true, 0, 0))), Ok(()));
+        assert!(e.check(&t, 4, &Ok(result(vec![3, 0, 1], vec![1], true, 0, 0))).is_err());
+
+        // checks against the task
+        let Workload::Listed(l) = &w else { unreachable!() };
+        assert!(l.check(&t).is_err()); // senders named, task does not authenticate
+        t.auth = AuthPolicy::Required {
+            max_reports_per_client_per_batch: 2,
+        };
+        l.check(&t).unwrap();
+        t.auth = AuthPolicy::Required {
+            max_reports_per_client_per_batch: 1,
+        };
+        assert!(l.check(&t).unwrap_err().to_string().contains("above the task's quota"));
+        t.auth = AuthPolicy::Required {
+            max_reports_per_client_per_batch: 2,
+        };
+        let narrow = TaskConfig {
+            measurement_type: MeasurementType::Histogram { length: 2 },
+            ..t.clone()
+        };
+        assert!(l.check(&narrow).unwrap_err().to_string().contains("does not fit the task"));
+        let plain = Listed::parse("histogram:1\nhistogram:1\n", lookup).unwrap();
+        assert!(plain.signers.is_empty());
+        assert!(plain.check(&t).is_err()); // task authenticates, lines name no sender
+        t.auth = AuthPolicy::Open;
+        plain.check(&t).unwrap();
+
+        // malformed files
+        for bad in [
+            "",
+            "# only a comment\n",
+            "h1 histogram:0\nhistogram:1\n",
+            "h1 h2 histogram:0\n",
+            "bad/name histogram:0\n",
+            "histogram:x\n",
+            "count:2\n",
+            "nokind\n",
+            "h9 histogram:0\n",
+        ] {
+            assert!(Listed::parse(bad, lookup).is_err(), "{bad:?}");
+        }
+        // identical text, identical digest; any change, another
+        assert_eq!(Listed::parse(text, lookup).unwrap().sha256, Listed::parse(text, lookup).unwrap().sha256);
+        assert_ne!(
+            Listed::parse(text, lookup).unwrap().sha256,
+            Listed::parse(&text.replace("histogram:2", "histogram:1"), lookup).unwrap().sha256
+        );
     }
 
     /// Every crash window of the client state: a report journaled but not

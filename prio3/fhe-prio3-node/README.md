@@ -331,6 +331,16 @@ loadtest/run.sh --out /tmp/cohort --measurements cohort.txt --type histogram:3 \
     --min-batch 20 --min-cell 11 --keys keygen
 ```
 
+`loadtest/ms_cohort.py ZIP OUTDIR` makes such files from a real clinical
+dataset: the 60 multiple-sclerosis patients of Muslim et al. (Data in Brief
+42, 2022; Mendeley Data doi:10.17632/8bctsm8jz7.1, CC BY 4.0). It checks
+the zip against its published SHA-256, reads each patient's EDSS from the
+patient table with the standard library, refuses any value that is not a
+multiple of 0.5 in [0, 10], and writes two files, three severity classes
+(`edss3`: normal <= 2.0, mild 2.5-4.0, severe > 4.0) and one bin per half
+point (`edss21`), with the patients split across hospitals in contiguous ID
+blocks, plus the plaintext counts each run must reproduce.
+
 `--keys ceremony` runs the distributed ceremony (one process per key
 party); at the production parameters its two processes do not fit on one
 15 GiB machine (AUDIT.md F-25), so single-machine runs use `--keys keygen`

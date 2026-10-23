@@ -341,6 +341,15 @@ multiple of 0.5 in [0, 10], and writes two files, three severity classes
 point (`edss21`), with the patients split across hospitals in contiguous ID
 blocks, plus the plaintext counts each run must reproduce.
 
+The two real-data runs above used the files `ms_cohort.py` wrote from the
+published zip (SHA-256 `c90f0f47…d31a7b3`); their measurement files have
+SHA-256 `e1b0bf41…aa55f25` (edss3) and `b385de48…dcab5c6` (edss21). The
+dataset records EDSS 0.5 for four patients, which is not a step of Kurtzke's
+scale; it is kept as recorded. With the aggregator and the collector on one
+machine, the gated close needs about 14 GB between them: the edss21 close
+crossed this container's cap once (the edss3 close stayed under it, its
+peaks being sampled every 5 s); a deployment runs them on separate machines.
+
 `--keys ceremony` runs the distributed ceremony (one process per key
 party); at the production parameters its two processes do not fit on one
 15 GiB machine (AUDIT.md F-25), so single-machine runs use `--keys keygen`
@@ -357,6 +366,8 @@ parameters (ring 65536, depth 28, 64 groups, 7 repetitions; reports of
 | 128 reports, 12 invalid, `min_batch 3`, `min_cell 3`, 2 workers | exact; cells below 3 suppressed and listed, counts withheld | 121.9 s, 1.05 reports/s; encryption mean 0.58 s; submit p50 0.63 s, p99 21.1 s | 225.8 s (gate 131.7 s, release 69.1 s) | aggregator 9.20 GiB resident, 2.2 GiB database; collector 4.25 GiB, 1.3 GiB |
 | 160 reports, 16 invalid, `min_batch 3`, `min_cell 3`, 3 workers, every process killed with SIGKILL after 121 answers and resumed | exact; the aggregator restored 121 admitted reports (57 of them in the open verification ciphertext, rebuilt from the stored reports), the one report in flight was sent again and counted once | first run until the kill, then 42.3 s for the remaining 39 | 173.4 s | aggregator 9.32 GiB, 2.2 GiB; collector 4.35 GiB, 1.3 GiB |
 | 1024 reports, 512 invalid, `min_batch 1000`, `min_cell 100`, 2 workers | refused by the encrypted gate (512 valid < 1000, with 1024 admitted) | 911.6 s, 1.12 reports/s | 1158.2 s (gate 1060 s, of which the gates' products 957 s) | aggregator 9.15 GiB, 2.2 GiB; collector 4.40 GiB, 1.3 GiB |
+| **Real data**, 60 MS patients (Muslim et al. 2022), `histogram:3` (EDSS normal <= 2.0, mild 2.5-4.0, severe > 4.0), 4 hospitals of 15 patients enrolled as senders, `min_batch 30`, `min_cell 11`, 2 workers | exact: normal 33, mild 21 released; severe (6) suppressed and listed; counts withheld; 60/60 accepted, each signed by its hospital | 35.1 s, 1.71 reports/s; encryption mean 0.47 s; submit p50 0.50 s, p99 1.25 s | 276.4 s | aggregator 9.63 GiB, 2.3 GiB; collector 4.37 GiB, 1.5 GiB |
+| **Real data**, same patients, `histogram:21` (one bin per half point of EDSS), same hospitals, `min_batch 30`, `min_cell 11`, 2 workers | first close: the aggregator was killed by the 14.3 GB memory cap of this container (aggregator 10.64 GB, collector 3.49 GB resident at the kill, kernel's figures); resumed (`run.sh --resume`): the restarted aggregator ran the close from its database, nothing resent, exact: EDSS 1.0 (13) released, the other 20 bins (5, 4, 7, 4, 2, 8, 4, 7, 1, 3, 2 and zeros) suppressed and listed, counts withheld | 35.2 s, 1.70 reports/s; encryption mean 0.51 s; submit p50 0.49 s, p99 1.09 s | 240.2 s (resumed close) | aggregator 9.58 GiB, 2.4 GiB; collector 3.38 GiB, 1.1 GiB (resumed run) |
 | **65,536 reports**, 65 invalid, `min_batch 1000`, `min_cell 100`, 3 workers (build `0372835`, before F-26) | **exact**: 65,471 valid; cells 0 to 8 (32,618 down to 131) exact, cells 9 to 15 (70, 30, 17, 4, 6, 1, 1) suppressed and listed, counts withheld. Interrupted twice and resumed: the machine restarted after 12,543 answers (the aggregator restored them all; the 3 reports in flight were sent again, each counted once); the kernel killed the aggregator in the release, after the gate had finished (aggregator up to 10.05 GiB, collector 4.64 GiB and the client threads on one 15 GiB machine), and the restarted close continued from the persisted gate outputs | the last 52,993 reports in 34,537 s, 1.53 reports/s; encryption mean 0.38 s (p99 0.52 s); submit p50 0.65 s, p99 19.5 s | gate 985 s (the gates' products 882 s); after the restart, the close completed in 165 s | aggregator 10.05 GiB, database 2.35 GiB; collector 4.64 GiB, 1.35 GiB |
 | 4096 reports, **`--upload shares`**, 64 invalid, `min_batch 1000`, `min_cell 100`, 2 workers (build `cf6fe89`) | **exact**: 4032 valid; cells 0 to 4 (2018, 1017, 487, 254, 133) exact, cells 5 to 15 suppressed and listed, counts withheld | 1434.1 s, 2.86 reports/s; reports of 300 bytes, sharding and sealing mean 0.18 ms; submit p50 1.3 ms, p99 22.7 s | 884.5 s (the aggregator's gate finish 725 s) | aggregator 9.51 GiB, 2.13 GiB; collector 3.99 GiB, 1.29 GiB |
 

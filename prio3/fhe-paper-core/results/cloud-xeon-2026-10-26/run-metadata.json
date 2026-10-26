@@ -1,0 +1,16 @@
+{
+  "started_utc": "2026-10-26T14:11:26.518174+00:00",
+  "binary_sha256": "939b11715f5f2c9376ea263918f9408ff2b495afa30e6fef0ef80cc6a026b824",
+  "base_commit": "3565c98429276392c008fc1fe326b7247c65fcf3",
+  "validation": "randomised",
+  "lengths": [
+    10,
+    25,
+    50,
+    100
+  ],
+  "reports": 4,
+  "batches": 6,
+  "seed": 1,
+  "finished_utc": "2026-10-26T14:44:47.658671+00:00"
+}

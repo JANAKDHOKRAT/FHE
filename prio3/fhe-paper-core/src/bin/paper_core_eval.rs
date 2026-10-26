@@ -21,7 +21,7 @@ use std::time::Instant;
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 struct Args {
-    what: String,
+    check: SilentCheck,
     ty: MeasurementType,
     ty_str: String,
     reports: usize,
@@ -56,12 +56,17 @@ fn parse_type(s: &str) -> MeasurementType {
 
 fn parse() -> Args {
     let argv: Vec<String> = std::env::args().skip(1).collect();
-    let what = argv.first().cloned().unwrap_or_else(|| usage());
-    if !matches!(what.as_str(), "exact" | "randomised") {
-        usage();
-    }
+    parse_args(&argv)
+}
+
+fn parse_args(argv: &[String]) -> Args {
+    let check = match argv.first().map(String::as_str) {
+        Some("exact") => SilentCheck::Exact,
+        Some("randomised") => SilentCheck::Randomised,
+        _ => usage(),
+    };
     let mut a = Args {
-        what,
+        check,
         ty: MeasurementType::Count,
         ty_str: String::new(),
         reports: 100,
@@ -301,12 +306,7 @@ impl Out {
 }
 
 fn run(a: &Args, o: &mut Out) -> Result<()> {
-    let check = if a.what == "core-exact" {
-        SilentCheck::Exact
-    } else {
-        SilentCheck::Randomised
-    };
-    let mut task = PaperTask::new([0xC0u8; 32], a.ty.clone(), check)?;
+    let mut task = PaperTask::new([0xC0u8; 32], a.ty.clone(), a.check)?;
     if a.groups > 0 {
         task = task.with_groups(a.groups)?;
     }
@@ -337,8 +337,11 @@ fn run(a: &Args, o: &mut Out) -> Result<()> {
     let groups = task.groups();
     let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(a.seed);
     let (mut c_t, mut admit_t, mut flush_t, mut finish_t, mut dec_t) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let mut evaluator_t = Vec::new();
     let (mut aggregate_bytes, mut report_bytes) = (0usize, 0usize);
+    let mut serialized_report_bytes = 0usize;
     for b in 0..a.batches {
+        let mut evaluator_ms = 0.0;
         let mut ev = PaperEvaluator::new(task.clone(), &em)?;
         let ms_: Vec<Measurement> = (0..a.reports).map(|_| random_measurement(&a.ty, &mut rng)).collect();
         let want = plain_sums(&a.ty, &ms_);
@@ -347,11 +350,14 @@ fn run(a: &Args, o: &mut Out) -> Result<()> {
             let r = client.report(meas, (i % groups) as u32)?;
             c_t.push(ms(t));
             report_bytes = r.chunks[0].len();
-            let r: Report = messages::decode(&messages::encode(&r)?)?;
+            let encoded = messages::encode(&r)?;
+            serialized_report_bytes = encoded.len();
+            let r: Report = messages::decode(&encoded)?;
             let before = ev.pending();
             let t = Instant::now();
             ev.admit(&r)?;
             let dt = ms(t);
+            evaluator_ms += dt;
             if ev.pending() <= before {
                 // this report completed or reopened a verification
                 // ciphertext: the call ran the circuit
@@ -363,11 +369,16 @@ fn run(a: &Args, o: &mut Out) -> Result<()> {
         if ev.pending() > 0 {
             let t = Instant::now();
             ev.flush()?;
-            flush_t.push(ms(t));
+            let dt = ms(t);
+            evaluator_ms += dt;
+            flush_t.push(dt);
         }
         let t = Instant::now();
         let agg = ev.finish()?;
-        finish_t.push(ms(t));
+        let dt = ms(t);
+        evaluator_ms += dt;
+        finish_t.push(dt);
+        evaluator_t.push(evaluator_ms);
         aggregate_bytes = agg.output.len();
         let agg: PaperAggregate = messages::decode(&messages::encode(&agg)?)?;
         let t = Instant::now();
@@ -377,9 +388,23 @@ fn run(a: &Args, o: &mut Out) -> Result<()> {
         if res.aggregate != expect || res.reports != a.reports as u64 {
             return Err(format!("batch {b}: decrypted {:?}, expected {expect:?}", res.aggregate).into());
         }
+        eprintln!(
+            "batch {}/{} verified: evaluator {:.3} ms over {} reports",
+            b + 1,
+            a.batches,
+            evaluator_ms,
+            a.reports
+        );
     }
     o.kv("report_bytes", report_bytes);
+    o.kv("serialized_report_bytes", serialized_report_bytes);
     o.kv("aggregate_bytes", aggregate_bytes);
+    o.kv("evaluator_total_per_batch_ms", format!("{evaluator_t:?}"));
+    o.raw(stat_json(
+        "evaluator_total_per_report",
+        evaluator_t.iter().map(|t| t / a.reports as f64).collect(),
+    ));
+    o.raw(stat_json("evaluator_total_per_batch", evaluator_t));
     o.raw(stat_json("client_encrypt_per_report", c_t));
     o.raw(stat_json("evaluator_admit_per_report", admit_t));
     o.raw(stat_json("validity_circuit_per_verification_ciphertext", flush_t));
@@ -391,7 +416,13 @@ fn run(a: &Args, o: &mut Out) -> Result<()> {
 fn main() {
     let a = parse();
     let mut o = Out { fields: Vec::new() };
-    o.s("check", &a.what);
+    o.s(
+        "check",
+        match a.check {
+            SilentCheck::Exact => "exact",
+            SilentCheck::Randomised => "randomised",
+        },
+    );
     o.s("type", &a.ty_str);
     o.kv("input_len", a.ty.input_len());
     o.kv("reports_per_batch", a.reports);
@@ -415,6 +446,18 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cli_modes_select_the_requested_circuit() {
+        for (mode, check, groups, depth) in [("exact", SilentCheck::Exact, 32768, 24), ("randomised", SilentCheck::Randomised, 4096, 28)] {
+            let argv = [mode, "--type", "count"].map(String::from);
+            let args = parse_args(&argv);
+            assert_eq!(args.check, check);
+            let task = PaperTask::new([0xC0; 32], args.ty, args.check).unwrap();
+            assert_eq!(task.check_kind(), check);
+            assert_eq!((task.groups(), task.mult_depth()), (groups, depth));
+        }
+    }
 
     /// The exact rank against the binomial tail computed in floating point
     /// for small `n`, and the known values for `n = 6` (smallest with a 95%

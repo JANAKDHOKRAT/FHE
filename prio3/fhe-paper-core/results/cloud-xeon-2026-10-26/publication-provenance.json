@@ -1,0 +1,12 @@
+{
+  "measurement_base_commit": "3565c98429276392c008fc1fe326b7247c65fcf3",
+  "publication_base_commit": "c92404f1fd5650bb069562cc9acc306a7ad0d2c3",
+  "unchanged_subtree_objects": {
+    "prio3/fhe-paper-core": "1eb5d1c81d0b3daaa0dd32068b8df3e392d89e51",
+    "prio3/fhe-prio3": "6af121bcf3a4caef0db73f56e1d107841a8dc558",
+    "prio3/openfhe-tbgv-rs": "f8a4641c7440a404cf833cab448a0cc4181e2655"
+  },
+  "measurement_driver_sha256": "28c9b6f668b5beaff2ae1a23f4ad545598255bf4bec1396b8af53dcaf4939137",
+  "source_patch_file": "source.patch.gz",
+  "source_patch_uncompressed_sha256": "9f0a9dda942782741467996288aff01debcb6028111ba2df8e66789aacd3a09a"
+}

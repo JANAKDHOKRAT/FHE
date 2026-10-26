@@ -985,12 +985,14 @@ async fn verdict_with_client_proofs_over_tls() {
     c.stop_all();
 
     // startup: the material attested for the proof task, and the task file
-    // cut by its last byte (the encoding from before `client_proofs`)
+    // cut by its last two bytes, `client_proofs` and the default
+    // `silent_check` (the encoding from before `client_proofs`)
     let ids = [AggregatorIdentity::generate(), AggregatorIdentity::generate()];
     let mut material = c.material.clone();
     material.attestations = ids.iter().enumerate().map(|(i, id)| attest::attest(&task, &material, i, id)).collect();
     let file = fhe_prio3::messages::encode(&task).unwrap();
-    let cut = TaskConfig::decode(&file[..file.len() - 1]).unwrap();
+    assert_eq!(&file[file.len() - 2..], &[1, 0]);
+    let cut = TaskConfig::decode(&file[..file.len() - 2]).unwrap();
     assert!(!cut.client_proofs);
     let mut cfg = c.agg_config(0);
     cfg.material = material.clone();

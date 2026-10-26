@@ -1,0 +1,58 @@
+{
+  "flooding": {
+    "report_bytes": [
+      20201528,
+      20201528
+    ],
+    "serialized_report_bytes": [
+      20201599,
+      20201599
+    ],
+    "rotation_key_bytes": [
+      1698864135,
+      1698864135
+    ],
+    "eval_mult_key_bytes": [
+      113257597,
+      113257597
+    ],
+    "public_key_bytes": [
+      37755219,
+      37755219
+    ],
+    "setup_ms": [
+      30097.3,
+      32925.5
+    ],
+    "peak_rss_kb": [
+      4181264,
+      4181120
+    ],
+    "wall_s": [
+      203.2,
+      228.4
+    ],
+    "ring_dim": [
+      65536,
+      65536
+    ],
+    "log2_q": [
+      1207.2,
+      1207.2
+    ],
+    "towers": [
+      28,
+      28
+    ],
+    "per_setup_evaluator_median_ms_per_report": [
+      3472.5280408749995,
+      3317.21485775
+    ]
+  },
+  "default-multiparty": {
+    "status": "rejected; no benchmark"
+  },
+  "default-with-headroom": {
+    "status": "rejected; no benchmark"
+  }
+}

@@ -1,0 +1,41 @@
+batch 1/6 verified: evaluator 14249.709 ms over 4 reports
+batch 2/6 verified: evaluator 13863.716 ms over 4 reports
+batch 3/6 verified: evaluator 13916.508 ms over 4 reports
+batch 4/6 verified: evaluator 12932.015 ms over 4 reports
+batch 5/6 verified: evaluator 18963.320 ms over 4 reports
+batch 6/6 verified: evaluator 12667.232 ms over 4 reports
+{
+  "check": "exact",
+  "type": "count",
+  "input_len": 1,
+  "reports_per_batch": 4,
+  "batches": 6,
+  "seed": 100,
+  "machine": {"cpu": "INTEL(R) XEON(R) PLATINUM 8573C", "logical_cpus": 4, "mem_total_kb": 34906016, "omp_num_threads": "2", "openfhe": "/workspace/fhe-deps/install-1.3.1/lib/libOPENFHEpke.so.1.3.1, /workspace/fhe-deps/install-1.3.1/lib/libOPENFHEcore.so.1.3.1, /workspace/fhe-deps/install-1.3.1/lib/libOPENFHEbinfhe.so.1.3.1"},
+  "mult_depth": 24,
+  "key_switch_digits": 0,
+  "reports_per_verification_ciphertext": 32768,
+  "max_batch": 786432,
+  "soundness": "exact (no soundness error)",
+  "setup_ms": 30097.3,
+  "rotation_keys": 15,
+  "rotation_key_bytes": 1698864135,
+  "eval_mult_key_bytes": 113257597,
+  "public_key_bytes": 37755219,
+  "ring_dim": 65536,
+  "log2_q": 1207.2,
+  "towers": 28,
+  "report_bytes": 20201528,
+  "serialized_report_bytes": 20201599,
+  "aggregate_bytes": 3276856,
+  "evaluator_total_per_batch_ms": [14249.709088000001, 13863.716368999998, 13916.507958, 12932.014805, 18963.319756, 12667.231887000002],
+  "evaluator_total_per_report": {"n": 6, "median_ms": 3472.528, "ci95_low_ms": 3166.808, "ci95_high_ms": 4740.830, "p5_ms": 3166.808, "p95_ms": 4740.830, "min_ms": 3166.808, "max_ms": 4740.830},
+  "evaluator_total_per_batch": {"n": 6, "median_ms": 13890.112, "ci95_low_ms": 12667.232, "ci95_high_ms": 18963.320, "p5_ms": 12667.232, "p95_ms": 18963.320, "min_ms": 12667.232, "max_ms": 18963.320},
+  "client_encrypt_per_report": {"n": 24, "median_ms": 321.288, "ci95_low_ms": 305.815, "ci95_high_ms": 342.343, "p5_ms": 279.134, "p95_ms": 437.483, "min_ms": 278.610, "max_ms": 527.486},
+  "evaluator_admit_per_report": {"n": 24, "median_ms": 321.692, "ci95_low_ms": 300.621, "ci95_high_ms": 348.070, "p5_ms": 221.883, "p95_ms": 499.265, "min_ms": 220.417, "max_ms": 842.720},
+  "validity_circuit_per_verification_ciphertext": {"n": 6, "median_ms": 10521.610, "ci95_low_ms": 9669.567, "ci95_high_ms": 14687.002, "p5_ms": 9669.567, "p95_ms": 14687.002, "min_ms": 9669.567, "max_ms": 14687.002},
+  "evaluator_finish_per_batch": {"n": 6, "median_ms": 2123.507, "ci95_low_ms": 1846.249, "ci95_high_ms": 2383.231, "p5_ms": 1846.249, "p95_ms": 2383.231, "min_ms": 1846.249, "max_ms": 2383.231},
+  "collector_decrypt_per_batch": {"n": 6, "median_ms": 65.155, "ci95_low_ms": 57.343, "ci95_high_ms": 67.841, "p5_ms": 57.343, "p95_ms": 67.841, "min_ms": 57.343, "max_ms": 67.841},
+  "wall_s": 203.2,
+  "peak_rss_kb": 4181264
+}

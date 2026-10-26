@@ -1,0 +1,16 @@
+   Compiling fhe-paper-core v0.1.0 (/workspace/fhe-validation/parameter-study-count-v3/flooding/source/fhe-paper-core)
+    Finished `release` profile [optimized] target(s) in 1.05s
+     Running tests/paper_core.rs (/workspace/fhe-validation/parameter-study-count-v3/flooding/target/release/deps/paper_core-d5ba03bbdc2c1135)
+
+running 3 tests
+test binary_vector_exact ... setup: 51.772708196s, 15 rotation keys (2.78 GiB)
+ok
+test histogram_exact_counts_exactly_the_valid_reports ... setup: 48.313744787s, 16 rotation keys (2.89 GiB)
+exact check and finish, 13 reports in one ciphertext of 4096: 16.345073952s
+collector decryption: 81.194194ms
+ok
+test sum_randomised_decodes_under_encryption ... setup: 65.806241625s, 21 rotation keys (3.90 GiB)
+ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 435.22s
+

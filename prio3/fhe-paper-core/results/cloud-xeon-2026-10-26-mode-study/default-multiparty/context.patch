@@ -1,0 +1,11 @@
+--- retained/wrapper/tbgv.cpp
++++ default-multiparty/wrapper/tbgv.cpp
+@@ -140,7 +140,7 @@
+     CCParams<CryptoContextBGVRNS> params;
+     params.SetPlaintextModulus(plain_mod);
+     params.SetMultiplicativeDepth(mult_depth);
+-    params.SetMultipartyMode(NOISE_FLOODING_MULTIPARTY);
++    // Study only: OpenFHE 1.3.1 default FIXED_NOISE_MULTIPARTY.
+     params.SetScalingTechnique(FLEXIBLEAUTOEXT);
+     params.SetSecretKeyDist(UNIFORM_TERNARY);
+     // 0 keeps OpenFHE's default; the key-switching digit count trades key

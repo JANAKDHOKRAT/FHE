@@ -91,3 +91,14 @@ parameter changes were retained for these measurements. Exact SumVec at
 lengths 25, 50 and 100 is not included in this practical timing matrix;
 its depth-29/30/31 requirements exceed the retained cap. That is a limit
 of this configuration, not a proof that larger exact circuits cannot run.
+
+## Controlled parameter study
+
+See [study/README.md](study/README.md) for an isolated, fail-closed complete-circuit
+mode ablation. Experimental builds never change the retained configuration.
+Qualification and measured costs do not certify production security.
+
+The [first recorded mode study](results/cloud-xeon-2026-10-26-mode-study/summary.md)
+qualified the retained baseline and rejected both default-mode candidates at
+startup. No smaller working profile or production-security equivalence was
+established; see the raw rejection logs and [findings](study/FINDINGS.md).

@@ -1,0 +1,19 @@
+   Compiling fhe-paper-core v0.1.0 (/workspace/fhe-validation/parameter-study-count-v3/default-with-headroom/source/fhe-paper-core)
+    Finished `release` profile [optimized] target(s) in 0.51s
+     Running tests/study_count.rs (/workspace/fhe-validation/parameter-study-count-v3/default-with-headroom/target/release/deps/study_count-0b2b3c76d5327b4b)
+
+running 1 test
+test count_exact_boundary_invalid_and_slot_isolation ... 
+thread 'count_exact_boundary_invalid_and_slot_isolation' (49573) panicked at tests/study_count.rs:14:66:
+called `Result::unwrap()` on an `Err` value: Fhe(Error("ciphertext rebuild self-test failed on OpenFHE 1.3.1 as loaded (/workspace/fhe-deps/install-1.3.1/lib/libOPENFHEpke.so.1.3.1, /workspace/fhe-deps/install-1.3.1/lib/libOPENFHEcore.so.1.3.1, /workspace/fhe-deps/install-1.3.1/lib/libOPENFHEbinfhe.so.1.3.1): fresh: rebuilt object decrypts wrongly (slot 0: 496068 instead of 2). Received ciphertexts cannot be rebuilt exactly with this library; refusing to run."))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    count_exact_boundary_invalid_and_slot_isolation
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 36.37s
+
+error: test failed, to rerun pass `--test study_count`

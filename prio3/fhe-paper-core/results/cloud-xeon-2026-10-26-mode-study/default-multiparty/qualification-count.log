@@ -1,0 +1,19 @@
+   Compiling fhe-paper-core v0.1.0 (/workspace/fhe-validation/parameter-study-count-v3/default-multiparty/source/fhe-paper-core)
+    Finished `release` profile [optimized] target(s) in 0.53s
+     Running tests/study_count.rs (/workspace/fhe-validation/parameter-study-count-v3/default-multiparty/target/release/deps/study_count-c47d0949b93676cb)
+
+running 1 test
+test count_exact_boundary_invalid_and_slot_isolation ... 
+thread 'count_exact_boundary_invalid_and_slot_isolation' (48262) panicked at tests/study_count.rs:14:66:
+called `Result::unwrap()` on an `Err` value: Fhe(Error("self-test depth 24 is outside 1..=23 for a chain of 26 towers (threshold decryption needs 3 towers)"))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    count_exact_boundary_invalid_and_slot_isolation
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 29.77s
+
+error: test failed, to rerun pass `--test study_count`

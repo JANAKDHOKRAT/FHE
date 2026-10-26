@@ -1,0 +1,202 @@
+{
+  "status": "completed_with_rejections",
+  "scope": "Count exact mode ablation",
+  "encryption_target": "OpenFHE HEStd_128_classic (not independently estimated)",
+  "field": 786433,
+  "check": "exact",
+  "reports_per_batch": 4,
+  "processes_per_profile": 2,
+  "batches_per_process": 6,
+  "warmup_batches": 0,
+  "omp_num_threads": "2",
+  "security_limit": "same encryption setting and exact predicate; changing multiparty mode is NOT a proof of equivalent protocol security",
+  "profiles": {
+    "flooding": {
+      "source_inventory_sha256": "a637ba72e180bde45f3dd54f7e396993466e58515e0bfcfa7f5e0470e9de9a0f",
+      "context_change": "none",
+      "commands": [
+        {
+          "argv": [
+            "cargo",
+            "build",
+            "--release",
+            "--locked",
+            "--bin",
+            "paper_core_eval"
+          ],
+          "returncode": 0,
+          "wall_s": 106.8995309080019,
+          "log": "build.log",
+          "log_sha256": "133944bf1ca04f8a994b235e68d0525d973b12cb22a950efe30ae124e906fe46"
+        },
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "--release",
+            "--locked",
+            "--test",
+            "study_count",
+            "--",
+            "--nocapture",
+            "--test-threads=1"
+          ],
+          "returncode": 0,
+          "wall_s": 90.85106450700187,
+          "log": "qualification-count.log",
+          "log_sha256": "212d0e3c7229fd922b99b0546877d1d8f966b7d7628321f564914f2e82a0ba14"
+        },
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "--release",
+            "--locked",
+            "--test",
+            "paper_core",
+            "--",
+            "--nocapture",
+            "--test-threads=1"
+          ],
+          "returncode": 0,
+          "wall_s": 436.4002915460005,
+          "log": "qualification-other-tasks.log",
+          "log_sha256": "e132cc205571d660bc5944bc0df6998f4aacdfe03a636967b817616e8ec7981c"
+        }
+      ],
+      "qualified": true,
+      "binary_sha256": "d1a193ebdde64493cfb67ef9967bbda6ad601090919c8bd18357eb4b12ccf910",
+      "openfhe_library_sha256": {
+        "/workspace/fhe-deps/install-1.3.1/lib/libOPENFHEpke.so.1": "50d1e54c46860b7b4b6ea5b7c228590141ddb0c8cf2222f6d1ac5b4e003b5254",
+        "/workspace/fhe-deps/install-1.3.1/lib/libOPENFHEcore.so.1": "7726a7061bf681fd2d74321c0370497aa8b99a960a878e61f154ead28d668147",
+        "/workspace/fhe-deps/install-1.3.1/lib/libOPENFHEbinfhe.so.1": "e36ea659fccdca292ca3fd856e43affafb07643e317350111b4306884ae02b54"
+      }
+    },
+    "default-multiparty": {
+      "source_inventory_sha256": "f109399f00beaa44bdbe1590cc605d8a3843e14def83648db54d15042cf2e6b9",
+      "context_change": "omit SetMultipartyMode; retain one-party threshold key setup",
+      "commands": [
+        {
+          "argv": [
+            "cargo",
+            "build",
+            "--release",
+            "--locked",
+            "--bin",
+            "paper_core_eval"
+          ],
+          "returncode": 0,
+          "wall_s": 94.41411851399971,
+          "log": "build.log",
+          "log_sha256": "9348e45b912e6b7d3ff1be6e853e507bb9d276f7110bdea7567cf62d71d48a17"
+        },
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "--release",
+            "--locked",
+            "--test",
+            "study_count",
+            "--",
+            "--nocapture",
+            "--test-threads=1"
+          ],
+          "returncode": 101,
+          "wall_s": 30.400103509000473,
+          "log": "qualification-count.log",
+          "log_sha256": "ed19cf01cbc15d9f7a2dcf5b71f5ee9c8ab8640a7e312d31b534828ecfc37eb1"
+        }
+      ],
+      "qualified": false,
+      "rejected_at": "qualification-count.log"
+    },
+    "default-with-headroom": {
+      "source_inventory_sha256": "3c13f4455f90cb70cd7a0fbd548a5722fb20331a18eefe6140d3318ee7fe4185",
+      "context_change": "omit SetMultipartyMode; retain one-party threshold key setup; add one context level for unchanged threshold rebuild guard",
+      "commands": [
+        {
+          "argv": [
+            "cargo",
+            "build",
+            "--release",
+            "--locked",
+            "--bin",
+            "paper_core_eval"
+          ],
+          "returncode": 0,
+          "wall_s": 79.66556530700109,
+          "log": "build.log",
+          "log_sha256": "24ef6a039dbc2a90d5204afb3e40245fe1c4104862433db809d63b4cb38bd4fc"
+        },
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "--release",
+            "--locked",
+            "--test",
+            "study_count",
+            "--",
+            "--nocapture",
+            "--test-threads=1"
+          ],
+          "returncode": 101,
+          "wall_s": 36.9555162689976,
+          "log": "qualification-count.log",
+          "log_sha256": "a0b134c948c2cc016cc41067e10b66fd2261606837911ed883ff9d74e2e06d61"
+        }
+      ],
+      "qualified": false,
+      "rejected_at": "qualification-count.log"
+    }
+  },
+  "runs": [
+    {
+      "argv": [
+        "/workspace/fhe-validation/parameter-study-count-v3/flooding/target/release/paper_core_eval",
+        "exact",
+        "--type",
+        "count",
+        "--reports",
+        "4",
+        "--batches",
+        "6",
+        "--seed",
+        "100",
+        "--out",
+        "/workspace/fhe-validation/parameter-study-count-v3/flooding/count-exact-0.json"
+      ],
+      "returncode": 0,
+      "wall_s": 203.27494538799874,
+      "log": "count-exact-0.log",
+      "log_sha256": "991b633060190e888a3e31bafd3a19737b1cc115c39faf40dd5d9fb9b3e60087",
+      "profile": "flooding",
+      "repeat": 0,
+      "sample_sha256": "9e8b550ce2bc38408331a53e7cc36bddd03fb20bc0a42b51d667873d4a82d5f9"
+    },
+    {
+      "argv": [
+        "/workspace/fhe-validation/parameter-study-count-v3/flooding/target/release/paper_core_eval",
+        "exact",
+        "--type",
+        "count",
+        "--reports",
+        "4",
+        "--batches",
+        "6",
+        "--seed",
+        "101",
+        "--out",
+        "/workspace/fhe-validation/parameter-study-count-v3/flooding/count-exact-1.json"
+      ],
+      "returncode": 0,
+      "wall_s": 228.48750387199834,
+      "log": "count-exact-1.log",
+      "log_sha256": "a38903edf07676242b8116268122866010bfd270fa89bf4476151f839538b851",
+      "profile": "flooding",
+      "repeat": 1,
+      "sample_sha256": "50774351098cdb230836e6d2a5dbfe233ebdb3521af3c3ca35b80dda46412acd"
+    }
+  ]
+}

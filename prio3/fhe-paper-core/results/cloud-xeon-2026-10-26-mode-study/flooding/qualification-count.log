@@ -1,0 +1,9 @@
+   Compiling fhe-paper-core v0.1.0 (/workspace/fhe-validation/parameter-study-count-v3/flooding/source/fhe-paper-core)
+    Finished `release` profile [optimized] target(s) in 0.50s
+     Running tests/study_count.rs (/workspace/fhe-validation/parameter-study-count-v3/flooding/target/release/deps/study_count-b9e5e79f1a3284ce)
+
+running 1 test
+test count_exact_boundary_invalid_and_slot_isolation ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 90.19s
+

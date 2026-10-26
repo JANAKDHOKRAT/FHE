@@ -62,6 +62,19 @@ checked not to reach `±p` (`check_constraints_fit`), so arithmetic mod `p`
 equals arithmetic over the integers. Tests: `tests/protocol.rs`,
 `tests/bounds.rs`, `types.rs::constraint_fit_is_exact_on_every_assignment`.
 
+With the exact check (`silent_check = Exact`, spec "Exact check in silent
+mode") there is no challenge and no soundness term: the circuit computes
+`prod_l (1 - e_l^(p-1))`, which by Fermat's little theorem is 1 exactly
+when every residual is zero modulo the prime `p`, i.e. when the encoding is
+valid (with the same constraint-fit check). A client gains nothing from
+search, from knowing the verify key or from residuals that cancel in a sum.
+What remains is FHE correctness, as for every other value the protocol
+decrypts: measured margins in `tests/exact.rs`, and the count round and
+verified release refuse a batch whose noise overflowed (§4). The client
+still chooses the noise of its own ciphertexts in silent mode (§3.6 of the
+spec: a malformed report can corrupt, not bias undetectably, a batch);
+that is unchanged by the choice of check.
+
 ## 4. Robustness against aggregators and verifiable decryption (R2)
 
 Every decryption in the protocol fuses one partial decryption per

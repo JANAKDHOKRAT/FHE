@@ -2,7 +2,8 @@ name: prio3
 
 # Builds OpenFHE 1.3.1 (the version the shim is tested against, see
 # prio3/openfhe-tbgv-rs/build.rs), runs every test suite of the threshold-BGV
-# shim, the protocol crate and the network node, and fuzzes the packed wire
+# shim, the protocol crate, the network node and the paper-only
+# architecture (fhe-paper-core), and fuzzes the packed wire
 # format parser (5 minutes per target on each change, one hour per target
 # nightly). Gates on every change: rustfmt (prio3/rustfmt.toml), clippy with
 # warnings denied on every target, cargo-deny (RustSec advisories, licenses,
@@ -97,6 +98,8 @@ jobs:
           - { name: protocol-shares-aggregators, dir: prio3/fhe-prio3, args: "--test shares_aggregators" }
           - { name: protocol-shares-moments, dir: prio3/fhe-prio3, args: "--test shares_moments" }
           - { name: protocol-client-proofs, dir: prio3/fhe-prio3, args: "--test client_proofs" }
+          - { name: protocol-exact, dir: prio3/fhe-prio3, args: "--test exact" }
+          - { name: paper-core, dir: prio3/fhe-paper-core, args: "" }
           - { name: node, dir: prio3/fhe-prio3-node, args: "" }
     env:
       LD_LIBRARY_PATH: /home/runner/openfhe-install/lib
@@ -161,7 +164,7 @@ jobs:
           path: prio3/fhe-prio3/fuzz/artifacts
 
   # rustfmt against prio3/rustfmt.toml and clippy with every warning denied,
-  # on every target (lib, bins, tests, examples) of the three crates. The
+  # on every target (lib, bins, tests, examples) of the four crates. The
   # fuzz crate is format-checked only: its targets build on nightly.
   lint:
     name: lint ${{ matrix.crate }}
@@ -171,7 +174,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        crate: [openfhe-tbgv-rs, fhe-prio3, fhe-prio3-node]
+        crate: [openfhe-tbgv-rs, fhe-prio3, fhe-prio3-node, fhe-paper-core]
     env:
       LD_LIBRARY_PATH: /home/runner/openfhe-install/lib
     steps:
@@ -237,7 +240,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        crate: [openfhe-tbgv-rs, fhe-prio3, fhe-prio3-node]
+        crate: [openfhe-tbgv-rs, fhe-prio3, fhe-prio3-node, fhe-paper-core]
     steps:
       - uses: actions/checkout@v4
       - uses: EmbarkStudios/cargo-deny-action@v2

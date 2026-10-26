@@ -466,7 +466,7 @@ impl Circuit {
     /// set bits of `w` pick some of them, each moved to its offset by
     /// rotations by powers of two below it. Only rotations by `stride * 2^j`
     /// with `2^(j+1) <= w` are used (`Layout::moment_rotations`).
-    fn window_sum(&self, z: Ciphertext, w: usize, stride: usize) -> Result<Ciphertext> {
+    pub fn window_sum(&self, z: Ciphertext, w: usize, stride: usize) -> Result<Ciphertext> {
         let ctx = &self.ctx;
         let mut acc: Option<Ciphertext> = None;
         let mut offset = 0usize;
@@ -526,6 +526,186 @@ impl Circuit {
         }
         Ok(g)
     }
+
+    /// Silent mode, exact check (Eq. 9 of the paper): `G` with
+    /// `a_r = prod_l (1 - e_l^(p-1))` over every residual `e_l` of the
+    /// report in group `r`, at every class-0 slot of each listed group (the
+    /// same places [`Self::silent_validity`] puts its bit, so gating, counts
+    /// and the release are unchanged). `acc` is the batch accumulator, one
+    /// ciphertext per chunk, already zero outside the listed groups' element
+    /// slots (the per-report group mask, or the share-upload batch mask).
+    /// See [`exact_circuit`].
+    pub fn exact_validity(&self, cfg: &TaskConfig, field: &Field, acc: &[Ciphertext], groups: &[usize]) -> Result<Ciphertext> {
+        exact_circuit(
+            &CipherOps {
+                ctx: &self.ctx,
+                ones: &self.ones,
+            },
+            &self.layout,
+            cfg,
+            field,
+            acc,
+            groups,
+        )
+    }
+}
+
+/// The slot operations of the exact check, so that one implementation
+/// ([`exact_circuit`]) runs on ciphertexts and on plaintext slot vectors.
+/// `rotate(v, d)` is a left rotation: slot `s` of the result is slot
+/// `s + d` (modulo the row) of `v`, OpenFHE's convention.
+pub trait SlotOps {
+    type V;
+    fn add(&self, a: &Self::V, b: &Self::V) -> Result<Self::V>;
+    fn mult(&self, a: &Self::V, b: &Self::V) -> Result<Self::V>;
+    fn square(&self, a: &Self::V) -> Result<Self::V>;
+    fn mult_plain(&self, a: &Self::V, w: &[u64]) -> Result<Self::V>;
+    fn add_plain(&self, a: &Self::V, w: &[u64]) -> Result<Self::V>;
+    /// `a - 1` in every slot.
+    fn sub_one(&self, a: &Self::V) -> Result<Self::V>;
+    /// `1 - a` in every slot.
+    fn one_minus(&self, a: &Self::V) -> Result<Self::V>;
+    fn rotate(&self, a: &Self::V, d: i32) -> Result<Self::V>;
+}
+
+struct CipherOps<'a> {
+    ctx: &'a Context,
+    ones: &'a Plaintext,
+}
+
+impl SlotOps for CipherOps<'_> {
+    type V = Ciphertext;
+    fn add(&self, a: &Ciphertext, b: &Ciphertext) -> Result<Ciphertext> {
+        Ok(self.ctx.add(a, b)?)
+    }
+    fn mult(&self, a: &Ciphertext, b: &Ciphertext) -> Result<Ciphertext> {
+        Ok(self.ctx.mult(a, b)?)
+    }
+    fn square(&self, a: &Ciphertext) -> Result<Ciphertext> {
+        Ok(self.ctx.square(a)?)
+    }
+    fn mult_plain(&self, a: &Ciphertext, w: &[u64]) -> Result<Ciphertext> {
+        Ok(self.ctx.mult_plain(a, &self.ctx.plaintext(w)?)?)
+    }
+    fn add_plain(&self, a: &Ciphertext, w: &[u64]) -> Result<Ciphertext> {
+        Ok(self.ctx.add_plain(a, &self.ctx.plaintext(w)?)?)
+    }
+    fn sub_one(&self, a: &Ciphertext) -> Result<Ciphertext> {
+        Ok(self.ctx.sub_plain(a, self.ones)?)
+    }
+    fn one_minus(&self, a: &Ciphertext) -> Result<Ciphertext> {
+        Ok(self.ctx.negate(&self.ctx.sub_plain(a, self.ones)?)?)
+    }
+    fn rotate(&self, a: &Ciphertext, d: i32) -> Result<Ciphertext> {
+        Ok(self.ctx.rotate(a, d)?)
+    }
+}
+
+/// `x^(p-1)` slot-wise by left-to-right square-and-multiply
+/// ([`TaskConfig::fermat_depth`] levels).
+fn fermat_with<O: SlotOps>(ops: &O, p: u64, x: &O::V) -> Result<O::V> {
+    let e = p - 1;
+    let bits = 64 - e.leading_zeros();
+    let mut acc = ops.square(x)?;
+    if (e >> (bits - 2)) & 1 == 1 {
+        acc = ops.mult(&acc, x)?;
+    }
+    for b in (0..bits - 2).rev() {
+        acc = ops.square(&acc)?;
+        if (e >> b) & 1 == 1 {
+            acc = ops.mult(&acc, x)?;
+        }
+    }
+    Ok(acc)
+}
+
+/// The exact check over a batched layout whose `repetitions` are the
+/// residue classes it uses: one per chunk, then one per linear constraint.
+///
+/// Residuals, one value `R`: chunk `c`'s bit residuals `x(x-1)` in class
+/// `c`, each element at its own position; linear constraint `k`
+/// (`sum_i c_i x_i + c_0`) summed over the positions by the wrapping
+/// position sums and placed in class `chunks + k` at every position. Every
+/// other slot of a listed group is zero. One Fermat chain then tests every
+/// slot at once, and the product of `1 - R^(p-1)` over the group's
+/// positions (the position-sum rotations, now multiplying) and then its
+/// classes leaves `a_r` at the group's class-0 slots: the position product
+/// gives slot `(r, j, i)` the product over class `j` of group `r` (it wraps
+/// the row within one class and group), the class product gives class 0
+/// the product over the group's classes. A zero slot contributes `1`; the
+/// linear residual's copies contribute the same flag `block` times, and a
+/// flag is idempotent. Nothing is combined before it is tested, so
+/// residuals that cancel in a sum (2 and 336449 modulo 786433: residuals 2
+/// and -2) are caught.
+///
+/// Depth on top of `acc`: 1 (residuals; the linear sums are a plaintext
+/// multiplication at the same level) + Fermat + `log2(classes * block)`.
+pub fn exact_circuit<O: SlotOps>(ops: &O, l: &Layout, cfg: &TaskConfig, field: &Field, acc: &[O::V], groups: &[usize]) -> Result<O::V> {
+    let constraints = cfg.measurement_type.linear_constraints();
+    if l.kind != LayoutKind::Batched || acc.len() != l.num_chunks || l.repetitions != l.num_chunks + constraints.len() {
+        return Err(crate::error::Error::Protocol("exact check: accumulator does not match the layout".into()));
+    }
+    if let Some(&r) = groups.iter().find(|&&r| r >= l.groups) {
+        return Err(crate::error::Error::Protocol(format!("group {r} outside the layout")));
+    }
+    let mut terms: Vec<O::V> = Vec::with_capacity(l.repetitions);
+    for (c, x) in acc.iter().enumerate() {
+        let e = ops.mult(x, &ops.sub_one(x)?)?;
+        terms.push(if c == 0 { e } else { ops.rotate(&e, l.replicate_rotation(c))? });
+    }
+    let mut constants = vec![0u64; l.row];
+    for (k, lc) in constraints.iter().enumerate() {
+        let coeffs: Vec<(usize, u64)> = lc.field_coeffs(field).collect();
+        let mut v: Option<O::V> = None;
+        for (c, x) in acc.iter().enumerate() {
+            let range = l.chunk_range(c);
+            let mut w = vec![0u64; l.row];
+            let mut any = false;
+            for &(i, coef) in &coeffs {
+                if range.contains(&i) {
+                    for &r in groups {
+                        w[l.group_slot(r, i - range.start)] = coef;
+                    }
+                    any = true;
+                }
+            }
+            if any {
+                let t = ops.mult_plain(x, &w)?;
+                v = Some(match v {
+                    None => t,
+                    Some(a) => ops.add(&a, &t)?,
+                });
+            }
+        }
+        let Some(mut v) = v else {
+            return Err(crate::error::Error::Protocol("exact check: a linear constraint touches no element".into()));
+        };
+        // every position of the group's class 0 now holds sum_i c_i x_i
+        for d in l.sum_rotations() {
+            v = ops.add(&v, &ops.rotate(&v, d)?)?;
+        }
+        let class = l.num_chunks + k;
+        let constant = lc.field_constant(field);
+        for &r in groups {
+            for i in 0..l.block {
+                constants[l.group_slot(r, i) + class] = constant;
+            }
+        }
+        terms.push(ops.rotate(&v, l.replicate_rotation(class))?);
+    }
+    let mut r_v = terms.remove(0);
+    for t in &terms {
+        r_v = ops.add(&r_v, t)?;
+    }
+    if !constraints.is_empty() {
+        r_v = ops.add_plain(&r_v, &constants)?;
+    }
+    let f = fermat_with(ops, field.modulus(), &r_v)?;
+    let mut g = ops.one_minus(&f)?;
+    for d in l.sum_rotations().into_iter().chain(l.product_rotations()) {
+        g = ops.mult(&g, &ops.rotate(&g, d)?)?;
+    }
+    Ok(g)
 }
 
 /// Uniform in `[0, p)` by rejection sampling from the OS RNG.
@@ -536,5 +716,211 @@ pub fn uniform_field_elem(field: &Field, rng: &mut dyn RngCore) -> u64 {
         if v < p {
             return v;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{CollectorPolicy, EXACT_ROW};
+    use crate::types::{Measurement, MeasurementType};
+    use rand::{Rng, SeedableRng};
+
+    /// Plaintext slot vectors modulo `p`, with OpenFHE's rotation convention.
+    struct PlainOps {
+        f: Field,
+    }
+    impl SlotOps for PlainOps {
+        type V = Vec<u64>;
+        fn add(&self, a: &Vec<u64>, b: &Vec<u64>) -> Result<Vec<u64>> {
+            Ok(a.iter().zip(b).map(|(&x, &y)| self.f.add(x, y)).collect())
+        }
+        fn mult(&self, a: &Vec<u64>, b: &Vec<u64>) -> Result<Vec<u64>> {
+            Ok(a.iter().zip(b).map(|(&x, &y)| self.f.mul(x, y)).collect())
+        }
+        fn square(&self, a: &Vec<u64>) -> Result<Vec<u64>> {
+            self.mult(a, a)
+        }
+        fn mult_plain(&self, a: &Vec<u64>, w: &[u64]) -> Result<Vec<u64>> {
+            self.mult(a, &w.to_vec())
+        }
+        fn add_plain(&self, a: &Vec<u64>, w: &[u64]) -> Result<Vec<u64>> {
+            self.add(a, &w.to_vec())
+        }
+        fn sub_one(&self, a: &Vec<u64>) -> Result<Vec<u64>> {
+            Ok(a.iter().map(|&x| self.f.sub(x, 1)).collect())
+        }
+        fn one_minus(&self, a: &Vec<u64>) -> Result<Vec<u64>> {
+            Ok(a.iter().map(|&x| self.f.sub(1, x)).collect())
+        }
+        fn rotate(&self, a: &Vec<u64>, d: i32) -> Result<Vec<u64>> {
+            let n = a.len() as i64;
+            Ok((0..n).map(|s| a[(s + d as i64).rem_euclid(n) as usize]).collect())
+        }
+    }
+
+    fn random_measurement(t: &MeasurementType, rng: &mut impl Rng) -> Measurement {
+        match t {
+            MeasurementType::Count => Measurement::Count(rng.gen_bool(0.5)),
+            MeasurementType::Sum { max_measurement } => Measurement::Sum(rng.gen_range(0..=*max_measurement)),
+            MeasurementType::SumVec { length, max_measurement } => Measurement::SumVec((0..*length).map(|_| rng.gen_range(0..=*max_measurement)).collect()),
+            MeasurementType::BoundedSumVec { bounds } => Measurement::SumVec(bounds.iter().map(|&b| rng.gen_range(0..=b)).collect()),
+            MeasurementType::Histogram { length } => Measurement::Histogram(rng.gen_range(0..*length)),
+            MeasurementType::MultihotCountVec { length, max_weight } => {
+                let mut v = vec![false; *length];
+                for _ in 0..rng.gen_range(0..=*max_weight) {
+                    v[rng.gen_range(0..*length)] = true;
+                }
+                Measurement::MultihotCountVec(v)
+            }
+        }
+    }
+
+    /// The predicate `V_T` of the paper, computed directly: every
+    /// coordinate a bit and every linear constraint zero modulo `p`.
+    fn valid(t: &MeasurementType, f: &Field, x: &[u64]) -> bool {
+        x.iter().all(|&v| v <= 1)
+            && t.linear_constraints().iter().all(|c| {
+                let mut s = c.field_constant(f);
+                for (i, coef) in c.field_coeffs(f) {
+                    s = f.add(s, f.mul(coef, x[i]));
+                }
+                s == 0
+            })
+    }
+
+    /// One report's encoding, valid or broken in one of the ways a
+    /// malicious client can break it.
+    fn report(t: &MeasurementType, f: &Field, rng: &mut impl Rng) -> Vec<u64> {
+        let mut x = t.encode(&random_measurement(t, rng)).unwrap();
+        let m = x.len();
+        match rng.gen_range(0..8) {
+            0..=2 => {}
+            3 => x[rng.gen_range(0..m)] = rng.gen_range(2..f.modulus()),
+            4 => x[rng.gen_range(0..m)] = 2,
+            5 => {
+                // the cancellation pair: residuals 2 and -2
+                let i = rng.gen_range(0..m);
+                x[i] = 2;
+                if m > 1 {
+                    x[(i + 1) % m] = 336_449;
+                }
+            }
+            6 => {
+                // bits only, any pattern (breaks one-hot and weight constraints)
+                for v in x.iter_mut() {
+                    *v = rng.gen_range(0..2);
+                }
+            }
+            _ => {
+                for v in x.iter_mut() {
+                    *v = rng.gen_range(0..f.modulus());
+                }
+            }
+        }
+        x
+    }
+
+    /// The exact circuit, evaluated on plaintext slots, puts at every
+    /// class-0 element slot of every listed group exactly the predicate of
+    /// that group's report, for every type and slot shape, full and partly
+    /// filled batches, and clients that write junk all over the row (which
+    /// the per-report group mask removes before the circuit, as the
+    /// aggregator does). The cancellation pair is rejected.
+    #[test]
+    fn exact_circuit_computes_the_predicate_in_every_group() {
+        let f = Field::new(crate::config::SILENT_PLAIN_MOD).unwrap();
+        assert_eq!(f.mul(2, 1), 2);
+        assert_eq!(f.mul(336_449, 336_448), f.modulus() - 2, "the cancellation pair's residuals are 2 and -2");
+        let ops = PlainOps { f };
+        let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(0x0004_5719);
+        let split = |t: MeasurementType| {
+            let mut c = TaskConfig::new_exact([1; 32], t.clone(), 2);
+            c.collectors = (0..t.num_elements())
+                .map(|e| CollectorPolicy {
+                    elements: vec![e],
+                    moments: false,
+                    seal_key: [9; 32],
+                })
+                .collect();
+            let (_, classes, block) = c.exact_shape();
+            c.silent_batch_groups = EXACT_ROW / (classes * block);
+            c
+        };
+        let cfgs = vec![
+            TaskConfig::new_exact([1; 32], MeasurementType::Count, 2),
+            TaskConfig::new_exact([1; 32], MeasurementType::Sum { max_measurement: 3 }, 2),
+            TaskConfig::new_exact([1; 32], MeasurementType::Sum { max_measurement: 100 }, 2),
+            TaskConfig::new_exact([1; 32], MeasurementType::Histogram { length: 3 }, 2),
+            TaskConfig::new_exact([1; 32], MeasurementType::Histogram { length: 5 }, 2),
+            TaskConfig::new_exact([1; 32], MeasurementType::MultihotCountVec { length: 4, max_weight: 2 }, 2),
+            split(MeasurementType::SumVec { length: 2, max_measurement: 3 }),
+            split(MeasurementType::BoundedSumVec { bounds: vec![1, 5] }),
+        ];
+        for cfg in cfgs {
+            cfg.validate().unwrap();
+            let t = cfg.measurement_type.clone();
+            let l = cfg.layout(EXACT_ROW).unwrap();
+            let (chunks, classes, block) = cfg.exact_shape();
+            assert_eq!((l.num_chunks, l.classes, l.block, l.groups), (chunks, classes, block, cfg.silent_batch_groups));
+            let mut rejected_pairs = 0;
+            for fill in [l.groups, l.groups / 2 + 1, 1] {
+                let mut groups: Vec<usize> = (0..l.groups).collect();
+                for i in (1..groups.len()).rev() {
+                    groups.swap(i, rng.gen_range(0..=i));
+                }
+                groups.truncate(fill);
+                // what clients write outside their own slots (zeroed by the mask)
+                let junk: Vec<u64> = (0..l.row).map(|_| rng.gen_range(0..f.modulus())).collect();
+                let mut acc = vec![vec![0u64; l.row]; l.num_chunks];
+                let mut expect = vec![None; l.groups];
+                for &r in &groups {
+                    let x = report(&t, &f, &mut rng);
+                    expect[r] = Some(valid(&t, &f, &x));
+                    if x.contains(&336_449) && x.contains(&2) {
+                        rejected_pairs += 1;
+                        assert_eq!(expect[r], Some(false));
+                    }
+                    for (c, a) in acc.iter_mut().enumerate() {
+                        // the client's ciphertext: its elements at its group's
+                        // slots and junk everywhere else
+                        let mut slots = junk.clone();
+                        for (local, global) in l.chunk_range(c).enumerate() {
+                            slots[l.group_slot(r, local)] = x[global];
+                        }
+                        // the aggregator's per-report group mask
+                        let mut mask = vec![0u64; l.row];
+                        for i in 0..l.chunk_len(c) {
+                            mask[l.group_slot(r, i)] = 1;
+                        }
+                        let masked = ops.mult_plain(&slots, &mask).unwrap();
+                        *a = ops.add(a, &masked).unwrap();
+                    }
+                }
+                let g = exact_circuit(&ops, &l, &cfg, &f, &acc, &groups).unwrap();
+                for &r in &groups {
+                    let want = expect[r].unwrap() as u64;
+                    for i in 0..l.block {
+                        assert_eq!(g[l.group_slot(r, i)], want, "{t:?}: group {r} position {i}");
+                    }
+                }
+            }
+            assert!(rejected_pairs > 0 || t.input_len() == 1, "{t:?}: the cancellation pair was exercised");
+        }
+    }
+
+    /// The layout refuses an accumulator of the wrong shape and groups
+    /// outside the row.
+    #[test]
+    fn exact_circuit_refuses_mismatched_inputs() {
+        let f = Field::new(crate::config::SILENT_PLAIN_MOD).unwrap();
+        let ops = PlainOps { f };
+        let cfg = TaskConfig::new_exact([1; 32], MeasurementType::Histogram { length: 3 }, 2);
+        let l = cfg.layout(EXACT_ROW).unwrap();
+        let acc = vec![vec![0u64; l.row]; l.num_chunks];
+        assert!(exact_circuit(&ops, &l, &cfg, &f, &acc, &[l.groups]).is_err());
+        assert!(exact_circuit(&ops, &l, &cfg, &f, &[], &[0]).is_err());
+        let other = TaskConfig::new_exact([1; 32], MeasurementType::Count, 2);
+        assert!(exact_circuit(&ops, &other.layout(EXACT_ROW).unwrap(), &cfg, &f, &acc, &[0]).is_err());
     }
 }

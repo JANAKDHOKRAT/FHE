@@ -423,7 +423,11 @@ fn protocol_decryption_points(
             // masked to their group, one level down; a single group on the
             // raw chunks
             let input = if layout.groups > 1 { &masked } else { &chunks };
-            let g = circuit.silent_validity(&circuit.class_sums(&circuit.report_terms(input, &ch)?)?)?;
+            let g = if cfg.exact_check() {
+                circuit.exact_validity(cfg, field, &masked, &[0])?
+            } else {
+                circuit.silent_validity(&circuit.class_sums(&circuit.report_terms(input, &ch)?)?)?
+            };
             // the accumulators as the aggregator decrypts them: gated at the
             // group, then folded into group 0 and masked at the close
             out.push(circuit.finalize_chunk(&ctx.mult(&masked[0], &g)?, 0)?);

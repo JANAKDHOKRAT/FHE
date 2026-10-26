@@ -247,12 +247,24 @@ mod tests {
         let mut pm = m.clone();
         pm.attestations = ids.iter().enumerate().map(|(i, id)| attest(&proofs, &pm, i, id)).collect();
         check_attested_task(&proofs, &pm).unwrap();
-        // the same file truncated by its last byte is the older encoding of
-        // the task without proofs: it decodes, and it is not the attested task
+        // the same file truncated by its last two bytes (`client_proofs`,
+        // then the default `silent_check`) is the older encoding of the task
+        // without proofs: it decodes, and it is not the attested task
         let file = postcard::to_allocvec(&proofs).unwrap();
-        let truncated = TaskConfig::decode(&file[..file.len() - 1]).unwrap();
+        assert_eq!(&file[file.len() - 2..], &[1, 0]);
+        let truncated = TaskConfig::decode(&file[..file.len() - 2]).unwrap();
         assert!(!truncated.client_proofs);
         check_attested_task(&truncated, &pm).unwrap_err();
+        // likewise an exact-check task cut by its last byte is the task with
+        // the randomised check: refused, so a node cannot be downgraded
+        let exact = TaskConfig::new_exact([1u8; 32], MeasurementType::Count, 2);
+        let mut em = m.clone();
+        em.attestations = ids.iter().enumerate().map(|(i, id)| attest(&exact, &em, i, id)).collect();
+        check_attested_task(&exact, &em).unwrap();
+        let file = postcard::to_allocvec(&exact).unwrap();
+        let downgraded = TaskConfig::decode(&file[..file.len() - 1]).unwrap();
+        assert!(!downgraded.exact_check());
+        check_attested_task(&downgraded, &em).unwrap_err();
         let mut bad = pm.clone();
         bad.attestations[1].signature.pop();
         check_attested_task(&proofs, &bad).unwrap_err();

@@ -1,0 +1,17 @@
+[package]
+name = "fhe-paper-core"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "The architecture of the ITASEC paper only: one evaluator, the collector holding the key, exact or randomised homomorphic validation of Count, Sum, SumVec and Histogram"
+license = "MIT"
+
+[dependencies]
+fhe-prio3 = { path = "../fhe-prio3" }
+openfhe-tbgv-rs = { path = "../openfhe-tbgv-rs" }
+serde = { version = "1", features = ["derive"] }
+zeroize = "1"
+rand = "0.8"
+rand_chacha = "0.3"
+
+[workspace]

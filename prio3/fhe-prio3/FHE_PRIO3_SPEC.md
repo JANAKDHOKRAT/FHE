@@ -1446,6 +1446,80 @@ extraction bound, check value).
 *Tests.* `tests/client_proofs.rs`, `config::tests::client_proofs_binding_files_and_rules`,
 `attest::tests`, node `e2e.rs::verdict_with_client_proofs_over_tls`.
 
+### Exact check in silent mode (`silent_check = Exact`, Eq. 9 of the paper)
+
+A task option (`TaskConfig::new_exact`; the paper's architecture alone,
+built on it, is `prio3/fhe-paper-core`). The randomised check (default, §3.6) tests 7 random
+linear combinations of a report's residuals; the exact check tests every
+residual on its own and multiplies the decisions, as in Eq. 9 of
+Dhokrat et al. (ITASEC):
+
+    a_r = prod_l (1 - e_l(x_r)^(p-1))
+
+over the bit residuals `x_i (x_i - 1)` and the linear constraints of the
+type (Histogram: `sum x - 1`; MultihotCountVec: `sum x - weight`). There is
+no challenge, no verify key in the check, and no soundness error: a report
+contributes iff its encoding is valid (FHE correctness aside, measured
+below).
+
+*Layout.* The batched layout of §6b, sized to the measurement: `block` =
+the longest chunk rounded up to a power of two (element positions per
+report), `classes` = chunks + linear constraints rounded up to a power of
+two, and `silent_batch_groups = 32768 / (classes · block)` reports per
+verification ciphertext (`TaskConfig::exact_shape`; `TaskConfig::layout`
+refuses any other row or group count). Count packs 32768 reports per
+ciphertext, Sum(100) and Histogram(3) 4096, Histogram(8) 2048.
+
+*Circuit* (`verify::exact_circuit`, one implementation for ciphertexts and,
+in the unit tests, plaintext slot vectors; run by `verify_and_fold` on the
+batch accumulator, already masked to each report's element slots on
+admission):
+
+    R  = sum_c rotate(X_c (X_c - 1), -c)                 // bit residuals of chunk c in class c; level +1
+       + sum_k rotate(possum(sum_c X_c * w_k,c), -(chunks + k)) + const_k
+                                                         // linear constraint k, every position of class chunks+k
+    Z  = 1 - R^(p-1)                                     // every slot tested at once; depth +20
+    for d in position-sum rotations: Z = Z * rotate(Z, d) // product over the group's positions (wraps the row)
+    for d in [1, 2, ..]:             Z = Z * rotate(Z, d) // product over its classes; depth +log2(classes·block)
+    G  = Z                                                // a_r at every class-0 slot of group r
+
+`G` has the shape the randomised check produces, so gating, the valid
+count, the spread, the fold at the close, the gated release, share upload
+and the node are unchanged. A zero slot contributes 1 to the product; the
+linear residual's `block` copies contribute the same flag, which is
+idempotent. Nothing is combined before it is tested: the cancellation pair
+of the paper (bit coordinates 2 and 336449, residuals 2 and -2 modulo
+786433) is rejected, where a zero test on the unweighted sum of residuals
+accepts it.
+
+*Depth.* `1 + 20 + log2(classes · block) + 1 + 2` (residuals, Fermat,
+products, gating, the two batched masks): Count 24, Sum(100) 27,
+Histogram(3) 27, Histogram(8) and Sum(65535) 28. Past 28 the
+configuration refuses the task (Histogram(9) or more, SumVec(8, 255): the
+ring would have to double); the randomised check's depth does not grow
+with the measurement. Five key-switching digits from depth 26, as in §3.6.
+No second moments (refused).
+
+*Encoding.* The binding is extended only for the exact check
+(`fhe-prio3/5 silent check extension || Exact`), so every existing task
+keeps its digest; a task file written before the field existed decodes as
+the randomised check. `repetitions` must be 1.
+
+*Measured noise* (`tests/exact.rs`, Histogram(8), depth 28, all 2048
+groups, input noise of 2^14 masked fresh reports): at the decryption
+points `log2 |m + t e|` is 52.5 (sum) and 54.0 (count) against
+`log2 Q = 198.0` at that level; the batch then passes the count round and
+the verified release with its flooding checks, exactly.
+
+*Tests.* `verify::tests` (the predicate in every group, all types and
+shapes, full and partial batches, junk outside the client's slots, the
+cancellation pair; two mutations of the circuit are caught by it),
+`config::tests::exact_check_shapes_depths_files_and_rules`,
+`tests/exact.rs` (split key with suppression on Histogram(3), including a
+value written where the one-hot residual is formed and into another
+report's group; Sum(100) with the cancellation pair over two batches; the
+depth-28 full batch; two chunks under release policies).
+
 ### Horizontal sharding (`sharding.rs`, node `router`)
 
 Throughput beyond one aggregator set comes from running several sets in

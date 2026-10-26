@@ -1,0 +1,55 @@
+# fhe-paper-core
+
+The architecture of Dhokrat, Panico, Bracciale, Bianchi, Loreti, *Cost and
+Trust Trade-offs of FHE-Based Private Aggregation* (ITASEC 2026 draft),
+and nothing else.
+
+* **Roles (paper §3).** The collector generates `pk`, `sk` and the
+  evaluation keys (`setup`) and keeps `sk`. Clients encrypt their encoded
+  measurement under `pk` (`PaperClient`). One evaluator, holding only the
+  evaluation keys, validates every report, multiplies it by its validity
+  flag, decodes it and sums (`PaperEvaluator`). The collector decrypts the
+  task output (`PaperCollector`).
+* **Tasks (§4.1).** Count, Sum, SumVec, Histogram, with the paper's
+  encodings (Eq. 5).
+* **Validation.** Exact (Eq. 10: every residual tested on its own,
+  `prod_l (1 - e_l^(p-1))`, no soundness error) or randomised (Eq. 11:
+  `t = 7` random combinations of the residuals, coefficients drawn by the
+  evaluator after the reports are fixed, soundness `p^-7 = 2^-137.1`).
+* **Required by the paper and kept.** Every report restricted to its own
+  slots before it meets another (§4.2); challenges unpredictable to clients
+  and fresh per verification ciphertext (§4.4); `A_T` evaluated under
+  encryption, so only the decoded output is ever decrypted (§4.5); `N < p`
+  (Count, Histogram) and `N·M < p` (Sum, SumVec) (§4.5); the packing is a
+  parameter, because §5 asks for it to be evaluated separately.
+* **Left out, because the paper does not specify it or names it a separate
+  requirement (§4.6, §6).** Threshold or split keys, the key ceremony and
+  attestations, verified decryption, release policies (minimum batch,
+  small-cell suppression), client authentication, quotas and replay
+  protection, verdict mode, share upload, client proofs.
+
+It runs the production circuits, client encryption and packed wire format
+of `fhe-prio3` at the production parameters: `p = 786433`, ring dimension
+65536, 128-bit security, depth 24 to 28. Inputs are validated (the packed
+codec parses every ciphertext; the collector refuses a decrypted row with
+data outside the output slots or outputs above the §4.5 bounds).
+
+**Trust model: the paper's.** The evaluator and the collector must not
+collude (the collector's key decrypts any report); the evaluator is
+honest-but-curious; the collector must only be given aggregates. A
+malformed client ciphertext cannot be rejected on its own (nothing is
+decrypted per report).
+
+**Tests.** `cargo test --release` (OpenFHE 1.3.1 on `LD_LIBRARY_PATH`):
+task shapes, depths and bounds; at production parameters, Histogram(3)
+with the exact check (every invalid encoding and every write outside a
+report's slots zeroed), Sum(100) with the randomised check (only the
+decoded sum decrypts; the cancellation pair 2, 336449 is rejected; two
+verification ciphertexts), and SumVec(10, 1), the binary-vector workload of
+the paper's §5.3, with the exact check.
+
+**Measurements.** `src/bin/paper_core_eval.rs`, one configuration per
+process:
+
+    paper_core_eval exact --type histogram:3 --reports 100 --batches 6 --out exact-histogram-3.json
+    paper_core_eval randomised --type sumvec:100:1 --reports 100 --batches 6

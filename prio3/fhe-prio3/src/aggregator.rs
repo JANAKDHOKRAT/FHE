@@ -1292,11 +1292,16 @@ impl Aggregator {
     /// with every report's challenge in its own group's slots; adds the
     /// validity-gated chunks, count and moment products to the running sums.
     fn verify_and_fold(&mut self, acc: Vec<Ciphertext>, reports: &[(usize, ReportId)]) -> Result<()> {
-        let challenge = Challenge::derive_batch(&self.cfg, &self.field, &self.layout, &self.verify_key, reports);
-        let terms = self.circuit.report_terms(&acc, &challenge)?;
-        let s = self.circuit.class_sums(&terms)?;
-        let g = self.circuit.silent_validity(&s)?;
         let groups: Vec<usize> = reports.iter().map(|(g, _)| *g).collect();
+        let g = if self.cfg.exact_check() {
+            // batched only: `acc` is already zero outside the groups' element slots
+            self.circuit.exact_validity(&self.cfg, &self.field, &acc, &groups)?
+        } else {
+            let challenge = Challenge::derive_batch(&self.cfg, &self.field, &self.layout, &self.verify_key, reports);
+            let terms = self.circuit.report_terms(&acc, &challenge)?;
+            let s = self.circuit.class_sums(&terms)?;
+            self.circuit.silent_validity(&s)?
+        };
         // Batched: every report was masked to its group on admission (with
         // shares: the combined batch input was masked to its reports'
         // groups), so the accumulator is already zero outside the groups'
@@ -1370,6 +1375,22 @@ impl Aggregator {
         }
         self.silent_finalized = true;
         Ok(())
+    }
+
+    /// Silent mode: runs the validity circuit on the open verification
+    /// batch now instead of when its groups are all taken or at the close
+    /// (which flush it anyway). A no-op when no report is pending. For a
+    /// deployment that bounds how long admitted reports wait unverified,
+    /// and for measuring the circuit on its own.
+    pub fn flush_silent(&mut self) -> Result<()> {
+        if self.cfg.mode != VerificationMode::Silent {
+            return Err(Error::Protocol("flush_silent is only valid in silent mode".into()));
+        }
+        if self.closed {
+            return Err(Error::Protocol("the batch is closed".into()));
+        }
+        self.require_no_open_share_flush()?;
+        self.flush_silent_batch()
     }
 
     /// Number of reports admitted into the current, not yet flushed,

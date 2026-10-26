@@ -28,6 +28,10 @@ pub const SILENT_REPETITIONS: usize = 7;
 /// by the masked aggregator randomness (3).
 pub const VERDICT_CIRCUIT_DEPTH: u32 = 3;
 
+/// Slots per row at the ring dimension (65536) of every silent-mode task
+/// at 128-bit security: the row the exact check's packing is sized for.
+pub const EXACT_ROW: usize = 32768;
+
 /// How the aggregators use the result of the validity check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum VerificationMode {
@@ -39,6 +43,22 @@ pub enum VerificationMode {
     /// batch sums are ever decrypted. Depth `2 + fermat + log2(classes) + 1`,
     /// ring dimension 65536 at 128-bit security with the default modulus.
     Silent,
+}
+
+/// Which validity check silent mode evaluates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum SilentCheck {
+    /// `repetitions` random linear combinations of the residuals, each
+    /// tested for zero (Fermat): soundness `p^-repetitions` per submitted
+    /// report, depth independent of the measurement's length.
+    #[default]
+    Randomised,
+    /// Every residual tested for zero on its own and the flags multiplied
+    /// (`prod_l (1 - e_l^(p-1))`): no soundness error, depth growing with
+    /// `log2` of the slots one report occupies ([`TaskConfig::exact_shape`]).
+    /// Batched layout only, one report per `row / silent_batch_groups`
+    /// slots; no moments.
+    Exact,
 }
 
 /// Whether reports must be signed by a registered client.
@@ -173,6 +193,11 @@ pub struct TaskConfig {
     /// before it existed (off). Verdict mode with ciphertext upload only.
     #[serde(default)]
     pub client_proofs: bool,
+    /// Silent mode: the randomised check (default) or the exact one
+    /// ([`SilentCheck`]). Absent in task files from before it existed
+    /// (randomised).
+    #[serde(default)]
+    pub silent_check: SilentCheck,
 }
 
 /// The configuration fields that existed before `key_topology` and
@@ -263,6 +288,31 @@ struct TaskConfigV3 {
     upload_keys: Vec<[u8; 32]>,
 }
 
+/// A task file written before `silent_check` existed (postcard, field by
+/// field).
+#[derive(Deserialize)]
+struct TaskConfigV4 {
+    task_id: [u8; 32],
+    measurement_type: MeasurementType,
+    mode: VerificationMode,
+    auth: AuthPolicy,
+    num_aggregators: usize,
+    repetitions: usize,
+    min_batch_size: usize,
+    max_batch_size: u64,
+    max_report_bytes: usize,
+    plain_mod: u64,
+    security_bits: u32,
+    silent_batch_groups: usize,
+    moments: bool,
+    collectors: Vec<CollectorPolicy>,
+    key_topology: KeyTopology,
+    min_cell_count: u64,
+    upload: Upload,
+    upload_keys: Vec<[u8; 32]>,
+    client_proofs: bool,
+}
+
 /// Separates the legacy binding from the extension in tasks that use it.
 const BINDING_EXTENSION: &[u8] = b"fhe-prio3/2 task extension";
 
@@ -272,6 +322,9 @@ const BINDING_UPLOAD_EXTENSION: &[u8] = b"fhe-prio3/3 upload extension";
 
 /// Separates the client-proofs extension in tasks that require proofs.
 const BINDING_PROOFS_EXTENSION: &[u8] = b"fhe-prio3/4 client proofs extension";
+
+/// Separates the silent-check extension in tasks that use the exact check.
+const BINDING_CHECK_EXTENSION: &[u8] = b"fhe-prio3/5 silent check extension";
 
 /// Whether an X25519 public key is a point a Diffie-Hellman with it can
 /// be contributory for (not one of the small-order points, for which every
@@ -304,17 +357,41 @@ impl TaskConfig {
             upload: Upload::Ciphertext,
             upload_keys: Vec::new(),
             client_proofs: false,
+            silent_check: SilentCheck::Randomised,
         }
     }
 
-    /// Decodes a task file (postcard): the current format, one written
-    /// before `client_proofs` existed, one written before `upload` existed,
-    /// or one written before `key_topology` and `min_cell_count` existed
-    /// (read with the missing fields at their defaults, which keeps its
-    /// digest).
+    /// Decodes a task file (postcard): the current format, or one written
+    /// before `silent_check`, `client_proofs`, `upload`, or `key_topology`
+    /// and `min_cell_count` existed (read with the missing fields at their
+    /// defaults, which keeps its digest).
     pub fn decode(bytes: &[u8]) -> Result<Self> {
         if let Ok(c) = crate::messages::decode::<TaskConfig>(bytes) {
             return Ok(c);
+        }
+        if let Ok(v) = crate::messages::decode::<TaskConfigV4>(bytes) {
+            return Ok(Self {
+                task_id: v.task_id,
+                measurement_type: v.measurement_type,
+                mode: v.mode,
+                auth: v.auth,
+                num_aggregators: v.num_aggregators,
+                repetitions: v.repetitions,
+                min_batch_size: v.min_batch_size,
+                max_batch_size: v.max_batch_size,
+                max_report_bytes: v.max_report_bytes,
+                plain_mod: v.plain_mod,
+                security_bits: v.security_bits,
+                silent_batch_groups: v.silent_batch_groups,
+                moments: v.moments,
+                collectors: v.collectors,
+                key_topology: v.key_topology,
+                min_cell_count: v.min_cell_count,
+                upload: v.upload,
+                upload_keys: v.upload_keys,
+                client_proofs: v.client_proofs,
+                silent_check: SilentCheck::Randomised,
+            });
         }
         if let Ok(v) = crate::messages::decode::<TaskConfigV3>(bytes) {
             return Ok(Self {
@@ -337,6 +414,7 @@ impl TaskConfig {
                 upload: v.upload,
                 upload_keys: v.upload_keys,
                 client_proofs: false,
+                silent_check: SilentCheck::Randomised,
             });
         }
         if let Ok(v) = crate::messages::decode::<TaskConfigV2>(bytes) {
@@ -360,6 +438,7 @@ impl TaskConfig {
                 upload: Upload::Ciphertext,
                 upload_keys: Vec::new(),
                 client_proofs: false,
+                silent_check: SilentCheck::Randomised,
             });
         }
         let l: LegacyTaskConfig = crate::messages::decode(bytes)?;
@@ -383,6 +462,7 @@ impl TaskConfig {
             upload: Upload::Ciphertext,
             upload_keys: Vec::new(),
             client_proofs: false,
+            silent_check: SilentCheck::Randomised,
         })
     }
 
@@ -600,8 +680,70 @@ impl TaskConfig {
         c
     }
 
+    /// Silent mode with the exact check ([`SilentCheck::Exact`], Eq. 9 of
+    /// the paper): every residual tested on its own, no soundness error.
+    /// One report per [`Self::exact_shape`] slots of a row of 32768 (ring
+    /// dimension 65536, which every exact task's depth of 24 to 28 needs at
+    /// 128-bit security; [`Self::layout`] refuses any other row). Fails
+    /// validation when the measurement's slots take the chain past depth 28.
+    pub fn new_exact(task_id: [u8; 32], measurement_type: MeasurementType, num_aggregators: usize) -> Self {
+        let mut c = Self::new_silent(task_id, measurement_type, num_aggregators);
+        c.silent_check = SilentCheck::Exact;
+        c.repetitions = 1;
+        let (_, classes, block) = c.exact_shape();
+        c.silent_batch_groups = (EXACT_ROW / (classes * block)).max(1);
+        c
+    }
+
+    /// Whether silent mode runs the exact check.
+    pub fn exact_check(&self) -> bool {
+        self.mode == VerificationMode::Silent && self.silent_check == SilentCheck::Exact
+    }
+
+    /// Slot shape of one report under the exact check: `(chunks, classes,
+    /// block)`. Chunks are cut only where the visibility class changes;
+    /// `block` is the longest chunk rounded up to a power of two (element
+    /// positions per report); `classes` is the number of residue classes
+    /// the residuals need (one per chunk for the bit residuals, one per
+    /// linear constraint) rounded up to a power of two. One report
+    /// occupies `classes * block` slots, and the product of its zero tests
+    /// costs `log2(classes * block)` levels.
+    pub fn exact_shape(&self) -> (usize, usize, usize) {
+        let n = self.measurement_type.input_len();
+        let mut bounds = self.chunk_cuts();
+        bounds.push(n);
+        let mut start = 0usize;
+        let mut longest = 0usize;
+        for &end in &bounds {
+            longest = longest.max(end - start);
+            start = end;
+        }
+        let chunks = bounds.len();
+        let classes = (chunks + self.measurement_type.linear_constraints().len()).next_power_of_two();
+        (chunks, classes, longest.next_power_of_two())
+    }
+
     pub fn validate(&self) -> Result<Field> {
         self.measurement_type.validate()?;
+        if self.silent_check == SilentCheck::Exact {
+            if self.mode != VerificationMode::Silent {
+                return Err(Error::Config("the exact check is a silent-mode check".into()));
+            }
+            if self.repetitions != 1 {
+                return Err(Error::Config("the exact check has no repetitions: set repetitions to 1".into()));
+            }
+            if self.moments {
+                return Err(Error::Config("the exact check does not compute second moments".into()));
+            }
+            let (_, classes, block) = self.exact_shape();
+            if self.silent_batch_groups < 2 || self.silent_batch_groups * classes * block != EXACT_ROW {
+                return Err(Error::Config(format!(
+                    "the exact check packs one report per {} slots: silent_batch_groups must be {}",
+                    classes * block,
+                    EXACT_ROW / (classes * block)
+                )));
+            }
+        }
         match self.key_topology {
             KeyTopology::Aggregators if self.num_aggregators < 2 => {
                 return Err(Error::Config(
@@ -766,6 +908,16 @@ impl TaskConfig {
                 self.mult_depth()
             )));
         }
+        if self.exact_check() && self.mult_depth() > 28 {
+            let (_, classes, block) = self.exact_shape();
+            return Err(Error::Config(format!(
+                "exact check depth {} exceeds 28: a report occupies {} slots ({} classes of {} positions) and its zero tests cost log2 of that; use the randomised check",
+                self.mult_depth(),
+                classes * block,
+                classes,
+                block
+            )));
+        }
         if self.mode == VerificationMode::Silent && self.mult_depth() > 28 {
             return Err(Error::Config(format!(
                 "silent mode circuit depth {} exceeds 28; use a plaintext modulus with a shorter Fermat chain or fewer repetitions",
@@ -793,10 +945,24 @@ impl TaskConfig {
         } else {
             1
         };
+        // The exact check uses one residue class per chunk and per linear
+        // constraint, where the randomised check uses one per repetition.
+        let classes_used = if self.exact_check() {
+            let (chunks, classes, block) = self.exact_shape();
+            if row != EXACT_ROW || groups * classes * block != row {
+                return Err(Error::Config(format!(
+                    "the exact check needs a row of {EXACT_ROW} slots holding {groups} reports of {} slots; the context has {row}",
+                    classes * block
+                )));
+            }
+            chunks + self.measurement_type.linear_constraints().len()
+        } else {
+            self.repetitions
+        };
         let mut l = Layout::with_cuts(
             self.layout_kind(),
             self.measurement_type.input_len(),
-            self.repetitions,
+            classes_used,
             row,
             groups,
             &self.chunk_cuts(),
@@ -846,6 +1012,14 @@ impl TaskConfig {
                 // close. `key_switch_digits` keeps that chain at ring
                 // dimension 65536.
                 let batched = if self.silent_batch_groups > 1 { 2 } else { 0 };
+                if self.silent_check == SilentCheck::Exact {
+                    // x(x-1) and the linear sums (one level: no
+                    // coefficients), the Fermat chain, the product of the
+                    // zero tests over the report's slots, gating, and the
+                    // two batched masks.
+                    let (_, classes, block) = self.exact_shape();
+                    return 1 + self.fermat_depth() + (classes * block).trailing_zeros() + 1 + batched;
+                }
                 2 + self.fermat_depth() + classes.trailing_zeros() + 1 + batched
             }
         }
@@ -870,7 +1044,12 @@ impl TaskConfig {
     }
 
     /// Bits of soundness of the validity check against a malicious client.
+    /// Infinite for the exact check, which accepts exactly the valid
+    /// encodings.
     pub fn soundness_bits(&self) -> f64 {
+        if self.exact_check() {
+            return f64::INFINITY;
+        }
         self.repetitions as f64 * self.field().log2()
     }
 
@@ -907,6 +1086,10 @@ impl TaskConfig {
         if self.client_proofs {
             out.extend_from_slice(BINDING_PROOFS_EXTENSION);
             out.extend_from_slice(&postcard::to_allocvec(&self.client_proofs).expect("serializable"));
+        }
+        if self.silent_check != SilentCheck::default() {
+            out.extend_from_slice(BINDING_CHECK_EXTENSION);
+            out.extend_from_slice(&postcard::to_allocvec(&self.silent_check).expect("serializable"));
         }
         out
     }
@@ -1025,13 +1208,14 @@ mod tests {
             assert_eq!(&TaskConfig::decode(&postcard::to_allocvec(t).unwrap()).unwrap(), t);
         }
         // no format accepts a file cut inside a field or extended; a file
-        // cut by exactly its last field is the older encoding without it
-        // (here the same task: the field is at its default), which is why a
-        // node checks its task against the attested digest
+        // cut by exactly its last fields is the older encoding without them
         // (`attest::check_attested_task`)
         let cur = postcard::to_allocvec(&s).unwrap();
-        assert_eq!(TaskConfig::decode(&cur[..cur.len() - 1]).unwrap(), s);
-        assert!(TaskConfig::decode(&cur[..cur.len() - 2]).is_err());
+        // (here the same task: the fields are at their defaults), which is
+        // why a node checks its task against the attested digest
+        assert_eq!(TaskConfig::decode(&cur[..cur.len() - 1]).unwrap(), s); // no silent_check
+        assert_eq!(TaskConfig::decode(&cur[..cur.len() - 2]).unwrap(), s); // nor client_proofs
+        assert!(TaskConfig::decode(&cur[..cur.len() - 3]).is_err()); // cut inside the upload fields
         let mut longer = cur.clone();
         longer.push(0);
         assert!(TaskConfig::decode(&longer).is_err());
@@ -1105,8 +1289,8 @@ mod tests {
         assert_eq!(with, without);
         // a file written before the field existed is the task without proofs
         let cur = postcard::to_allocvec(&v).unwrap();
-        assert_eq!(cur.last(), Some(&0)); // the trailing `false`
-        let v3 = &cur[..cur.len() - 1];
+        assert_eq!(&cur[cur.len() - 2..], &[0, 0]); // `false`, then the default silent check
+        let v3 = &cur[..cur.len() - 2];
         assert!(crate::messages::decode::<TaskConfig>(v3).is_err());
         assert_eq!(TaskConfig::decode(v3).unwrap(), v);
         assert_eq!(TaskConfig::decode(v3).unwrap().digest(), v.digest());
@@ -1134,6 +1318,102 @@ mod tests {
                 .err()
                 .is_none_or(|e| !e.contains("client_proofs"))
         );
+    }
+
+    /// The exact check's slot shapes, depths, key-switching digits and
+    /// packing for the types the paper names, the refusals, and its place
+    /// in task files and bindings.
+    #[test]
+    fn exact_check_shapes_depths_files_and_rules() {
+        let shape = |t: MeasurementType| {
+            let c = TaskConfig::new_exact([5; 32], t, 2);
+            let (chunks, classes, block) = c.exact_shape();
+            (
+                chunks,
+                classes,
+                block,
+                c.silent_batch_groups,
+                c.mult_depth(),
+                c.key_switch_digits(),
+                c.validate().is_ok(),
+            )
+        };
+        // 1 + 20 + log2(classes * block) + 1 + 2
+        assert_eq!(shape(MeasurementType::Count), (1, 1, 1, 32768, 24, 0, true));
+        assert_eq!(shape(MeasurementType::Sum { max_measurement: 100 }), (1, 1, 8, 4096, 27, 5, true));
+        assert_eq!(shape(MeasurementType::Sum { max_measurement: 65535 }), (1, 1, 16, 2048, 28, 5, true));
+        assert_eq!(shape(MeasurementType::Sum { max_measurement: 65536 }), (1, 1, 32, 1024, 29, 5, false));
+        assert_eq!(shape(MeasurementType::Histogram { length: 3 }), (1, 2, 4, 4096, 27, 5, true)); // + the one-hot class
+        assert_eq!(shape(MeasurementType::Histogram { length: 8 }), (1, 2, 8, 2048, 28, 5, true));
+        assert_eq!(shape(MeasurementType::Histogram { length: 9 }), (1, 2, 16, 1024, 29, 5, false));
+        assert_eq!(shape(MeasurementType::Histogram { length: 21 }), (1, 2, 32, 512, 30, 5, false));
+        assert_eq!(
+            shape(MeasurementType::MultihotCountVec { length: 4, max_weight: 2 }),
+            (1, 2, 8, 2048, 28, 5, true)
+        );
+        assert_eq!(
+            shape(MeasurementType::SumVec {
+                length: 8,
+                max_measurement: 255
+            }),
+            (1, 1, 64, 512, 30, 5, false)
+        );
+        let e = TaskConfig::new_exact([5; 32], MeasurementType::Histogram { length: 21 }, 2)
+            .validate()
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("exact check depth 30") && e.contains("64 slots"), "{e}");
+        let x = TaskConfig::new_exact([5; 32], MeasurementType::Histogram { length: 3 }, 2);
+        assert!(x.exact_check() && x.soundness_bits().is_infinite());
+        // the layout: one class per chunk and per constraint, the row it was sized for
+        let l = x.layout(EXACT_ROW).unwrap();
+        assert_eq!(
+            (l.kind, l.repetitions, l.classes, l.block, l.groups, l.num_chunks),
+            (LayoutKind::Batched, 2, 2, 4, 4096, 1)
+        );
+        assert!(x.layout(EXACT_ROW * 2).is_err());
+        // refusals
+        let mut bad = x.clone();
+        bad.mode = VerificationMode::Verdict;
+        assert!(bad.validate().is_err());
+        let mut bad = x.clone();
+        bad.repetitions = 7;
+        assert!(bad.validate().is_err());
+        let mut bad = x.clone();
+        bad.silent_batch_groups = 64;
+        assert!(bad.validate().unwrap_err().to_string().contains("must be 4096"));
+        let mut bad = TaskConfig::new_exact([5; 32], MeasurementType::BoundedSumVec { bounds: vec![1, 3] }, 2);
+        bad.validate().unwrap();
+        bad.moments = true;
+        assert!(bad.validate().unwrap_err().to_string().contains("second moments"));
+        // the split-key topology and suppression combine with it
+        let mut split = x.clone();
+        split.num_aggregators = 1;
+        split.key_topology = KeyTopology::AggregatorAndCollector;
+        split.min_cell_count = 11;
+        split.min_batch_size = 30;
+        split.validate().unwrap();
+        // files and bindings: the randomised default binds what it bound
+        // before the field existed; the exact check extends it
+        let r = TaskConfig::new_silent([5; 32], MeasurementType::Histogram { length: 3 }, 2);
+        assert!(!r.binding().windows(BINDING_CHECK_EXTENSION.len()).any(|w| w == BINDING_CHECK_EXTENSION));
+        let mut rx = r.clone();
+        rx.silent_check = SilentCheck::Exact;
+        let mut want = r.binding();
+        want.extend_from_slice(BINDING_CHECK_EXTENSION);
+        want.extend_from_slice(&postcard::to_allocvec(&SilentCheck::Exact).unwrap());
+        assert_eq!(rx.binding(), want);
+        assert_ne!(rx.digest(), r.digest());
+        for t in [&r, &x, &split] {
+            assert_eq!(&TaskConfig::decode(&postcard::to_allocvec(t).unwrap()).unwrap(), t);
+        }
+        let cur = postcard::to_allocvec(&r).unwrap();
+        assert_eq!(TaskConfig::decode(&cur[..cur.len() - 1]).unwrap(), r); // a file from before the field
+        let ex = postcard::to_allocvec(&x).unwrap();
+        assert_eq!(ex.last(), Some(&1));
+        let mut two = ex.clone();
+        *two.last_mut().unwrap() = 2;
+        assert!(TaskConfig::decode(&two).is_err());
     }
 
     #[test]

@@ -47,7 +47,7 @@ pub use auth::{ClientIdentity, ClientRegistry, StaticRegistry};
 pub use client::Client;
 pub use collector::Collector;
 pub use collector::{CollectorShareState, PendingRelease};
-pub use config::{AuthPolicy, CollectorPolicy, KeyTopology, TaskConfig, Upload, VerificationMode};
+pub use config::{AuthPolicy, CollectorPolicy, KeyTopology, SilentCheck, TaskConfig, Upload, VerificationMode};
 pub use error::{Error, RejectReason, Result};
 pub use messages::{
     AggregateShare, CountCommit, CountOpening, CountReveal, CountShare, GateCheckCommit, GateCommit, GateContribution, GateOpening, GateReveal, GateShare,

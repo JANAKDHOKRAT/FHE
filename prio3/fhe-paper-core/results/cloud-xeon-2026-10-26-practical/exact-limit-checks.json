@@ -1,0 +1,23 @@
+[
+  {
+    "length": 25,
+    "required_depth": 29,
+    "status": "rejected_before_setup_by_current_configuration",
+    "exit_code": 1,
+    "stderr": "paper_core_eval: invalid configuration: exact check depth 29 exceeds 28: a report occupies 32 slots (1 classes of 32 positions) and its zero tests cost log2 of that; use the randomised check"
+  },
+  {
+    "length": 50,
+    "required_depth": 30,
+    "status": "rejected_before_setup_by_current_configuration",
+    "exit_code": 1,
+    "stderr": "paper_core_eval: invalid configuration: exact check depth 30 exceeds 28: a report occupies 64 slots (1 classes of 64 positions) and its zero tests cost log2 of that; use the randomised check"
+  },
+  {
+    "length": 100,
+    "required_depth": 31,
+    "status": "rejected_before_setup_by_current_configuration",
+    "exit_code": 1,
+    "stderr": "paper_core_eval: invalid configuration: exact check depth 31 exceeds 28: a report occupies 128 slots (1 classes of 128 positions) and its zero tests cost log2 of that; use the randomised check"
+  }
+]

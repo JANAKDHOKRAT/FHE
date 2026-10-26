@@ -80,3 +80,14 @@ four reports per batch and six batches. These are different-hardware
 observations alongside the paper's Boolean baseline, not a controlled
 speedup comparison. The current exact-mode parameters cannot support all
 four lengths.
+
+Additional measurements on the unchanged configuration are in
+[`results/cloud-xeon-2026-10-26-practical/summary.md`](results/cloud-xeon-2026-10-26-practical/summary.md):
+Count, Sum(100) and Histogram(8), each with exact and seven-check randomised
+validation, plus exact SumVec(10, 1). All 42 four-report batches passed
+their output checks. Raw observations, per-batch success logs, file hashes,
+configuration-limit checks and a rerun script are included. No core-library
+parameter changes were retained for these measurements. Exact SumVec at
+lengths 25, 50 and 100 is not included in this practical timing matrix;
+its depth-29/30/31 requirements exceed the retained cap. That is a limit
+of this configuration, not a proof that larger exact circuits cannot run.

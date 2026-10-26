@@ -1,0 +1,55 @@
+{
+  "started_utc": "2026-10-26T15:52:54.684641+00:00",
+  "binary_sha256": "939b11715f5f2c9376ea263918f9408ff2b495afa30e6fef0ef80cc6a026b824",
+  "base_commit": "686b8d38033279855cd52e93e5c36eecdec4bdd1",
+  "reports_per_batch": 4,
+  "batches": 6,
+  "seed": 1,
+  "omp_num_threads": "2",
+  "configurations": [
+    [
+      "exact",
+      "count",
+      24,
+      65536
+    ],
+    [
+      "exact",
+      "sum:100",
+      27,
+      65536
+    ],
+    [
+      "exact",
+      "histogram:8",
+      28,
+      65536
+    ],
+    [
+      "exact",
+      "sumvec:10:1",
+      28,
+      65536
+    ],
+    [
+      "randomised",
+      "count",
+      28,
+      65536
+    ],
+    [
+      "randomised",
+      "sum:100",
+      28,
+      65536
+    ],
+    [
+      "randomised",
+      "histogram:8",
+      28,
+      65536
+    ]
+  ],
+  "finished_utc": "2026-10-26T16:41:56.408568+00:00",
+  "failures": []
+}

@@ -1,0 +1,46 @@
+{
+  "verified_utc": "2026-10-26T16:42:48.480490+00:00",
+  "configurations": [
+    "exact-count",
+    "exact-sum-100",
+    "exact-histogram-8",
+    "exact-sumvec-10-1",
+    "randomised-count",
+    "randomised-sum-100",
+    "randomised-histogram-8"
+  ],
+  "batches_verified": 42,
+  "reports_verified": 168,
+  "measured_binary_sha256": "939b11715f5f2c9376ea263918f9408ff2b495afa30e6fef0ef80cc6a026b824",
+  "measured_base_commit": "686b8d38033279855cd52e93e5c36eecdec4bdd1",
+  "source_sha256": {
+    "prio3/fhe-paper-core/tests/paper_core.rs": "c9af7eabb5907f13cebac5522bb3463a7358823219b1edf80447a7f91777a03d",
+    "prio3/fhe-paper-core/src/lib.rs": "434fbf998db4e5fd0cdabb14066ef89a294d621020d40630bc117477cd8b9885",
+    "prio3/fhe-paper-core/src/bin/paper_core_eval.rs": "28c9b6f668b5beaff2ae1a23f4ad545598255bf4bec1396b8af53dcaf4939137",
+    "prio3/fhe-prio3/src/verify.rs": "3c6b324f2c3ffccba0afb122b8658838fb079ff95648e4a4757350a62c80c0cd",
+    "prio3/fhe-prio3/src/config.rs": "eb6610731ed87649ee71afb8df8945880ed2d3851177d7228c61fda24025f8a1"
+  },
+  "raw_file_sha256": {
+    "exact-count.json": "468930c2d3a62e25575afe36ab73c47585f1ea2d25649c5cdee9fae1c4d49eab",
+    "exact-count.log": "07a381712b6c935d372d26258835521653564d8bb53f7d1fffd0e090cce96880",
+    "exact-sum-100.json": "816f6995a4dc734e410dfb167d3d3c4c1a48cafac117baffd2890eaca57abcef",
+    "exact-sum-100.log": "08919513860552d33a5db2720ed7ae645869c0b400e66be629f876528facd020",
+    "exact-histogram-8.json": "71d71982139f767eeffa33d2b8805f88f07e848f32919196ab2dce951f3cf7e0",
+    "exact-histogram-8.log": "b7203e6acbe00fdbf095f7c10307313e6d4e7a14292bfd95bf723277b6faec9b",
+    "exact-sumvec-10-1.json": "9a4fd386e42ac26bccbb3db1554b375cc35cfe3410e7ae3bce518acbd028236c",
+    "exact-sumvec-10-1.log": "87fd6cd8931a1fcb9848239f6b0c2bbf66971fde246e1be933c8bc17f4dbe3b3",
+    "randomised-count.json": "c12ae271287503e38e6f10ae9e9ae3cc95659dbe082c1189078d62204c9ca7d3",
+    "randomised-count.log": "5eef48c5d6c2ba3783bdff22b87f77df31cb698ac517cf99d11d6d14068fbe7d",
+    "randomised-sum-100.json": "e8dc3cde1eebef04aab640947b274f3e5e94c67ed4ab07ede7ce5bb42d0b6e58",
+    "randomised-sum-100.log": "4e0ae0bedb30b83506756216e1cc37925a5ea9a0b3c88dde34c008cbc11ca115",
+    "randomised-histogram-8.json": "b21ccdd3349cae76c1a86932be740e6727eea901892c43dac8e285871601f160",
+    "randomised-histogram-8.log": "5af28544788710873ebf5367ac16e4d8a8fb9af90f5e75d872a5fd54033dd8ec"
+  },
+  "openfhe_source_commit": "32362085fcfa8133f86a4e81d4440734c984b16d",
+  "rustc": "rustc 1.94.1 (e408947bf 2026-03-25)",
+  "gxx": "g++ (Debian 14.2.0-19) 14.2.0",
+  "exploratory_evidence_sha256": {
+    "exploratory-integration.log.gz": "450a69e77a7ef5319cd3b67ab52415f204d02afb508bc8a44af89a7d0575089b",
+    "exploratory-parameter-probe.csv": "462a4d50c15f562e5a9a78685d89db0ae697b800af06a14927e7c168e8835e10"
+  }
+}

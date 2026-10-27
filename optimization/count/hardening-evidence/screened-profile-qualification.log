@@ -1,0 +1,11 @@
+   Compiling fhe-paper-core v0.1.0 (/workspace/FHE/optimization/count/fhe-paper-core)
+    Finished `release` profile [optimized] target(s) in 2.21s
+     Running tests/native_tasks.rs (fhe-build/count-optimization/release/deps/native_tasks-e86c4ac4db94c8ec)
+
+running 1 test
+test native_task_complete ... ATTACK replay: same report admitted twice; no participation authentication
+QUALIFIED type=Count mode=Exact p=786433 digits=4 row=32768 groups=4 repetitions=1 invalid=3 admitted=32
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 170.87s
+

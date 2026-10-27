@@ -1,0 +1,101 @@
+prime,task,mode,digits,status,ring,depth,groups,repetitions,detail
+65537,count,exact,3,rejected,,,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,count,exact,4,rejected,,,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,count,exact,5,rejected,,,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,count,exact,6,rejected,,,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,count,exact,7,rejected,,,,,openfhe: /workspace/fhe-deps/openfhe-1.3.1/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 22 towers into 7 digits. Please select different number of digits.
+65537,count,randomised,3,rejected,,,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,count,randomised,4,rejected,,,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,count,randomised,5,rejected,,,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,count,randomised,6,rejected,,,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,count,randomised,7,rejected,,,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,sum100,exact,3,rejected,,,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,sum100,exact,4,rejected,,,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,sum100,exact,5,rejected,,,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,sum100,exact,6,rejected,,,,,openfhe: /workspace/fhe-deps/openfhe-1.3.1/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 25 towers into 6 digits. Please select different number of digits.
+65537,sum100,exact,7,rejected,,,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,sum100,randomised,3,rejected,,,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,sum100,randomised,4,rejected,,,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,sum100,randomised,5,rejected,,,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,sum100,randomised,6,rejected,,,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,sum100,randomised,7,rejected,,,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,hist8,exact,3,rejected,,,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,hist8,exact,4,rejected,,,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,hist8,exact,5,rejected,,,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,hist8,exact,6,rejected,,,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,hist8,exact,7,rejected,,,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,hist8,randomised,3,rejected,,,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,hist8,randomised,4,rejected,,,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,hist8,randomised,5,rejected,,,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,hist8,randomised,6,rejected,,,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,hist8,randomised,7,rejected,,,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,sv10,exact,3,rejected,,,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,sv10,exact,4,rejected,,,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,sv10,exact,5,rejected,,,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,sv10,exact,6,rejected,,,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,sv10,exact,7,rejected,,,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,sv10,randomised,3,rejected,,,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,sv10,randomised,4,rejected,,,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,sv10,randomised,5,rejected,,,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,sv10,randomised,6,rejected,,,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,sv10,randomised,7,rejected,,,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,sv100,exact,3,rejected,,,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,sv100,exact,4,rejected,,,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,sv100,exact,5,rejected,,,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,sv100,exact,6,rejected,,,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,sv100,exact,7,rejected,,,,,openfhe: /workspace/fhe-deps/openfhe-1.3.1/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 29 towers into 7 digits. Please select different number of digits.
+65537,sv100,randomised,3,rejected,,,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,sv100,randomised,4,rejected,,,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,sv100,randomised,5,rejected,,,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,sv100,randomised,6,rejected,,,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,sv100,randomised,7,rejected,,,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+786433,count,exact,3,selected,65536,24,32768,1,
+786433,count,exact,4,selected,65536,24,32768,1,
+786433,count,exact,5,selected,65536,24,32768,1,
+786433,count,exact,6,selected,65536,24,32768,1,
+786433,count,exact,7,selected,65536,24,32768,1,
+786433,count,randomised,3,selected,65536,28,4096,8,
+786433,count,randomised,4,selected,65536,28,4096,8,
+786433,count,randomised,5,selected,65536,28,4096,8,
+786433,count,randomised,6,selected,65536,28,4096,8,
+786433,count,randomised,7,rejected,,,,,openfhe: /workspace/fhe-deps/openfhe-1.3.1/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 30 towers into 7 digits. Please select different number of digits.
+786433,sum100,exact,3,selected,65536,27,4096,1,
+786433,sum100,exact,4,selected,65536,27,4096,1,
+786433,sum100,exact,5,selected,65536,27,4096,1,
+786433,sum100,exact,6,selected,65536,27,4096,1,
+786433,sum100,exact,7,rejected,,,,,openfhe: /workspace/fhe-deps/openfhe-1.3.1/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 29 towers into 7 digits. Please select different number of digits.
+786433,sum100,randomised,3,selected,65536,28,512,8,
+786433,sum100,randomised,4,selected,65536,28,512,8,
+786433,sum100,randomised,5,selected,65536,28,512,8,
+786433,sum100,randomised,6,selected,65536,28,512,8,
+786433,sum100,randomised,7,rejected,,,,,openfhe: /workspace/fhe-deps/openfhe-1.3.1/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 30 towers into 7 digits. Please select different number of digits.
+786433,hist8,exact,3,selected,65536,28,2048,1,
+786433,hist8,exact,4,selected,65536,28,2048,1,
+786433,hist8,exact,5,selected,65536,28,2048,1,
+786433,hist8,exact,6,selected,65536,28,2048,1,
+786433,hist8,exact,7,rejected,,,,,openfhe: /workspace/fhe-deps/openfhe-1.3.1/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 30 towers into 7 digits. Please select different number of digits.
+786433,hist8,randomised,3,selected,65536,28,512,8,
+786433,hist8,randomised,4,selected,65536,28,512,8,
+786433,hist8,randomised,5,selected,65536,28,512,8,
+786433,hist8,randomised,6,selected,65536,28,512,8,
+786433,hist8,randomised,7,rejected,,,,,openfhe: /workspace/fhe-deps/openfhe-1.3.1/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 30 towers into 7 digits. Please select different number of digits.
+786433,sv10,exact,3,selected,65536,28,2048,1,
+786433,sv10,exact,4,selected,65536,28,2048,1,
+786433,sv10,exact,5,selected,65536,28,2048,1,
+786433,sv10,exact,6,selected,65536,28,2048,1,
+786433,sv10,exact,7,rejected,,,,,openfhe: /workspace/fhe-deps/openfhe-1.3.1/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 30 towers into 7 digits. Please select different number of digits.
+786433,sv10,randomised,3,selected,65536,28,256,8,
+786433,sv10,randomised,4,selected,65536,28,256,8,
+786433,sv10,randomised,5,selected,65536,28,256,8,
+786433,sv10,randomised,6,selected,65536,28,256,8,
+786433,sv10,randomised,7,rejected,,,,,openfhe: /workspace/fhe-deps/openfhe-1.3.1/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 30 towers into 7 digits. Please select different number of digits.
+786433,sv100,exact,3,rejected,,,,,invalid configuration: exact check depth 31 exceeds 28: a report occupies 128 slots (1 classes of 128 positions) and its zero tests cost log2 of that; use the randomised check
+786433,sv100,exact,4,rejected,,,,,invalid configuration: exact check depth 31 exceeds 28: a report occupies 128 slots (1 classes of 128 positions) and its zero tests cost log2 of that; use the randomised check
+786433,sv100,exact,5,rejected,,,,,invalid configuration: exact check depth 31 exceeds 28: a report occupies 128 slots (1 classes of 128 positions) and its zero tests cost log2 of that; use the randomised check
+786433,sv100,exact,6,rejected,,,,,invalid configuration: exact check depth 31 exceeds 28: a report occupies 128 slots (1 classes of 128 positions) and its zero tests cost log2 of that; use the randomised check
+786433,sv100,exact,7,rejected,,,,,invalid configuration: exact check depth 31 exceeds 28: a report occupies 128 slots (1 classes of 128 positions) and its zero tests cost log2 of that; use the randomised check
+786433,sv100,randomised,3,selected,65536,28,32,8,
+786433,sv100,randomised,4,selected,65536,28,32,8,
+786433,sv100,randomised,5,selected,65536,28,32,8,
+786433,sv100,randomised,6,selected,65536,28,32,8,
+786433,sv100,randomised,7,rejected,,,,,openfhe: /workspace/fhe-deps/openfhe-1.3.1/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 30 towers into 7 digits. Please select different number of digits.

@@ -1,0 +1,31 @@
+[package]
+name = "fhe-prio3-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+fhe-prio3 = { path = ".." }
+openfhe-tbgv-rs = { path = "../../openfhe-tbgv-rs" }
+
+# The fuzz crate is its own workspace, like the crate it fuzzes.
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "parse"
+path = "fuzz_targets/parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "roundtrip"
+path = "fuzz_targets/roundtrip.rs"
+test = false
+doc = false
+bench = false

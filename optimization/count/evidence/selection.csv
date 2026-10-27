@@ -1,0 +1,33 @@
+prime,digits,projection,status,ring,depth,detail
+65537,1,false,rejected,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,1,true,rejected,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,2,false,rejected,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,2,true,rejected,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,3,false,rejected,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,3,true,rejected,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,4,false,rejected,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,4,true,rejected,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,5,false,rejected,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,5,true,rejected,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,6,false,rejected,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,6,true,rejected,,,openfhe: /workspace/fhe-deps/openfhe-1.3.1/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 20 towers into 6 digits. Please select different number of digits.
+65537,7,false,rejected,,,openfhe: /workspace/fhe-deps/openfhe-1.3.1/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 22 towers into 7 digits. Please select different number of digits.
+65537,7,true,selected,32768,18,
+65537,8,false,rejected,,,invalid configuration: prime does not support field slots at the security-selected ring dimension
+65537,8,true,rejected,,,openfhe: /workspace/fhe-deps/openfhe-1.3.1/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 20 towers into 8 digits. Please select different number of digits.
+786433,1,false,rejected,,,invalid configuration: native study ring exceeds retained resource cap 65536
+786433,1,true,rejected,,,invalid configuration: native study ring exceeds retained resource cap 65536
+786433,2,false,selected,65536,24,
+786433,2,true,selected,65536,22,
+786433,3,false,selected,65536,24,
+786433,3,true,selected,65536,22,
+786433,4,false,selected,65536,24,
+786433,4,true,selected,65536,22,
+786433,5,false,selected,65536,24,
+786433,5,true,selected,65536,22,
+786433,6,false,selected,65536,24,
+786433,6,true,selected,65536,22,
+786433,7,false,selected,65536,24,
+786433,7,true,rejected,,,openfhe: /workspace/fhe-deps/openfhe-1.3.1/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 24 towers into 7 digits. Please select different number of digits.
+786433,8,false,rejected,,,openfhe: /workspace/fhe-deps/openfhe-1.3.1/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 26 towers into 8 digits. Please select different number of digits.
+786433,8,true,selected,65536,22,

@@ -1,0 +1,11 @@
+{
+  "platform": "Linux-6.18.55-x86_64-with-glibc2.41",
+  "cpu": "INTEL(R) XEON(R) PLATINUM 8573C",
+  "omp_threads": 2,
+  "openfhe_commit": "32362085fcfa8133f86a4e81d4440734c984b16d",
+  "library_hashes": {
+    "libOPENFHEbinfhe.so.1.3.1": "e36ea659fccdca292ca3fd856e43affafb07643e317350111b4306884ae02b54",
+    "libOPENFHEcore.so.1.3.1": "7726a7061bf681fd2d74321c0370497aa8b99a960a878e61f154ead28d668147",
+    "libOPENFHEpke.so.1.3.1": "50d1e54c46860b7b4b6ea5b7c228590141ddb0c8cf2222f6d1ac5b4e003b5254"
+  }
+}

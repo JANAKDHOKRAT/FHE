@@ -1,0 +1,18 @@
+[package]
+name = "count-auth"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT"
+description = "Authenticated, durable Count admission and release under the paper's honest-evaluator model"
+[dependencies]
+fhe-paper-core = { path = "../fhe-paper-core" }
+fhe-prio3 = { path = "../fhe-prio3" }
+openfhe-tbgv-rs = { path = "../openfhe-tbgv-rs" }
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+sha2 = "0.10"
+rusqlite = { version = "0.41", features = ["bundled"] }
+thiserror = "1"
+libc = "0.2"
+[workspace]

@@ -1,0 +1,31 @@
+   Compiling fhe-paper-core v0.1.0 (/workspace/FHE/optimization/count/fhe-paper-core)
+    Finished `release` profile [optimized] target(s) in 1.59s
+     Running unittests src/lib.rs (fhe-build/count-optimization/release/deps/fhe_paper_core-f998f22979b7d693)
+
+running 6 tests
+test exact_soundness_bound_tests::exact_repetitions_match_arbitrary_precision_boundary_oracle ... ok
+test native_binding_tests::public_context_roundtrips_and_binds_the_full_parameter_profile ... ok
+test native_key_binding_tests::invalid_sum_bound_is_rejected_without_division_by_zero ... ok
+test native_key_binding_tests::wrong_native_secret_epoch_is_rejected_before_startup_decryption ... ok
+test native_profile_tests::reject_invalid_security_contract_before_context_creation ... ok
+test tests::tasks_shapes_and_bounds ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 11.48s
+
+     Running tests/count_algebra.rs (fhe-build/count-optimization/release/deps/count_algebra-07e0c0711ed5beb2)
+
+running 1 test
+test exhaustive_count_equivalence ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+     Running tests/paper_core_cli.rs (fhe-build/count-optimization/release/deps/paper_core_cli-8d9079ab30cb2430)
+
+running 4 tests
+test exact_command_selects_exact_configuration_before_setup ... ok
+test native_only_options_are_rejected_even_when_equal_to_their_defaults ... ok
+test native_parameters_cannot_be_silently_applied_to_threshold_mode ... ok
+test obsolete_core_exact_spelling_is_rejected ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+

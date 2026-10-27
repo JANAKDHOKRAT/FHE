@@ -1,0 +1,705 @@
+{
+  "status": "completed",
+  "nominal_encryption_security_bits": 128,
+  "randomized_contract": {
+    "global_target_bits": 128,
+    "invalid_attempt_budget": 1000000,
+    "budget_enforcement": "assumed externally, not implemented across key lifetime"
+  },
+  "screening_batches": 3,
+  "warmup_batches": 0,
+  "qualification_parallelism": 2,
+  "timing_parallelism": 1,
+  "profiles": {
+    "native-count-d3": {
+      "type": "count",
+      "mode": "exact",
+      "digits": 3,
+      "groups": null,
+      "reports": 4,
+      "qualification": {
+        "argv": [
+          "/workspace/fhe-build/paper-core/release/deps/native_tasks-a6b1674616d8bd5c",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "returncode": 0,
+        "wall_s": 131.03297975700116,
+        "log": "qualification.log",
+        "log_sha256": "9d5dcfb0c75a0e42042d481682593af3be745386f642eb4b72bee0a1b13979ed"
+      },
+      "qualified": true
+    },
+    "threshold-count": {
+      "type": "count",
+      "mode": "exact",
+      "digits": null,
+      "groups": null,
+      "reports": 4,
+      "qualification": {
+        "argv": [
+          "/workspace/fhe-build/paper-core/release/deps/study_count-45da5a99f3822f7b",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "returncode": 0,
+        "wall_s": 139.0671237960014,
+        "log": "qualification.log",
+        "log_sha256": "954fc8d0b906a728548eeb8a3a66f84edb1f0c3feb9eda3413bf673170beab8c"
+      },
+      "qualified": true
+    },
+    "native-count-d5": {
+      "type": "count",
+      "mode": "exact",
+      "digits": 5,
+      "groups": null,
+      "reports": 4,
+      "qualification": {
+        "argv": [
+          "/workspace/fhe-build/paper-core/release/deps/native_tasks-a6b1674616d8bd5c",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "returncode": 0,
+        "wall_s": 144.44401067700164,
+        "log": "qualification.log",
+        "log_sha256": "41bd789b063322360f6cb444ed7ad4901ee009b2df6f0bae07feb132acfa7111"
+      },
+      "qualified": true
+    },
+    "native-sum-exact": {
+      "type": "sum:100",
+      "mode": "exact",
+      "digits": 3,
+      "groups": null,
+      "reports": 4,
+      "qualification": {
+        "argv": [
+          "/workspace/fhe-build/paper-core/release/deps/native_tasks-a6b1674616d8bd5c",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "returncode": 0,
+        "wall_s": 207.68522046300131,
+        "log": "qualification.log",
+        "log_sha256": "4cbc24e3ea18f688e625d5f486f8d7fec77e50902de4a02484ba21dba7782f3e"
+      },
+      "qualified": true
+    },
+    "native-hist-exact": {
+      "type": "histogram:8",
+      "mode": "exact",
+      "digits": 3,
+      "groups": null,
+      "reports": 4,
+      "qualification": {
+        "argv": [
+          "/workspace/fhe-build/paper-core/release/deps/native_tasks-a6b1674616d8bd5c",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "returncode": 0,
+        "wall_s": 248.9739249339982,
+        "log": "qualification.log",
+        "log_sha256": "79e381c153b315739d53d012fb4524c1b4d955c69c912e981247f8e5b5948d27"
+      },
+      "qualified": true
+    },
+    "native-sv10-exact": {
+      "type": "sumvec:10:1",
+      "mode": "exact",
+      "digits": 3,
+      "groups": null,
+      "reports": 4,
+      "qualification": {
+        "argv": [
+          "/workspace/fhe-build/paper-core/release/deps/native_tasks-a6b1674616d8bd5c",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "returncode": 0,
+        "wall_s": 198.83023347500057,
+        "log": "qualification.log",
+        "log_sha256": "ae350e4e069ba29af35764f7b580fb68ea5e622c9d5ad0b303257b3495cd9695"
+      },
+      "qualified": true
+    },
+    "native-count-random": {
+      "type": "count",
+      "mode": "randomised",
+      "digits": 3,
+      "groups": null,
+      "reports": 4,
+      "qualification": {
+        "argv": [
+          "/workspace/fhe-build/paper-core/release/deps/native_tasks-a6b1674616d8bd5c",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "returncode": 0,
+        "wall_s": 236.56150141399849,
+        "log": "qualification.log",
+        "log_sha256": "ef5762ee8c5bcbd62cb1ae0ed7fa94b223d428094d51df82d92780a15983735e"
+      },
+      "qualified": true
+    },
+    "native-sum-random": {
+      "type": "sum:100",
+      "mode": "randomised",
+      "digits": 3,
+      "groups": null,
+      "reports": 4,
+      "qualification": {
+        "argv": [
+          "/workspace/fhe-build/paper-core/release/deps/native_tasks-a6b1674616d8bd5c",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "returncode": 0,
+        "wall_s": 242.9237083659973,
+        "log": "qualification.log",
+        "log_sha256": "3d3502a0350f7a9a3a882921355d00a47ff42803fc7e5dcfbf0628fa2e9dc787"
+      },
+      "qualified": true
+    },
+    "native-hist-random": {
+      "type": "histogram:8",
+      "mode": "randomised",
+      "digits": 3,
+      "groups": null,
+      "reports": 4,
+      "qualification": {
+        "argv": [
+          "/workspace/fhe-build/paper-core/release/deps/native_tasks-a6b1674616d8bd5c",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "returncode": 0,
+        "wall_s": 184.3598074649999,
+        "log": "qualification.log",
+        "log_sha256": "4f995d251bd42b9007854becfab1a4555d9ddb166b8bd30d2bd49ce7e65dbc02"
+      },
+      "qualified": true
+    },
+    "native-sv100-random": {
+      "type": "sumvec:100:1",
+      "mode": "randomised",
+      "digits": 3,
+      "groups": null,
+      "reports": 4,
+      "qualification": {
+        "argv": [
+          "/workspace/fhe-build/paper-core/release/deps/native_tasks-a6b1674616d8bd5c",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "returncode": 0,
+        "wall_s": 226.84770821500206,
+        "log": "qualification.log",
+        "log_sha256": "594c02db041bfd214e9ade63f0bdc800d7654b33467e20015fb3143c1236fc46"
+      },
+      "qualified": true
+    },
+    "native-sv100-g16": {
+      "type": "sumvec:100:1",
+      "mode": "randomised",
+      "digits": 3,
+      "groups": 16,
+      "reports": 4,
+      "qualification": {
+        "argv": [
+          "/workspace/fhe-build/paper-core/release/deps/native_tasks-a6b1674616d8bd5c",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "returncode": 0,
+        "wall_s": 221.4802919390022,
+        "log": "qualification.log",
+        "log_sha256": "00afeb8b7768f99f69125562b3bdc6eae4fa99ed38731c184cf65066083ea317"
+      },
+      "qualified": true
+    },
+    "native-sv100-n32": {
+      "type": "sumvec:100:1",
+      "mode": "randomised",
+      "digits": 3,
+      "groups": null,
+      "reports": 32,
+      "qualification": {
+        "argv": [
+          "/workspace/fhe-build/paper-core/release/deps/native_tasks-a6b1674616d8bd5c",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "returncode": 0,
+        "wall_s": 196.93590768900322,
+        "log": "qualification.log",
+        "log_sha256": "ae3c181ecdd545b3afe46d49af3376939658c9d9af708813eae8c39ae4f20da3"
+      },
+      "qualified": true
+    }
+  },
+  "runs": [
+    {
+      "argv": [
+        "/workspace/fhe-build/paper-core/release/paper_core_eval",
+        "exact",
+        "--type",
+        "count",
+        "--reports",
+        "4",
+        "--batches",
+        "6",
+        "--seed",
+        "100",
+        "--out",
+        "/workspace/fhe-validation/native-matrix-2026-10-27-v2/threshold-count/measurement-0.json"
+      ],
+      "returncode": 0,
+      "wall_s": 187.17022860900033,
+      "log": "measurement-0.log",
+      "log_sha256": "c89c95b684587adad0ec8b9cf831e1e9c8778ef3fd76f4bfd942a7b781126c79",
+      "profile": "threshold-count",
+      "repeat": 0,
+      "measurement_sha256": "39b71fe6589991a6e4be54451ebb84e2bfce692455fc637dc7f96e02b107a77d"
+    },
+    {
+      "argv": [
+        "/workspace/fhe-build/paper-core/release/paper_core_eval",
+        "exact",
+        "--type",
+        "count",
+        "--reports",
+        "4",
+        "--batches",
+        "6",
+        "--seed",
+        "100",
+        "--out",
+        "/workspace/fhe-validation/native-matrix-2026-10-27-v2/native-count-d3/measurement-0.json",
+        "--key-mode",
+        "single",
+        "--plain-mod",
+        "786433",
+        "--attempts",
+        "1000000",
+        "--soundness-bits",
+        "128",
+        "--digits",
+        "3"
+      ],
+      "returncode": 0,
+      "wall_s": 226.83529267799895,
+      "log": "measurement-0.log",
+      "log_sha256": "e17bd5d773cf4538fccd56e68f2b7ab61381eac689d36284d3dd04ddff8a2132",
+      "profile": "native-count-d3",
+      "repeat": 0,
+      "measurement_sha256": "7af68dc79871f8b93c3fa12d6057b54642cd0d7e5e3237609340d258c0cc562c"
+    },
+    {
+      "argv": [
+        "/workspace/fhe-build/paper-core/release/paper_core_eval",
+        "exact",
+        "--type",
+        "count",
+        "--reports",
+        "4",
+        "--batches",
+        "3",
+        "--seed",
+        "100",
+        "--out",
+        "/workspace/fhe-validation/native-matrix-2026-10-27-v2/native-count-d5/measurement-0.json",
+        "--key-mode",
+        "single",
+        "--plain-mod",
+        "786433",
+        "--attempts",
+        "1000000",
+        "--soundness-bits",
+        "128",
+        "--digits",
+        "5"
+      ],
+      "returncode": 0,
+      "wall_s": 187.3201260950009,
+      "log": "measurement-0.log",
+      "log_sha256": "7dcf42797a1f811271707c8b1be61e037c2db69f002ad13f795cd2c5534ee54a",
+      "profile": "native-count-d5",
+      "repeat": 0,
+      "measurement_sha256": "c3e7fba3a03e99f814378c4a6e075480d3f5b19d6dd7b472e788e5112aa41714"
+    },
+    {
+      "argv": [
+        "/workspace/fhe-build/paper-core/release/paper_core_eval",
+        "exact",
+        "--type",
+        "sum:100",
+        "--reports",
+        "4",
+        "--batches",
+        "3",
+        "--seed",
+        "100",
+        "--out",
+        "/workspace/fhe-validation/native-matrix-2026-10-27-v2/native-sum-exact/measurement-0.json",
+        "--key-mode",
+        "single",
+        "--plain-mod",
+        "786433",
+        "--attempts",
+        "1000000",
+        "--soundness-bits",
+        "128",
+        "--digits",
+        "3"
+      ],
+      "returncode": 0,
+      "wall_s": 190.9377427239997,
+      "log": "measurement-0.log",
+      "log_sha256": "8b5bb0ddb054a4b07c92f75daf4776e46eb60d2f591bce14cab8b7b34f6911c1",
+      "profile": "native-sum-exact",
+      "repeat": 0,
+      "measurement_sha256": "b882191d304f9d10817b87ddec4830ef84166be6a8b91ef033db469e4b8f9f78"
+    },
+    {
+      "argv": [
+        "/workspace/fhe-build/paper-core/release/paper_core_eval",
+        "exact",
+        "--type",
+        "histogram:8",
+        "--reports",
+        "4",
+        "--batches",
+        "3",
+        "--seed",
+        "100",
+        "--out",
+        "/workspace/fhe-validation/native-matrix-2026-10-27-v2/native-hist-exact/measurement-0.json",
+        "--key-mode",
+        "single",
+        "--plain-mod",
+        "786433",
+        "--attempts",
+        "1000000",
+        "--soundness-bits",
+        "128",
+        "--digits",
+        "3"
+      ],
+      "returncode": 0,
+      "wall_s": 154.50487210800202,
+      "log": "measurement-0.log",
+      "log_sha256": "0e837a9911f24031404e46c515b6fbb8c6e943c127522bc8446bfd591f37e8e2",
+      "profile": "native-hist-exact",
+      "repeat": 0,
+      "measurement_sha256": "bec38cf255264205dfa1f0bdefe03bd3e5a8444b1b03a36e98fa6408399133ba"
+    },
+    {
+      "argv": [
+        "/workspace/fhe-build/paper-core/release/paper_core_eval",
+        "exact",
+        "--type",
+        "sumvec:10:1",
+        "--reports",
+        "4",
+        "--batches",
+        "3",
+        "--seed",
+        "100",
+        "--out",
+        "/workspace/fhe-validation/native-matrix-2026-10-27-v2/native-sv10-exact/measurement-0.json",
+        "--key-mode",
+        "single",
+        "--plain-mod",
+        "786433",
+        "--attempts",
+        "1000000",
+        "--soundness-bits",
+        "128",
+        "--digits",
+        "3"
+      ],
+      "returncode": 0,
+      "wall_s": 166.7708529420015,
+      "log": "measurement-0.log",
+      "log_sha256": "5b3d702a3477612654dd9d38a66c8de1fb1cfc13f906f77d76529ebf374bbd85",
+      "profile": "native-sv10-exact",
+      "repeat": 0,
+      "measurement_sha256": "701f1825c1138f2d84bd0f67dfa225d081b78d3470ee691f97efe4c29e3243a6"
+    },
+    {
+      "argv": [
+        "/workspace/fhe-build/paper-core/release/paper_core_eval",
+        "randomised",
+        "--type",
+        "count",
+        "--reports",
+        "4",
+        "--batches",
+        "3",
+        "--seed",
+        "100",
+        "--out",
+        "/workspace/fhe-validation/native-matrix-2026-10-27-v2/native-count-random/measurement-0.json",
+        "--key-mode",
+        "single",
+        "--plain-mod",
+        "786433",
+        "--attempts",
+        "1000000",
+        "--soundness-bits",
+        "128",
+        "--digits",
+        "3"
+      ],
+      "returncode": 0,
+      "wall_s": 222.46603813199908,
+      "log": "measurement-0.log",
+      "log_sha256": "2d62734e1eba9e66f1d3eb473c7107b26f2be9577913a6f03ce1c6d61c1288df",
+      "profile": "native-count-random",
+      "repeat": 0,
+      "measurement_sha256": "4d1ec5ef2f3f74043c99cdba7bac49286d4e1372f3d86ef116948469d35f19f6"
+    },
+    {
+      "argv": [
+        "/workspace/fhe-build/paper-core/release/paper_core_eval",
+        "randomised",
+        "--type",
+        "sum:100",
+        "--reports",
+        "4",
+        "--batches",
+        "3",
+        "--seed",
+        "100",
+        "--out",
+        "/workspace/fhe-validation/native-matrix-2026-10-27-v2/native-sum-random/measurement-0.json",
+        "--key-mode",
+        "single",
+        "--plain-mod",
+        "786433",
+        "--attempts",
+        "1000000",
+        "--soundness-bits",
+        "128",
+        "--digits",
+        "3"
+      ],
+      "returncode": 0,
+      "wall_s": 237.65514676999737,
+      "log": "measurement-0.log",
+      "log_sha256": "2787211cba1a6d35d4dc52b706a3024fda6bf4d8199bba5e19b9973fef59b687",
+      "profile": "native-sum-random",
+      "repeat": 0,
+      "measurement_sha256": "542d058462a042d4eaca1486c70f8d73552cecf0dfac25eccf6ac6e54dc051e6"
+    },
+    {
+      "argv": [
+        "/workspace/fhe-build/paper-core/release/paper_core_eval",
+        "randomised",
+        "--type",
+        "histogram:8",
+        "--reports",
+        "4",
+        "--batches",
+        "3",
+        "--seed",
+        "100",
+        "--out",
+        "/workspace/fhe-validation/native-matrix-2026-10-27-v2/native-hist-random/measurement-0.json",
+        "--key-mode",
+        "single",
+        "--plain-mod",
+        "786433",
+        "--attempts",
+        "1000000",
+        "--soundness-bits",
+        "128",
+        "--digits",
+        "3"
+      ],
+      "returncode": 0,
+      "wall_s": 200.31538088100206,
+      "log": "measurement-0.log",
+      "log_sha256": "3a4d3c3855fdf2d17f7da47459525650d0bdd92813223ba988a55913a8e3c2cc",
+      "profile": "native-hist-random",
+      "repeat": 0,
+      "measurement_sha256": "08824206ce9c7a769633b0a7d8f58e65f77fe940f997e004f8d4d1f1b6acdb00"
+    },
+    {
+      "argv": [
+        "/workspace/fhe-build/paper-core/release/paper_core_eval",
+        "randomised",
+        "--type",
+        "sumvec:100:1",
+        "--reports",
+        "4",
+        "--batches",
+        "3",
+        "--seed",
+        "100",
+        "--out",
+        "/workspace/fhe-validation/native-matrix-2026-10-27-v2/native-sv100-random/measurement-0.json",
+        "--key-mode",
+        "single",
+        "--plain-mod",
+        "786433",
+        "--attempts",
+        "1000000",
+        "--soundness-bits",
+        "128",
+        "--digits",
+        "3"
+      ],
+      "returncode": 0,
+      "wall_s": 321.5836025649987,
+      "log": "measurement-0.log",
+      "log_sha256": "95c8c820c3e59c940e5bd70d00ed0c0df7e20eb95d433da0e71cb705e88b8a63",
+      "profile": "native-sv100-random",
+      "repeat": 0,
+      "measurement_sha256": "e0051317aa66ed36354004ba9ea92ebd45963ae0b9d575893b588fa73839f2e8"
+    },
+    {
+      "argv": [
+        "/workspace/fhe-build/paper-core/release/paper_core_eval",
+        "randomised",
+        "--type",
+        "sumvec:100:1",
+        "--reports",
+        "4",
+        "--batches",
+        "3",
+        "--seed",
+        "100",
+        "--out",
+        "/workspace/fhe-validation/native-matrix-2026-10-27-v2/native-sv100-g16/measurement-0.json",
+        "--key-mode",
+        "single",
+        "--plain-mod",
+        "786433",
+        "--attempts",
+        "1000000",
+        "--soundness-bits",
+        "128",
+        "--digits",
+        "3",
+        "--groups",
+        "16"
+      ],
+      "returncode": 0,
+      "wall_s": 225.1126562190002,
+      "log": "measurement-0.log",
+      "log_sha256": "ea2e2b9b584b8cca50e752e28aed28e509ae35dd4385afba2f640686a391394a",
+      "profile": "native-sv100-g16",
+      "repeat": 0,
+      "measurement_sha256": "28465c008e563e77f054cbdc9953b61bda4751671afd3e1a30d4dc16b3799634"
+    },
+    {
+      "argv": [
+        "/workspace/fhe-build/paper-core/release/paper_core_eval",
+        "randomised",
+        "--type",
+        "sumvec:100:1",
+        "--reports",
+        "32",
+        "--batches",
+        "3",
+        "--seed",
+        "100",
+        "--out",
+        "/workspace/fhe-validation/native-matrix-2026-10-27-v2/native-sv100-n32/measurement-0.json",
+        "--key-mode",
+        "single",
+        "--plain-mod",
+        "786433",
+        "--attempts",
+        "1000000",
+        "--soundness-bits",
+        "128",
+        "--digits",
+        "3"
+      ],
+      "returncode": 0,
+      "wall_s": 290.81909827799973,
+      "log": "measurement-0.log",
+      "log_sha256": "75f2b08412ab0e983cfbb8caf89d7892481cbf56e904e80d2450637a5bd440b2",
+      "profile": "native-sv100-n32",
+      "repeat": 0,
+      "measurement_sha256": "273dde05256d6b72ec9b80437c34d6de8aefe114109a7131e7263c2032e99005"
+    },
+    {
+      "argv": [
+        "/workspace/fhe-build/paper-core/release/paper_core_eval",
+        "exact",
+        "--type",
+        "count",
+        "--reports",
+        "4",
+        "--batches",
+        "6",
+        "--seed",
+        "101",
+        "--out",
+        "/workspace/fhe-validation/native-matrix-2026-10-27-v2/native-count-d3/measurement-1.json",
+        "--key-mode",
+        "single",
+        "--plain-mod",
+        "786433",
+        "--attempts",
+        "1000000",
+        "--soundness-bits",
+        "128",
+        "--digits",
+        "3"
+      ],
+      "returncode": 0,
+      "wall_s": 156.55868090699732,
+      "log": "measurement-1.log",
+      "log_sha256": "b29f624ae39f56b7ba972db6260c1355cd0c2115528c0febfcbaeaf700dc9218",
+      "profile": "native-count-d3",
+      "repeat": 1,
+      "measurement_sha256": "da371442fe3ac7b7da84c18cb1b4f0a1864c98ef35eeb43ca7d439feee532f66"
+    },
+    {
+      "argv": [
+        "/workspace/fhe-build/paper-core/release/paper_core_eval",
+        "exact",
+        "--type",
+        "count",
+        "--reports",
+        "4",
+        "--batches",
+        "6",
+        "--seed",
+        "101",
+        "--out",
+        "/workspace/fhe-validation/native-matrix-2026-10-27-v2/threshold-count/measurement-1.json"
+      ],
+      "returncode": 0,
+      "wall_s": 264.6259207760013,
+      "log": "measurement-1.log",
+      "log_sha256": "162189dd9d1b42e546440e645f884297b9f88eda9fb7bbbc5f0228f191c64378",
+      "profile": "threshold-count",
+      "repeat": 1,
+      "measurement_sha256": "7a29d2e8d5a2993fc66d87117a404647654230e025f05710bb683c3c11a846a3"
+    }
+  ],
+  "limitations": [
+    "finite tests are not a malicious-ciphertext security proof",
+    "within-key timing samples are correlated; no statistical CI claimed",
+    "global OpenFHE initialization and keys are serialized within each process",
+    "N=4 and N=32 are experimental workloads, not deployment throughput"
+  ],
+  "binary_sha256": "57d4d12388790127c0f9cb8c0db6337dde1ac41f5cf518df159d905f4f63c03a",
+  "qualification_binary_sha256": {
+    "native_tasks": "ac9bd1008b9af2d62f1d1cebd81035a4ffc090e2c9a42cf66e771ff5d0e2266f",
+    "study_count": "0dad1beb709144c77fe57f50ae8905131b2a8547419c082212e3b32d165a0ab6"
+  },
+  "linked_openfhe_sha256": {
+    "/workspace/fhe-deps/install-1.3.1/lib/libOPENFHEpke.so.1": "50d1e54c46860b7b4b6ea5b7c228590141ddb0c8cf2222f6d1ac5b4e003b5254",
+    "/workspace/fhe-deps/install-1.3.1/lib/libOPENFHEcore.so.1": "7726a7061bf681fd2d74321c0370497aa8b99a960a878e61f154ead28d668147",
+    "/workspace/fhe-deps/install-1.3.1/lib/libOPENFHEbinfhe.so.1": "e36ea659fccdca292ca3fd856e43affafb07643e317350111b4306884ae02b54"
+  }
+}

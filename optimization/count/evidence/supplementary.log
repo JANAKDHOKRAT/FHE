@@ -1,0 +1,57 @@
+   Compiling fhe-prio3 v0.1.0 (/workspace/FHE/optimization/count/fhe-prio3)
+   Compiling fhe-paper-core v0.1.0 (/workspace/FHE/optimization/count/fhe-paper-core)
+    Finished `release` profile [optimized] target(s) in 17.22s
+     Running tests/count_boundary_attacks.rs (fhe-build/count-optimization/release/deps/count_boundary_attacks-ee465a8adec1dea5)
+
+running 1 test
+test count_boundaries_and_attack_reproductions ... BOUNDARY N=1 all-one batch correct; all other slots in both rows zero
+BOUNDARY N=2 all-one batch correct; all other slots in both rows zero
+BOUNDARY N=3 all-one batch correct; all other slots in both rows zero
+BOUNDARY N=4 all-one batch correct; all other slots in both rows zero
+BOUNDARY N=5 all-one batch correct; all other slots in both rows zero
+BOUNDARY N=6 all-one batch correct; all other slots in both rows zero
+BOUNDARY N=7 all-one batch correct; all other slots in both rows zero
+BOUNDARY N=8 all-one batch correct; all other slots in both rows zero
+BOUNDARY N=9 all-one batch correct; all other slots in both rows zero
+BOUNDARY N=10 all-one batch correct; all other slots in both rows zero
+BOUNDARY N=11 all-one batch correct; all other slots in both rows zero
+BOUNDARY N=12 all-one batch correct; all other slots in both rows zero
+BOUNDARY N=13 all-one batch correct; all other slots in both rows zero
+BOUNDARY N=14 all-one batch correct; all other slots in both rows zero
+BOUNDARY N=15 all-one batch correct; all other slots in both rows zero
+BOUNDARY N=16 all-one batch correct; all other slots in both rows zero
+BOUNDARY N=17 all-one batch correct; all other slots in both rows zero
+BOUNDARY N=18 all-one batch correct; all other slots in both rows zero
+BOUNDARY N=19 all-one batch correct; all other slots in both rows zero
+BOUNDARY N=20 all-one batch correct; all other slots in both rows zero
+BOUNDARY N=21 all-one batch correct; all other slots in both rows zero
+BOUNDARY N=22 all-one batch correct; all other slots in both rows zero
+BOUNDARY N=23 all-one batch correct; all other slots in both rows zero
+BOUNDARY N=24 all-one batch correct; all other slots in both rows zero
+BOUNDARY N=25 all-one batch correct; all other slots in both rows zero
+BOUNDARY N=26 all-one batch correct; all other slots in both rows zero
+BOUNDARY N=27 all-one batch correct; all other slots in both rows zero
+BOUNDARY N=28 all-one batch correct; all other slots in both rows zero
+BOUNDARY N=29 all-one batch correct; all other slots in both rows zero
+BOUNDARY N=30 all-one batch correct; all other slots in both rows zero
+BOUNDARY N=31 all-one batch correct; all other slots in both rows zero
+BOUNDARY N=32 all-one batch correct; all other slots in both rows zero
+STRESS case=0 N=32 output=0 (finite noise evidence)
+STRESS case=1 N=32 output=0 (finite noise evidence)
+STRESS case=2 N=32 output=0 (finite noise evidence)
+STRESS case=3 N=32 output=0 (finite noise evidence)
+OBSERVATION all-zero ciphertext payload admitted; this alone is not an exploit or a security proof
+GAP evaluator can substitute N=1 aggregate with claimed N=32; accepted
+TRUST collector can decrypt individual report if obtained; release policy external
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 534.75s
+
+     Running tests/count_scope.rs (fhe-build/count-optimization/release/deps/count_scope-d552b41b18a761c9)
+
+running 2 tests
+test projection_cli_cannot_silently_enter_threshold_mode ... ok
+test projection_is_opt_in_and_count_exact_only ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+

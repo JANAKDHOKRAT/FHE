@@ -1,0 +1,8 @@
+START bdd ADPS16
+RESULT_JSON {"profile": "projected-786433-d4", "model": "ADPS16", "algorithm": "bdd", "seconds": 58.64976851599931, "status": "completed", "log2_rop": 143.6640115061174, "cost": "         rop: \u22482^143.7\n         red: \u22482^143.7\n         svp: \u22482^126.7\n           \u03b2:      492\n           \u03b7:      433\n           d:   130944\n         tag:      bdd"}
+START dual ADPS16
+RESULT_JSON {"profile": "projected-786433-d4", "model": "ADPS16", "algorithm": "dual", "seconds": 0.11284952200367115, "status": "completed", "log2_rop": 143.664, "cost": "         rop: \u22482^143.7\n         mem: \u22482^111.0\n           m: \u22482^16.0\n           \u03b2:      492\n           d:   131032\n           \u21bb:        1\n         tag:     dual"}
+START bdd MATZOV
+RESULT_JSON {"profile": "projected-786433-d4", "model": "MATZOV", "algorithm": "bdd", "seconds": 67.32760759399389, "status": "completed", "log2_rop": 175.4337466105168, "cost": "         rop: \u22482^175.4\n         red: \u22482^175.4\n         svp: \u22482^166.5\n           \u03b2:      492\n           \u03b7:      520\n           d:   127702\n         tag:      bdd"}
+START dual MATZOV
+RESULT_JSON {"profile": "projected-786433-d4", "model": "MATZOV", "algorithm": "dual", "seconds": 0.13381754400325008, "status": "completed", "log2_rop": 176.39939232431846, "cost": "         rop: \u22482^176.4\n         mem: \u22482^115.9\n           m: \u22482^16.0\n           \u03b2:      492\n           d:   131032\n           \u21bb:        1\n         tag:     dual"}

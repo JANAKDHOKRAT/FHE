@@ -1,0 +1,792 @@
+diff --git a/prio3/fhe-paper-core/src/bin/paper_core_eval.rs b/prio3/fhe-paper-core/src/bin/paper_core_eval.rs
+index 4c9b814..e6d1ab9 100644
+--- a/prio3/fhe-paper-core/src/bin/paper_core_eval.rs
++++ b/prio3/fhe-paper-core/src/bin/paper_core_eval.rs
+@@ -14,13 +14,15 @@
+ 
+ use fhe_paper_core::*;
+ use fhe_prio3::config::SilentCheck;
+-use fhe_prio3::{Measurement, MeasurementType, Report, keys, messages};
++use fhe_prio3::{Measurement, MeasurementType, Report, messages};
+ use rand::{Rng, SeedableRng};
+ use std::time::Instant;
+ 
+ type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+ 
+ struct Args {
++    native: bool,
++    profile: NativeParameters,
+     check: SilentCheck,
+     ty: MeasurementType,
+     ty_str: String,
+@@ -34,7 +36,7 @@ struct Args {
+ 
+ fn usage() -> ! {
+     eprintln!(
+-        "usage: paper_core_eval (exact|randomised) --type T [--reports N] [--batches B] [--groups G] [--seed S] [--out FILE]\n  T: count | sum:<max> | sumvec:<len>:<max> | histogram:<len>"
++        "usage: paper_core_eval (exact|randomised) --type T [--reports N] [--batches B] [--groups G] [--seed S] [--out FILE] [--key-mode single --plain-mod P --attempts Q --soundness-bits B --digits D]\n  T: count | sum:<max> | sumvec:<len>:<max> | histogram:<len>"
+     );
+     std::process::exit(2)
+ }
+@@ -66,6 +68,8 @@ fn parse_args(argv: &[String]) -> Args {
+         _ => usage(),
+     };
+     let mut a = Args {
++        native: false,
++        profile: NativeParameters::default(),
+         check,
+         ty: MeasurementType::Count,
+         ty_str: String::new(),
+@@ -79,6 +83,17 @@ fn parse_args(argv: &[String]) -> Args {
+     while i < argv.len() {
+         let v = argv.get(i + 1).cloned().unwrap_or_else(|| usage());
+         match argv[i].as_str() {
++            "--key-mode" => {
++                a.native = match v.as_str() {
++                    "single" => true,
++                    "threshold" => false,
++                    _ => usage(),
++                }
++            }
++            "--plain-mod" => a.profile.plain_mod = v.parse().unwrap_or_else(|_| usage()),
++            "--attempts" => a.profile.invalid_attempts = v.parse().unwrap_or_else(|_| usage()),
++            "--soundness-bits" => a.profile.target_bits = v.parse().unwrap_or_else(|_| usage()),
++            "--digits" => a.profile.key_switch_digits = v.parse().unwrap_or_else(|_| usage()),
+             "--type" => {
+                 a.ty = parse_type(&v);
+                 a.ty_str = v;
+@@ -95,6 +110,9 @@ fn parse_args(argv: &[String]) -> Args {
+     if a.ty_str.is_empty() || a.reports == 0 || a.batches == 0 {
+         usage();
+     }
++    if !a.native && a.profile != NativeParameters::default() {
++        usage();
++    }
+     a
+ }
+ 
+@@ -306,13 +324,27 @@ impl Out {
+ }
+ 
+ fn run(a: &Args, o: &mut Out) -> Result<()> {
+-    let mut task = PaperTask::new([0xC0u8; 32], a.ty.clone(), a.check)?;
+-    if a.groups > 0 {
+-        task = task.with_groups(a.groups)?;
+-    }
++    let task = if a.native {
++        let mut profile = a.profile.clone();
++        profile.groups = if a.groups > 0 { Some(a.groups) } else { None };
++        PaperTask::new_native([0xC0; 32], a.ty.clone(), a.check, profile)?
++    } else {
++        let t = PaperTask::new([0xC0; 32], a.ty.clone(), a.check)?;
++        if a.groups > 0 { t.with_groups(a.groups)? } else { t }
++    };
+     let cfg = task.config().clone();
++    o.s("key_mode", if a.native { "native-single" } else { "threshold-one-party" });
++    o.kv("plain_mod", cfg.plain_mod);
++    o.kv("security_bits", cfg.security_bits);
++    if a.native {
++        o.kv("invalid_attempt_budget", a.profile.invalid_attempts);
++        o.kv("global_soundness_target_bits", a.profile.target_bits);
++    }
+     o.kv("mult_depth", task.mult_depth());
+-    o.kv("key_switch_digits", cfg.key_switch_digits());
++    o.kv(
++        "key_switch_digits",
++        if a.native { a.profile.key_switch_digits } else { cfg.key_switch_digits() },
++    );
+     o.kv("reports_per_verification_ciphertext", task.groups());
+     o.kv("max_batch", task.max_batch());
+     if cfg.exact_check() {
+@@ -328,10 +360,20 @@ fn run(a: &Args, o: &mut Out) -> Result<()> {
+     o.kv("rotation_key_bytes", em.rotation_key_bytes());
+     o.kv("eval_mult_key_bytes", em.eval_mult_key.len());
+     o.kv("public_key_bytes", cm.public_key.len());
+-    let ctx = keys::make_context(&cfg)?;
++    o.kv("context_bytes", cm.context.len());
++    let ctx = task.make_context()?;
+     o.kv("ring_dim", ctx.ring_dim());
+     o.kv("log2_q", format!("{:.1}", ctx.log2_q()));
+     o.kv("towers", ctx.num_towers());
++    let widths: u32 = ctx.moduli()?.iter().map(|q| 64 - (q - 1).leading_zeros()).sum();
++    o.kv("wire_header_bytes", fhe_prio3::packed::HEADER_LEN);
++    o.kv("wire_residue_fixed_width_bits_per_coefficient", widths);
++    // Approximate coding headroom for arbitrary residue tuples, NOT a
++    // ciphertext-entropy claim or an implemented compressed wire format.
++    o.kv(
++        "wire_generic_radix_headroom_bytes_estimate",
++        format!("{:.1}", (widths as f64 - ctx.log2_q()).max(0.0) * 2.0 * ctx.ring_dim() as f64 / 8.0),
++    );
+     let client = PaperClient::new(&task, &cm)?;
+     let collector = PaperCollector::new(task.clone(), &cm, &key)?;
+     let groups = task.groups();
+diff --git a/prio3/fhe-paper-core/src/lib.rs b/prio3/fhe-paper-core/src/lib.rs
+index 8660795..dc8355c 100644
+--- a/prio3/fhe-paper-core/src/lib.rs
++++ b/prio3/fhe-paper-core/src/lib.rs
+@@ -57,10 +57,34 @@ use serde::{Deserialize, Serialize};
+ use std::collections::BTreeSet;
+ use zeroize::Zeroize;
+ 
++/// Explicit native-key candidate. Q is an assumed lifetime invalid-attempt
++/// bound; enforcing it across deployments requires external admission accounting.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct NativeParameters {
++    pub plain_mod: u64,
++    pub invalid_attempts: u64,
++    pub target_bits: u32,
++    pub key_switch_digits: u32,
++    pub groups: Option<usize>,
++}
++impl Default for NativeParameters {
++    fn default() -> Self {
++        Self {
++            plain_mod: 786433,
++            invalid_attempts: 1_000_000,
++            target_bits: 128,
++            key_switch_digits: 5,
++            groups: None,
++        }
++    }
++}
++
+ /// A task of the paper's architecture.
+ #[derive(Debug, Clone, PartialEq, Eq)]
+ pub struct PaperTask {
+     cfg: TaskConfig,
++    native: Option<NativeParameters>,
++    row: usize,
+ }
+ 
+ impl PaperTask {
+@@ -86,7 +110,11 @@ impl PaperTask {
+             }
+         };
+         cfg.max_batch_size = Self::batch_bound(&cfg);
+-        let t = Self { cfg };
++        let t = Self {
++            cfg,
++            native: None,
++            row: EXACT_ROW,
++        };
+         t.check()?;
+         Ok(t)
+     }
+@@ -116,20 +144,131 @@ impl PaperTask {
+     }
+ 
+     fn check(&self) -> Result<()> {
+-        self.cfg.validate()?;
++        if self.native.is_some() {
++            self.cfg.validate_native(self.row)?;
++        } else {
++            self.cfg.validate()?;
++        }
+         if self.cfg.silent_batch_groups < 2 {
+             return Err(Error::Config(format!(
+                 "the encoding ({} slots) leaves no room for two reports per verification ciphertext",
+                 self.cfg.measurement_type.input_len()
+             )));
+         }
+-        let l = self.cfg.layout(EXACT_ROW)?;
++        let l = self.layout(self.row)?;
+         if l.num_chunks != 1 {
+             return Err(Error::Config("the encoding must fit one ciphertext per report".into()));
+         }
+         Ok(())
+     }
+ 
++    /// Native profile with task-specific field, soundness budget and key switch.
++    pub fn new_native(task_id: [u8; 32], ty: MeasurementType, check: SilentCheck, profile: NativeParameters) -> Result<Self> {
++        if !matches!(
++            ty,
++            MeasurementType::Count | MeasurementType::Sum { .. } | MeasurementType::SumVec { .. } | MeasurementType::Histogram { .. }
++        ) {
++            return Err(Error::Config("unsupported native task".into()));
++        }
++        ty.validate()?;
++        if Field::new(profile.plain_mod).is_none() || profile.invalid_attempts == 0 || profile.target_bits < 128 || profile.target_bits > 256 {
++            return Err(Error::Config("need prime p<2^32, Q>=1 and a 128..256-bit global soundness target".into()));
++        }
++        let mut cfg = match check {
++            SilentCheck::Exact => TaskConfig::new_exact(task_id, ty, 2),
++            SilentCheck::Randomised => TaskConfig::new_silent(task_id, ty, 2),
++        };
++        cfg.plain_mod = profile.plain_mod;
++        if check == SilentCheck::Randomised {
++            // Integer bound: Q <= 2^ceil(log2 Q), p >= 2^floor(log2 p).
++            // Thus t*k >= target+ceil(log2 Q) guarantees Q*p^-t <= 2^-target.
++            let qbits = 64 - (profile.invalid_attempts - 1).leading_zeros();
++            let pbits = 63 - profile.plain_mod.leading_zeros();
++            cfg.repetitions = (profile.target_bits + qbits).div_ceil(pbits) as usize;
++        }
++        cfg.max_batch_size = Self::batch_bound(&cfg);
++        cfg.validate()?;
++        let ctx = Context::new_single(
++            openfhe_tbgv_rs::Params {
++                plain_mod: cfg.plain_mod,
++                mult_depth: cfg.mult_depth(),
++                security_bits: cfg.security_bits,
++            },
++            profile.key_switch_digits,
++        )?;
++        if ctx.ring_dim() > 65536 {
++            return Err(Error::Config("native study ring exceeds retained resource cap 65536".into()));
++        }
++        // Reject incompatible split-field batching, never force a ring dimension.
++        if !(cfg.plain_mod - 1).is_multiple_of(2 * ctx.ring_dim() as u64) {
++            return Err(Error::Config(
++                "prime does not support field slots at the security-selected ring dimension".into(),
++            ));
++        }
++        ctx.plaintext(&[1])?;
++        let row = ctx.row_slots();
++        let (_, classes, block) = if check == SilentCheck::Exact {
++            cfg.exact_shape()
++        } else {
++            (1, cfg.repetitions.next_power_of_two(), cfg.measurement_type.input_len().next_power_of_two())
++        };
++        cfg.silent_batch_groups = row / (classes * block);
++        if let Some(groups) = profile.groups {
++            if check == SilentCheck::Exact && groups != cfg.silent_batch_groups {
++                return Err(Error::Config("exact profile packing fixed by full slot shape".into()));
++            }
++            cfg.silent_batch_groups = groups;
++        }
++        let task = Self {
++            cfg,
++            native: Some(profile),
++            row,
++        };
++        task.check()?;
++        Ok(task)
++    }
++    pub fn native_parameters(&self) -> Option<&NativeParameters> {
++        self.native.as_ref()
++    }
++    pub fn row_slots(&self) -> usize {
++        self.row
++    }
++    pub fn layout(&self, row: usize) -> Result<Layout> {
++        if row != self.row {
++            return Err(Error::Config("context row does not match task profile".into()));
++        }
++        if self.native.is_some() {
++            self.cfg.layout_native(row)
++        } else {
++            self.cfg.layout(row)
++        }
++    }
++    pub fn make_context(&self) -> Result<Context> {
++        if let Some(p) = &self.native {
++            Ok(Context::new_single(
++                openfhe_tbgv_rs::Params {
++                    plain_mod: self.cfg.plain_mod,
++                    mult_depth: self.mult_depth(),
++                    security_bits: self.cfg.security_bits,
++                },
++                p.key_switch_digits,
++            )?)
++        } else {
++            keys::make_context(&self.cfg)
++        }
++    }
++    fn qualify_context(&self, ctx: &Context) -> Result<()> {
++        if ctx.plain_mod() != self.cfg.plain_mod || ctx.is_single_mode()? != self.native.is_some() || ctx.mult_depth() < self.mult_depth() {
++            return Err(Error::Config("context mode, field or capacity does not match task".into()));
++        }
++        self.layout(ctx.row_slots())?;
++        if self.native.is_some() {
++            openfhe_tbgv_rs::verify_single_rebuild_once(ctx, self.mult_depth())?;
++        } else {
++            openfhe_tbgv_rs::verify_rebuild_once(ctx, self.mult_depth())?;
++        }
++        Ok(())
++    }
+     pub fn check_kind(&self) -> SilentCheck {
+         self.cfg.silent_check
+     }
+@@ -217,17 +356,20 @@ impl CollectorKey {
+ /// collector keeps `sk`. The same key-generation code as the ceremony, with
+ /// one party.
+ pub fn setup(task: &PaperTask) -> Result<(EvaluatorMaterial, ClientMaterial, CollectorKey)> {
+-    let cfg = &task.cfg;
+-    let ctx = keys::make_context(cfg)?;
+-    let layout = cfg.layout(ctx.row_slots())?;
++    let ctx = task.make_context()?;
++    let layout = task.layout(ctx.row_slots())?;
+     let indices = layout.rotation_indices();
+     let (pk, sk) = keys::keygen_step(&ctx, None)?;
+     let pk_bytes = pk.serialize()?;
+     let tag = pk.tag()?;
+-    let r1 = keys::multkey_round1(&ctx, &sk, None)?;
+-    let r1_sum = keys::multkey_round1_sum(&ctx, &[r1], &tag)?;
+-    let r2 = keys::multkey_round2(&ctx, &sk, &r1_sum, &tag)?;
+-    let eval_mult_key = keys::multkey_round2_sum(&ctx, &[r2], &tag)?;
++    let eval_mult_key = if task.native.is_some() {
++        openfhe_tbgv_rs::EvalMultKey::single(&ctx, &sk)?.serialize()?
++    } else {
++        let r1 = keys::multkey_round1(&ctx, &sk, None)?;
++        let r1_sum = keys::multkey_round1_sum(&ctx, &[r1], &tag)?;
++        let r2 = keys::multkey_round2(&ctx, &sk, &r1_sum, &tag)?;
++        keys::multkey_round2_sum(&ctx, &[r2], &tag)?
++    };
+     let mut rotation_keys = Vec::with_capacity(indices.len());
+     for &i in &indices {
+         rotation_keys.push(keys::rotkeys_step(&ctx, &sk, None, &[i], &tag)?);
+@@ -255,7 +397,11 @@ pub struct PaperClient {
+ impl PaperClient {
+     pub fn new(task: &PaperTask, material: &ClientMaterial) -> Result<Self> {
+         Ok(Self {
+-            inner: fhe_prio3::Client::new(task.cfg.clone(), &material.context, &material.public_key)?,
++            inner: if task.native.is_some() {
++                fhe_prio3::Client::new_native(task.cfg.clone(), &material.context, &material.public_key)?
++            } else {
++                fhe_prio3::Client::new(task.cfg.clone(), &material.context, &material.public_key)?
++            },
+         })
+     }
+ 
+@@ -302,13 +448,13 @@ impl PaperEvaluator {
+         if ctx.mult_depth() < task.mult_depth() {
+             return Err(Error::Config("the material's context is shallower than the task's circuit".into()));
+         }
+-        let layout = task.cfg.layout(ctx.row_slots())?;
++        let layout = task.layout(ctx.row_slots())?;
+         if material.rotation_indices != layout.rotation_indices() {
+             return Err(Error::Config("the material's rotation keys are not this task's".into()));
+         }
+         let lease = keys::install(&ctx, material)?;
+         let pk = ctx.deserialize_public_key(&material.public_key)?;
+-        openfhe_tbgv_rs::verify_rebuild_once(&ctx, task.mult_depth())?;
++        task.qualify_context(&ctx)?;
+         let codec = Codec::new(&ctx, &pk, &material.public_key)?;
+         let circuit = Circuit::new(&ctx, &layout)?;
+         Ok(Self {
+@@ -400,6 +546,10 @@ impl PaperEvaluator {
+         // first position. The window wraps within a group, never across.
+         let decoded = match self.task.decoding() {
+             None => None,
++            // Native binary SumVec has A_T = identity. Skip its redundant
++            // all-one weighting multiplication; the input group mask and
++            // final output mask are still mandatory and remain unchanged.
++            Some((1, ref weights)) if self.task.native.is_some() && weights == &[1] => None,
+             Some((bits, weights)) => {
+                 let mut w = vec![0u64; self.layout.row];
+                 for &g in &groups {
+@@ -476,8 +626,8 @@ pub struct PaperCollector {
+ impl PaperCollector {
+     pub fn new(task: PaperTask, material: &ClientMaterial, key: &CollectorKey) -> Result<Self> {
+         let ctx = Context::deserialize(&material.context)?;
+-        openfhe_tbgv_rs::verify_rebuild_once(&ctx, task.mult_depth())?;
+-        let layout = task.cfg.layout(ctx.row_slots())?;
++        task.qualify_context(&ctx)?;
++        let layout = task.layout(ctx.row_slots())?;
+         let pk = ctx.deserialize_public_key(&material.public_key)?;
+         let codec = Codec::new(&ctx, &pk, &material.public_key)?;
+         let sk = ctx.deserialize_secret_share(key.as_bytes())?;
+@@ -496,8 +646,12 @@ impl PaperCollector {
+                 self.task.mult_depth()
+             )));
+         }
+-        let partial = self.sk.partial_decrypt(&ct, true)?;
+-        Ok(self.ctx.fuse(&[&partial], self.layout.row)?)
++        if self.task.native.is_some() {
++            Ok(self.sk.decrypt_single(&ct, self.layout.row)?)
++        } else {
++            let partial = self.sk.partial_decrypt(&ct, true)?;
++            Ok(self.ctx.fuse(&[&partial], self.layout.row)?)
++        }
+     }
+ 
+     /// Decrypts an aggregate. The decrypted row must be the task output and
+@@ -610,3 +764,27 @@ mod tests {
+         assert_eq!(sv.output_bound(10), 150);
+     }
+ }
++
++#[cfg(test)]
++mod native_profile_tests {
++    use super::*;
++    #[test]
++    fn reject_invalid_security_contract_before_context_creation() {
++        for profile in [
++            NativeParameters {
++                plain_mod: 65536,
++                ..Default::default()
++            },
++            NativeParameters {
++                invalid_attempts: 0,
++                ..Default::default()
++            },
++            NativeParameters {
++                target_bits: 127,
++                ..Default::default()
++            },
++        ] {
++            assert!(PaperTask::new_native([0; 32], MeasurementType::Count, SilentCheck::Randomised, profile).is_err());
++        }
++    }
++}
+diff --git a/prio3/fhe-paper-core/tests/paper_core_cli.rs b/prio3/fhe-paper-core/tests/paper_core_cli.rs
+index 8e20438..8438ead 100644
+--- a/prio3/fhe-paper-core/tests/paper_core_cli.rs
++++ b/prio3/fhe-paper-core/tests/paper_core_cli.rs
+@@ -20,3 +20,12 @@ fn obsolete_core_exact_spelling_is_rejected() {
+     assert_eq!(output.status.code(), Some(2));
+     assert!(String::from_utf8(output.stderr).unwrap().contains("usage:"));
+ }
++
++#[test]
++fn native_parameters_cannot_be_silently_applied_to_threshold_mode() {
++    let result = std::process::Command::new(env!("CARGO_BIN_EXE_paper_core_eval"))
++        .args(["exact", "--type", "count", "--plain-mod", "65537"])
++        .output()
++        .unwrap();
++    assert_eq!(result.status.code(), Some(2));
++}
+diff --git a/prio3/fhe-prio3/src/client.rs b/prio3/fhe-prio3/src/client.rs
+index b5e0768..2bd22ff 100644
+--- a/prio3/fhe-prio3/src/client.rs
++++ b/prio3/fhe-prio3/src/client.rs
+@@ -28,12 +28,29 @@ impl Client {
+     /// Needs only the context and the joint public key, not the evaluation keys.
+     pub fn new(cfg: TaskConfig, context: &[u8], public_key: &[u8]) -> Result<Self> {
+         cfg.validate()?;
++        Self::construct(cfg, context, public_key, false)
++    }
++    /// Explicit native single-key profile; threshold constructor stays strict.
++    pub fn new_native(cfg: TaskConfig, context: &[u8], public_key: &[u8]) -> Result<Self> {
++        Self::construct(cfg, context, public_key, true)
++    }
++    fn construct(cfg: TaskConfig, context: &[u8], public_key: &[u8], native: bool) -> Result<Self> {
+         let ctx = Context::deserialize(context)?;
++        if native {
++            if !ctx.is_single_mode()? {
++                return Err(Error::Config("native client requires native context".into()));
++            }
++            cfg.validate_native(ctx.row_slots())?;
++        }
+         if ctx.plain_mod() != cfg.plain_mod {
+             return Err(Error::Config("context plaintext modulus does not match task".into()));
+         }
+         let pk = ctx.deserialize_public_key(public_key)?;
+-        let layout = cfg.layout(ctx.row_slots())?;
++        let layout = if native {
++            cfg.layout_native(ctx.row_slots())?
++        } else {
++            cfg.layout(ctx.row_slots())?
++        };
+         let codec = Codec::new(&ctx, &pk, public_key)?;
+         let slot_codec = if cfg.client_proofs { Some(SlotCodec::new(&ctx)?) } else { None };
+         Ok(Self {
+@@ -177,6 +194,9 @@ impl Client {
+     /// Batched silent mode: encodes and encrypts `m` at the slots of the
+     /// group the aggregators assigned to this report.
+     pub fn shard_in_group(&self, m: &Measurement, group: u32) -> Result<Report> {
++        if group as usize >= self.layout.groups {
++            return Err(Error::Protocol("report group outside layout".into()));
++        }
+         let encoded = self.cfg.measurement_type.encode(m)?;
+         let mut chunks = Vec::with_capacity(self.layout.num_chunks);
+         for c in 0..self.layout.num_chunks {
+@@ -218,6 +238,9 @@ impl Client {
+     }
+ 
+     pub fn shard_raw_elements_in_group(&self, elements_per_chunk: &[Vec<u64>], group: u32) -> Result<Report> {
++        if group as usize >= self.layout.groups {
++            return Err(Error::Protocol("report group outside layout".into()));
++        }
+         let mut chunks = Vec::with_capacity(elements_per_chunk.len());
+         for elems in elements_per_chunk {
+             chunks.push(self.encrypt_unproven(&self.chunk_slots(elems, group))?);
+diff --git a/prio3/fhe-prio3/src/config.rs b/prio3/fhe-prio3/src/config.rs
+index 7acca65..7d46597 100644
+--- a/prio3/fhe-prio3/src/config.rs
++++ b/prio3/fhe-prio3/src/config.rs
+@@ -939,7 +939,44 @@ impl TaskConfig {
+         }
+     }
+ 
++    /// Native paper-core profile validation. The threshold validator and fixed
++    /// exact row remain unchanged. Only the four plain silent tasks are allowed.
++    pub fn validate_native(&self, row: usize) -> Result<Field> {
++        if !matches!(
++            self.measurement_type,
++            crate::types::MeasurementType::Count
++                | crate::types::MeasurementType::Sum { .. }
++                | crate::types::MeasurementType::SumVec { .. }
++                | crate::types::MeasurementType::Histogram { .. }
++        ) || self.mode != VerificationMode::Silent
++            || self.moments
++            || self.gated()
++            || self.client_proofs
++            || !self.collectors.is_empty()
++            || self.upload != Upload::Ciphertext
++        {
++            return Err(Error::Config("native profiles support only the four ungated paper tasks".into()));
++        }
++        if !row.is_power_of_two() || row < 2 || self.silent_batch_groups < 2 || self.silent_batch_groups > row {
++            return Err(Error::Config("native row and packing require powers of two and at least two groups".into()));
++        }
++        let mut canonical = self.clone();
++        if self.exact_check() {
++            let (_, classes, block) = self.exact_shape();
++            canonical.silent_batch_groups = EXACT_ROW / (classes * block);
++        }
++        let f = canonical.validate()?;
++        self.layout_native(row)?;
++        Ok(f)
++    }
++    /// Variable-row layout for explicitly selected native paper-core profiles.
++    pub fn layout_native(&self, row: usize) -> Result<Layout> {
++        self.layout_impl(row, true)
++    }
+     pub fn layout(&self, row: usize) -> Result<Layout> {
++        self.layout_impl(row, false)
++    }
++    fn layout_impl(&self, row: usize, native: bool) -> Result<Layout> {
+         let groups = if self.layout_kind() == LayoutKind::Batched {
+             self.silent_batch_groups
+         } else {
+@@ -949,7 +986,7 @@ impl TaskConfig {
+         // constraint, where the randomised check uses one per repetition.
+         let classes_used = if self.exact_check() {
+             let (chunks, classes, block) = self.exact_shape();
+-            if row != EXACT_ROW || groups * classes * block != row {
++            if (!native && row != EXACT_ROW) || groups.checked_mul(classes).and_then(|x| x.checked_mul(block)) != Some(row) {
+                 return Err(Error::Config(format!(
+                     "the exact check needs a row of {EXACT_ROW} slots holding {groups} reports of {} slots; the context has {row}",
+                     classes * block
+@@ -1445,3 +1482,19 @@ mod tests {
+         assert!(too_deep.validate().is_err());
+     }
+ }
++
++#[cfg(test)]
++mod native_layout_tests {
++    use super::*;
++    #[test]
++    fn variable_row_does_not_relax_threshold_layout() {
++        let mut cfg = TaskConfig::new_exact([0xDD; 32], crate::types::MeasurementType::Count, 2);
++        cfg.silent_batch_groups = 16384;
++        assert!(cfg.validate().is_err());
++        assert!(cfg.validate_native(16384).is_ok());
++        assert!(cfg.layout(16384).is_err());
++        assert_eq!(cfg.layout_native(16384).unwrap().groups, 16384);
++        cfg.silent_batch_groups = 1usize << (usize::BITS - 1);
++        assert!(cfg.validate_native(16384).is_err());
++    }
++}
+diff --git a/prio3/openfhe-tbgv-rs/src/ffi.rs b/prio3/openfhe-tbgv-rs/src/ffi.rs
+index aa1b533..2d3b640 100644
+--- a/prio3/openfhe-tbgv-rs/src/ffi.rs
++++ b/prio3/openfhe-tbgv-rs/src/ffi.rs
+@@ -187,3 +187,9 @@ unsafe extern "C" {
+     pub fn tbgv_decrypt_single(ctx: TbgvContext, sk: TbgvSecretKey, ct: TbgvCiphertext, out: *mut i64, out_len: usize) -> usize;
+     pub fn tbgv_loaded_openfhe_libraries() -> *mut c_char;
+ }
++
++unsafe extern "C" {
++    pub fn tbgv_context_new_single(p: u64, depth: u32, security: u32, digits: u32) -> TbgvContext;
++    pub fn tbgv_context_is_single(ctx: TbgvContext) -> c_int;
++    pub fn tbgv_multkey_single(ctx: TbgvContext, sk: TbgvSecretKey) -> TbgvEvalKey;
++}
+diff --git a/prio3/openfhe-tbgv-rs/src/lib.rs b/prio3/openfhe-tbgv-rs/src/lib.rs
+index 2b33850..a8352e5 100644
+--- a/prio3/openfhe-tbgv-rs/src/lib.rs
++++ b/prio3/openfhe-tbgv-rs/src/lib.rs
+@@ -1,12 +1,13 @@
+-//! Safe Rust API over OpenFHE's threshold (n-of-n multiparty) BGV scheme.
++//! OpenFHE BGV: existing threshold API and an explicit native single-key API.
+ //!
+ //! The wrapper exposes exactly the primitives an aggregation protocol needs:
+ //! a sequential n-of-n key generation, the two-round joint relinearisation
+ //! key ceremony, the one-round joint rotation key ceremony, SIMD plaintexts,
+ //! leveled evaluation, and partial decryption with noise flooding plus
+-//! fusion. No function in this crate can decrypt with fewer than all key
+-//! shares except [`SecretShare::decrypt_alone_for_tests`], which exists to
+-//! demonstrate in tests that a single share does not decrypt.
++//! fusion. The separate native API uses ordinary key generation, relinearization
++//! and decryption with one complete secret key. A native startup qualification
++//! never substitutes for a threshold qualification. Initialization and key-table
++//! installation must be serialized; evaluation may use the installed context.
+ //!
+ //! All plaintext values are field elements in `[0, p)` where `p` is the
+ //! plaintext modulus. Conversion to OpenFHE's centered representation is done
+@@ -14,6 +15,8 @@
+ 
+ mod ffi;
+ mod selftest;
++mod single;
++pub use single::verify_single_rebuild_once;
+ 
+ pub use selftest::{RebuildReport, rebuild_verified, verify_rebuild_once};
+ 
+@@ -170,6 +173,25 @@ impl Context {
+         })
+     }
+ 
++    /// Native single-key BGV. No forced ring or disabled security estimator.
++    pub fn new_single(params: Params, digits: u32) -> Result<Self> {
++        check_loaded_openfhe()?;
++        let p = unsafe { ffi::tbgv_context_new_single(params.plain_mod, params.mult_depth, params.security_bits, digits) };
++        if p.is_null() {
++            return Err(last_error());
++        }
++        Ok(Self {
++            inner: Arc::new(ContextInner(p)),
++        })
++    }
++    /// Non-flooding context mode; does not assert who holds a key.
++    pub fn is_single_mode(&self) -> Result<bool> {
++        match unsafe { ffi::tbgv_context_is_single(self.raw()) } {
++            0 => Ok(false),
++            1 => Ok(true),
++            _ => Err(last_error()),
++        }
++    }
+     fn raw(&self) -> ffi::TbgvContext {
+         self.inner.0
+     }
+@@ -676,6 +698,17 @@ impl PublicKey {
+ }
+ 
+ impl SecretShare {
++    /// Ordinary decryption for a complete native single key, never fusion.
++    pub fn decrypt_single(&self, ct: &Ciphertext, num_slots: usize) -> Result<Vec<u64>> {
++        if !self.ctx.is_single_mode()? {
++            return Err(Error("single-key decryption requires native context mode".into()));
++        }
++        if num_slots > self.ctx.ring_dim() as usize {
++            return Err(Error("too many decryption slots".into()));
++        }
++        self.decrypt_alone_for_tests(ct, num_slots)
++    }
++
+     pub fn serialize(&self) -> Result<Vec<u8>> {
+         let mut buf = std::ptr::null_mut();
+         let mut len = 0usize;
+@@ -709,6 +742,13 @@ impl SecretShare {
+ }
+ 
+ impl EvalMultKey {
++    /// Native EvalMultKeyGen, without a threshold ceremony.
++    pub fn single(ctx: &Context, sk: &SecretShare) -> Result<Self> {
++        if !ctx.is_single_mode()? {
++            return Err(Error("native key generation requires a single-key context".into()));
++        }
++        Self::wrap(ctx, unsafe { ffi::tbgv_multkey_single(ctx.raw(), sk.ptr) })
++    }
+     /// Round 1, first party: `KeySwitchGen(s_0, s_0)`.
+     pub fn round1_first(ctx: &Context, sk: &SecretShare) -> Result<Self> {
+         Self::wrap(ctx, unsafe { ffi::tbgv_multkey_round1_first(ctx.raw(), sk.ptr) })
+diff --git a/prio3/openfhe-tbgv-rs/src/selftest.rs b/prio3/openfhe-tbgv-rs/src/selftest.rs
+index 5c102cd..228673a 100644
+--- a/prio3/openfhe-tbgv-rs/src/selftest.rs
++++ b/prio3/openfhe-tbgv-rs/src/selftest.rs
+@@ -55,13 +55,20 @@ type Outcome = std::result::Result<RebuildReport, String>;
+ /// Outcomes by (parameters, depth).
+ type Outcomes = HashMap<(Vec<u64>, u32), Outcome>;
+ 
++// Both startup paths mutate OpenFHE process-global evaluation-key tables.
++// A separate per-mode outcome cache must not permit concurrent self-tests.
++pub(crate) fn qualification_lock() -> &'static Mutex<()> {
++    static SERIAL: Mutex<()> = Mutex::new(());
++    &SERIAL
++}
++
+ fn cache() -> &'static Mutex<Outcomes> {
+     static CACHE: OnceLock<Mutex<Outcomes>> = OnceLock::new();
+     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+ }
+ 
+ fn params_key(ctx: &Context) -> Result<Vec<u64>> {
+-    let mut k = vec![ctx.plain_mod(), ctx.ring_dim() as u64];
++    let mut k = vec![ctx.plain_mod(), ctx.ring_dim() as u64, u64::from(ctx.is_single_mode()?)];
+     k.extend(ctx.moduli()?);
+     Ok(k)
+ }
+@@ -76,6 +83,7 @@ const MIN_DECRYPTABLE_TOWERS: u32 = 3;
+ /// returns its outcome. A failure is remembered too: the library does not
+ /// change while the process runs.
+ pub fn verify_rebuild_once(ctx: &Context, depth: u32) -> Result<RebuildReport> {
++    let _serial = qualification_lock().lock().unwrap_or_else(|e| e.into_inner());
+     check_loaded_openfhe()?;
+     let l = ctx.num_towers();
+     if depth == 0 || depth + MIN_DECRYPTABLE_TOWERS > l {
+@@ -114,7 +122,8 @@ pub fn verify_rebuild_once(ctx: &Context, depth: u32) -> Result<RebuildReport> {
+ pub fn rebuild_verified(ctx: &Context) -> Result<Option<u32>> {
+     let params = params_key(ctx)?;
+     let cache = cache().lock().unwrap_or_else(|e| e.into_inner());
+-    Ok(cache.iter().filter(|((p, _), r)| *p == params && r.is_ok()).map(|((_, d), _)| *d).max())
++    let threshold = cache.iter().filter(|((p, _), r)| *p == params && r.is_ok()).map(|((_, d), _)| *d).max();
++    Ok(threshold.max(crate::single::verified(ctx)?))
+ }
+ 
+ /// Removes the throwaway keys however the test ends.
+diff --git a/prio3/openfhe-tbgv-rs/wrapper/tbgv.cpp b/prio3/openfhe-tbgv-rs/wrapper/tbgv.cpp
+index 2481f82..5c3ea6e 100644
+--- a/prio3/openfhe-tbgv-rs/wrapper/tbgv.cpp
++++ b/prio3/openfhe-tbgv-rs/wrapper/tbgv.cpp
+@@ -1356,3 +1356,43 @@ char* tbgv_loaded_openfhe_libraries(void) {
+     return out;
+     TBGV_CATCH(nullptr)
+ }
++
++extern "C" {
++TbgvContext tbgv_context_new_single(uint64_t p, uint32_t depth, uint32_t security, uint32_t digits) {
++    TBGV_TRY
++    CCParams<CryptoContextBGVRNS> params;
++    params.SetPlaintextModulus(p);
++    params.SetMultiplicativeDepth(depth);
++    params.SetMultipartyMode(FIXED_NOISE_MULTIPARTY);
++    params.SetScalingTechnique(FLEXIBLEAUTOEXT);
++    params.SetSecretKeyDist(UNIFORM_TERNARY);
++    if (digits) params.SetNumLargeDigits(digits);
++    switch (security) {
++        case 128: params.SetSecurityLevel(HEStd_128_classic); break;
++        case 192: params.SetSecurityLevel(HEStd_192_classic); break;
++        case 256: params.SetSecurityLevel(HEStd_256_classic); break;
++        default: set_error("security must be 128, 192 or 256"); return nullptr;
++    }
++    CC cc = GenCryptoContext(params);
++    cc->Enable(PKE); cc->Enable(KEYSWITCH); cc->Enable(LEVELEDSHE); cc->Enable(ADVANCEDSHE);
++    return new CC(cc);
++    TBGV_CATCH(nullptr)
++}
++int tbgv_context_is_single(TbgvContext ctx) {
++    TBGV_TRY
++    auto p = std::dynamic_pointer_cast<CryptoParametersBGVRNS>(cc_of(ctx)->GetCryptoParameters());
++    return p->GetMultipartyMode() == FIXED_NOISE_MULTIPARTY ? 1 : 0;
++    TBGV_CATCH(-1)
++}
++TbgvEvalKey tbgv_multkey_single(TbgvContext ctx, TbgvSecretKey sk) {
++    TBGV_TRY
++    cc_of(ctx)->EvalMultKeyGen(sk_of(sk));
++    const std::string tag = sk_of(sk)->GetKeyTag();
++    auto v = CryptoContextImpl<DCRTPoly>::GetEvalMultKeyVector(tag);
++    if (v.size() != 1) { set_error("expected one relinearization key"); return nullptr; }
++    EK k = v[0];
++    CryptoContextImpl<DCRTPoly>::ClearEvalMultKeys(tag);
++    return new EK(k);
++    TBGV_CATCH(nullptr)
++}
++}
+diff --git a/prio3/openfhe-tbgv-rs/wrapper/tbgv.h b/prio3/openfhe-tbgv-rs/wrapper/tbgv.h
+index 3eb0e6e..b43ac2a 100644
+--- a/prio3/openfhe-tbgv-rs/wrapper/tbgv.h
++++ b/prio3/openfhe-tbgv-rs/wrapper/tbgv.h
+@@ -232,6 +232,12 @@ size_t tbgv_decrypt_single(TbgvContext ctx, TbgvSecretKey sk, TbgvCiphertext ct,
+  * one per line (empty string if none are loaded). */
+ char* tbgv_loaded_openfhe_libraries(void);
+ 
++/* Native single-key API; does not change threshold constructors. */
++TbgvContext tbgv_context_new_single(uint64_t p, uint32_t depth, uint32_t security, uint32_t digits);
++int tbgv_context_is_single(TbgvContext ctx);
++TbgvEvalKey tbgv_multkey_single(TbgvContext ctx, TbgvSecretKey sk);
++
+ #ifdef __cplusplus
+ }
+ #endif
++

@@ -1,0 +1,5 @@
+{
+  "commit": "195e1c50af8e8d576ac1fde10c108ed0ac6f42ff",
+  "sage_image": "sagemath/sagemath@sha256:19995db6194f4a4bab18ce9a88556fd15b9ed5e916b4504fefe618a7796ddbdb",
+  "scope": "heuristic unstructured LWE estimates; not a security proof; full QP modulus; m=infinity; uniform ternary secrets; Gaussian sigma3.19; circular/KDM and ring structure not modeled"
+}

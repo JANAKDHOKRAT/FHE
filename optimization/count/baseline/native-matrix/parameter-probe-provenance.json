@@ -1,0 +1,7 @@
+{
+  "binary_sha256": "f591c64bf9ed96274a2711b317f7ba629cd7c4ff88454d8b28ba729b98453198",
+  "csv_sha256": "4eed31e4cbe415b04044eceb28b5ac46fb543f340608ea6881378fbcbe9492d5",
+  "scope": "context selection only; selected is not qualified",
+  "global_target_bits": 128,
+  "invalid_attempt_budget": 1000000
+}

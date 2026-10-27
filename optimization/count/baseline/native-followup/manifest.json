@@ -1,0 +1,346 @@
+{
+  "status": "completed",
+  "scope": "bounded opt-in native candidates; not production-security certification",
+  "nominal_encryption_security_bits": 128,
+  "ring_cap": 65536,
+  "native_depth_cap": 32,
+  "operational_batch_limit": 32,
+  "batches_per_key": 3,
+  "keys_per_profile": 1,
+  "qualification": "valid/invalid, parser and cross-slot cases; fill to 32 admissions and refuse 33rd",
+  "selection_sha256": "9cc3f85795567f772fa73784ff2e3258d58fe0bf20c64557841687432a2ad3f0",
+  "profiles": {
+    "count-full": {
+      "type": "count",
+      "digits": 2,
+      "groups": null,
+      "reports": 4,
+      "qualified": true,
+      "qualification": {
+        "argv": [
+          "/workspace/fhe-build/paper-core/release/deps/native_tasks-8cfbdff97dd034bb",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "returncode": 0,
+        "wall_s": 126.36407818600128,
+        "log": "qualification.log",
+        "log_sha256": "164d41b766b6e658deb91ad59e9d37e2a1f121359bc6d9ce2526d5eefcca39ae"
+      }
+    },
+    "count-g2": {
+      "type": "count",
+      "digits": 2,
+      "groups": 2,
+      "reports": 4,
+      "qualified": true,
+      "qualification": {
+        "argv": [
+          "/workspace/fhe-build/paper-core/release/deps/native_tasks-8cfbdff97dd034bb",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "returncode": 0,
+        "wall_s": 204.10622471000534,
+        "log": "qualification.log",
+        "log_sha256": "161a3e3745ec065fae6c8d98869e176dd8cd163ae0debe6734c99bce214d0792"
+      }
+    },
+    "count-g4": {
+      "type": "count",
+      "digits": 2,
+      "groups": 4,
+      "reports": 4,
+      "qualified": true,
+      "qualification": {
+        "argv": [
+          "/workspace/fhe-build/paper-core/release/deps/native_tasks-8cfbdff97dd034bb",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "returncode": 0,
+        "wall_s": 167.96401692499785,
+        "log": "qualification.log",
+        "log_sha256": "b8dbd00371748c84508513d5cf2c36cc6296237f57887e150ae667b2fd41d1cf"
+      }
+    },
+    "count-g32-n32": {
+      "type": "count",
+      "digits": 2,
+      "groups": 32,
+      "reports": 32,
+      "qualified": true,
+      "qualification": {
+        "argv": [
+          "/workspace/fhe-build/paper-core/release/deps/native_tasks-8cfbdff97dd034bb",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "returncode": 0,
+        "wall_s": 101.62305003100482,
+        "log": "qualification.log",
+        "log_sha256": "55da4f890dbab49a89e12deaa34b0813a77243da7f21866f51e92ecf2009f700"
+      }
+    },
+    "sv50-exact": {
+      "type": "sumvec:50:1",
+      "digits": 4,
+      "groups": null,
+      "reports": 4,
+      "qualified": true,
+      "qualification": {
+        "argv": [
+          "/workspace/fhe-build/paper-core/release/deps/native_tasks-8cfbdff97dd034bb",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "returncode": 0,
+        "wall_s": 198.69804098800523,
+        "log": "qualification.log",
+        "log_sha256": "ea936b527a37dcbab298a748b47d298cb9efdae564199f458c3a7a00d939bf83"
+      }
+    },
+    "sv25-exact": {
+      "type": "sumvec:25:1",
+      "digits": 4,
+      "groups": null,
+      "reports": 4,
+      "qualified": true,
+      "qualification": {
+        "argv": [
+          "/workspace/fhe-build/paper-core/release/deps/native_tasks-8cfbdff97dd034bb",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "returncode": 0,
+        "wall_s": 219.64110371199786,
+        "log": "qualification.log",
+        "log_sha256": "3c456cbb5803237501a39c65eb1421d650ef66fb46f2ea8fc8dd8c59ef281e37"
+      }
+    },
+    "sv100-exact": {
+      "type": "sumvec:100:1",
+      "digits": 6,
+      "groups": null,
+      "reports": 4,
+      "qualified": true,
+      "qualification": {
+        "argv": [
+          "/workspace/fhe-build/paper-core/release/deps/native_tasks-8cfbdff97dd034bb",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "returncode": 0,
+        "wall_s": 252.4177257919946,
+        "log": "qualification.log",
+        "log_sha256": "783f6f9cdab8b68b85dde3734f52c2ade8280f4cb98dadb509a42697bf56eeed"
+      }
+    }
+  },
+  "runs": [
+    {
+      "argv": [
+        "/workspace/fhe-build/paper-core/release/paper_core_eval",
+        "exact",
+        "--type",
+        "count",
+        "--key-mode",
+        "single",
+        "--digits",
+        "2",
+        "--batch-limit",
+        "32",
+        "--reports",
+        "4",
+        "--batches",
+        "3",
+        "--seed",
+        "2026",
+        "--out",
+        "/workspace/fhe-validation/native-followup-2026-10-27/count-full/measurement.json"
+      ],
+      "returncode": 0,
+      "wall_s": 170.8040408759989,
+      "log": "measurement.log",
+      "log_sha256": "49e7f44077d4b61cec3c7b1e151001bbe2355314918a168f9cbdfa9a2f59482c",
+      "profile": "count-full",
+      "measurement_sha256": "698117e473dc763f22135fbb6bfb2a52ee835b282f7769f2886959e1cce4e384"
+    },
+    {
+      "argv": [
+        "/workspace/fhe-build/paper-core/release/paper_core_eval",
+        "exact",
+        "--type",
+        "count",
+        "--key-mode",
+        "single",
+        "--digits",
+        "2",
+        "--batch-limit",
+        "32",
+        "--reports",
+        "4",
+        "--batches",
+        "3",
+        "--seed",
+        "2026",
+        "--out",
+        "/workspace/fhe-validation/native-followup-2026-10-27/count-g2/measurement.json",
+        "--groups",
+        "2"
+      ],
+      "returncode": 0,
+      "wall_s": 163.35640155700094,
+      "log": "measurement.log",
+      "log_sha256": "c1ce1161831a088e5c3307caa5a6b27a20ec7ab5aa1533cbe02e548978cf37a5",
+      "profile": "count-g2",
+      "measurement_sha256": "dc605aafa1029ac2e93938905c214cd1b040a05729875146e62f292474e0bc10"
+    },
+    {
+      "argv": [
+        "/workspace/fhe-build/paper-core/release/paper_core_eval",
+        "exact",
+        "--type",
+        "count",
+        "--key-mode",
+        "single",
+        "--digits",
+        "2",
+        "--batch-limit",
+        "32",
+        "--reports",
+        "4",
+        "--batches",
+        "3",
+        "--seed",
+        "2026",
+        "--out",
+        "/workspace/fhe-validation/native-followup-2026-10-27/count-g4/measurement.json",
+        "--groups",
+        "4"
+      ],
+      "returncode": 0,
+      "wall_s": 181.3683279140023,
+      "log": "measurement.log",
+      "log_sha256": "1d37179c63c7fdfa689e2a8a882216d87c0ca8b5333a015bdce8d957c9573855",
+      "profile": "count-g4",
+      "measurement_sha256": "2f32990407f63b984d396e443afd63fe26d327366f798d12a5baded3886bcb43"
+    },
+    {
+      "argv": [
+        "/workspace/fhe-build/paper-core/release/paper_core_eval",
+        "exact",
+        "--type",
+        "count",
+        "--key-mode",
+        "single",
+        "--digits",
+        "2",
+        "--batch-limit",
+        "32",
+        "--reports",
+        "32",
+        "--batches",
+        "3",
+        "--seed",
+        "2026",
+        "--out",
+        "/workspace/fhe-validation/native-followup-2026-10-27/count-g32-n32/measurement.json",
+        "--groups",
+        "32"
+      ],
+      "returncode": 0,
+      "wall_s": 166.97102385299513,
+      "log": "measurement.log",
+      "log_sha256": "1f20f2741aac5af2b90607704aa5f5e74be3d24969bed3eb8059eb905dfef41d",
+      "profile": "count-g32-n32",
+      "measurement_sha256": "cf1a7700a74106cd184ae91f64ba6fba2d5bc5d4472c0d6531057829fc18b080"
+    },
+    {
+      "argv": [
+        "/workspace/fhe-build/paper-core/release/paper_core_eval",
+        "exact",
+        "--type",
+        "sumvec:25:1",
+        "--key-mode",
+        "single",
+        "--digits",
+        "4",
+        "--batch-limit",
+        "32",
+        "--reports",
+        "4",
+        "--batches",
+        "3",
+        "--seed",
+        "2026",
+        "--out",
+        "/workspace/fhe-validation/native-followup-2026-10-27/sv25-exact/measurement.json"
+      ],
+      "returncode": 0,
+      "wall_s": 191.96262004099844,
+      "log": "measurement.log",
+      "log_sha256": "42e7b1f125eae218efa7ca86f579243e9b071464889dc68cf7d00f1473eb7d08",
+      "profile": "sv25-exact",
+      "measurement_sha256": "00c2cad3d31dc5ba24aa3f8c11064c477a2d6af68608edc428e9ec1950c08848"
+    },
+    {
+      "argv": [
+        "/workspace/fhe-build/paper-core/release/paper_core_eval",
+        "exact",
+        "--type",
+        "sumvec:50:1",
+        "--key-mode",
+        "single",
+        "--digits",
+        "4",
+        "--batch-limit",
+        "32",
+        "--reports",
+        "4",
+        "--batches",
+        "3",
+        "--seed",
+        "2026",
+        "--out",
+        "/workspace/fhe-validation/native-followup-2026-10-27/sv50-exact/measurement.json"
+      ],
+      "returncode": 0,
+      "wall_s": 217.19998589999886,
+      "log": "measurement.log",
+      "log_sha256": "8e9dee1aeffca4016ab833808d63f63a63c2d2877948998e27aff2ac0784f311",
+      "profile": "sv50-exact",
+      "measurement_sha256": "5fd7c68dd47a41bbf62b7d7411cdbc71fcccc15badc8a63b6f45879507c457a3"
+    },
+    {
+      "argv": [
+        "/workspace/fhe-build/paper-core/release/paper_core_eval",
+        "exact",
+        "--type",
+        "sumvec:100:1",
+        "--key-mode",
+        "single",
+        "--digits",
+        "6",
+        "--batch-limit",
+        "32",
+        "--reports",
+        "4",
+        "--batches",
+        "3",
+        "--seed",
+        "2026",
+        "--out",
+        "/workspace/fhe-validation/native-followup-2026-10-27/sv100-exact/measurement.json"
+      ],
+      "returncode": 0,
+      "wall_s": 231.12260984299792,
+      "log": "measurement.log",
+      "log_sha256": "1aff202872544a4059a13962d8528d458ae4957bc38d76af734a1cc07becd9fd",
+      "profile": "sv100-exact",
+      "measurement_sha256": "3fdc2fb894084118ae17e1ef860d942a30561f6d49eca8f572feb987460c5cc6"
+    }
+  ],
+  "binary_sha256": "b317bcf728a967dc04eddd39fd627bdf19fabe9b34edb3fb57ea4a63202b5004",
+  "qualification_binary_sha256": "97a348edab0a2e2bfd2bf3a32337293201ead1651610540a32cdd14ed20ff085"
+}

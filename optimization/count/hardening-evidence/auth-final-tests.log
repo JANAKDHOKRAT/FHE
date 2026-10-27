@@ -1,0 +1,90 @@
+   Compiling count-auth v0.1.0 (/workspace/FHE/optimization/count/count-auth)
+    Finished `release` profile [optimized] target(s) in 10.46s
+     Running unittests src/lib.rs (fhe-build/count-optimization/release/deps/count_auth-e9ea43f22ddcd722)
+
+running 1 test
+test count::profile_tests::only_the_screened_profile_is_accepted ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.56s
+
+     Running tests/count_integration.rs (fhe-build/count-optimization/release/deps/count_integration-8a8464b6e31f05f5)
+
+running 1 test
+test actual_bgv_count_authentication_release_and_restart has been running for over 60 seconds
+REAL_FHE_RESULT correct_count=1 clients=2 framed_report_bytes=16793800 release_bytes=1310916 policy_cap=16793664 ring=65536 depth=22 digits=4
+test actual_bgv_count_authentication_release_and_restart ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 77.36s
+
+     Running tests/durable_auth.rs (fhe-build/count-optimization/release/deps/durable_auth-d7f7decf5aa5cd7b)
+
+running 8 tests
+test crash_worker ... ignored, intentional process exit without Rust destructors
+test process_worker ... ignored, child process only
+test refuses_public_directory_and_database_symlink ... ok
+test minimum_maximum_seal_and_cached_release_are_durable ... ok
+test replay_persists_and_conflicting_policy_is_refused ... ok
+test signature_scope_lengths_and_registry_fail_before_admission ... ok
+test aborted_seal_and_decryption_are_atomic_and_conflicts_are_refused ... ok
+
+running 1 test
+
+running 1 test
+accepted
+
+running 1 test
+test process_worker ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.01s
+
+
+running 1 test
+replay refused
+replay refused
+test process_worker ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s
+
+replay refused
+test process_worker ... ok
+
+test process_worker ... test result: okok
+. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.01s
+
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s
+
+
+running 1 test
+
+running 1 test
+
+running 1 test
+replay refused
+replay refused
+test process_worker ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s
+
+
+running 1 test
+test process_worker ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s
+
+replay refused
+replay refused
+test process_worker ... ok
+test process_worker ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.01s
+
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s
+
+
+running 1 test
+test concurrent_process_replay_and_abrupt_exit_recover ... ok
+
+test result: ok. 6 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.05s
+

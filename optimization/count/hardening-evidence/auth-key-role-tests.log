@@ -1,0 +1,82 @@
+   Compiling count-auth v0.1.0 (/workspace/FHE/optimization/count/count-auth)
+    Finished `release` profile [optimized] target(s) in 4.28s
+     Running unittests src/lib.rs (fhe-build/count-optimization/release/deps/count_auth-e9ea43f22ddcd722)
+
+running 1 test
+test count::profile_tests::only_the_screened_profile_is_accepted ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.29s
+
+     Running tests/durable_auth.rs (fhe-build/count-optimization/release/deps/durable_auth-d7f7decf5aa5cd7b)
+
+running 9 tests
+test crash_worker ... ignored, intentional process exit without Rust destructors
+test client_key_cannot_also_authorize_releases ... ok
+test process_worker ... ignored, child process only
+test refuses_public_directory_and_database_symlink ... ok
+test minimum_maximum_seal_and_cached_release_are_durable ... ok
+test replay_persists_and_conflicting_policy_is_refused ... ok
+
+running 1 test
+
+running 1 test
+accepted
+test process_worker ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.00s
+
+
+running 1 test
+test aborted_seal_and_decryption_are_atomic_and_conflicts_are_refused ... ok
+replay refused
+
+running 1 test
+replay refused
+test process_worker ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.01s
+
+test signature_scope_lengths_and_registry_fail_before_admission ... ok
+
+running 1 test
+replay refused
+
+running 1 test
+
+running 1 test
+replay refused
+test process_worker ... ok
+test process_worker ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.00s
+
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.01s
+
+replay refused
+test process_worker ... ok
+test process_worker ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out
+; finished in 0.00stest result: 
+
+ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.01s
+
+replay refused
+test process_worker ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.00s
+
+
+running 1 test
+replay refused
+test process_worker ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.00s
+
+
+running 1 test
+test concurrent_process_replay_and_abrupt_exit_recover ... ok
+
+test result: ok. 7 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.04s
+

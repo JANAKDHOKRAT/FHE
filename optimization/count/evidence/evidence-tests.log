@@ -1,0 +1,12 @@
+test_existing_output_never_overwritten (__main__.EvidenceChecks.test_existing_output_never_overwritten) ... ok
+test_incomplete_rejected (__main__.EvidenceChecks.test_incomplete_rejected) ... ok
+test_missing_profile_rejected (__main__.EvidenceChecks.test_missing_profile_rejected) ... ok
+test_size_lie_with_updated_hash_rejected (__main__.EvidenceChecks.test_size_lie_with_updated_hash_rejected) ... ok
+test_tampered_measurement_rejected (__main__.EvidenceChecks.test_tampered_measurement_rejected) ... ok
+test_valid_evidence (__main__.EvidenceChecks.test_valid_evidence) ... ok
+test_wrong_extended_modulus_rejected (__main__.EvidenceChecks.test_wrong_extended_modulus_rejected) ... ok
+
+----------------------------------------------------------------------
+Ran 7 tests in 0.555s
+
+OK

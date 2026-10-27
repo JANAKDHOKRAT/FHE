@@ -1,0 +1,17 @@
+{
+  "source": "OpenFHE src/core/lib/lattice/stdlatticeparms.cpp",
+  "sha256": "b10938e1eabe1f471a50fa3730b58e66da6c86f931513edfc915b8e8db279ae8",
+  "distribution": "HEStd_ternary",
+  "security": "HEStd_128_classic",
+  "maximum_log_modulus_by_ring": {
+    "1024": 27,
+    "2048": 54,
+    "4096": 109,
+    "8192": 218,
+    "16384": 438,
+    "32768": 881,
+    "65536": 1747,
+    "131072": 3523
+  },
+  "interpretation": "Pinned library table consistency check only; not an independent attack-cost estimate. Compare actual extended QP, not just ciphertext Q."
+}

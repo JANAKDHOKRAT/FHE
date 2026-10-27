@@ -1,0 +1,14 @@
+{
+  "ring": 65536,
+  "p": 786433,
+  "depth": 22,
+  "full_towers": 24,
+  "final_towers": 2,
+  "final_moduli": [
+    "34362228737",
+    "8796103114753"
+  ],
+  "actual_final_modulus_bits": 79,
+  "uniform_flooding_B1_required_modulus_bits": 165,
+  "construction": "per-coefficient uniform integer-noise flooding, epsilon=2^-128, bound B>=1; sufficient TV bound 2*n*B/(2W+1), correctness requires p(B+W)+(p-1)/2<Qfinal/2; not an impossibility proof for all privacy constructions"
+}

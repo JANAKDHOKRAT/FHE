@@ -1,0 +1,3 @@
+   Compiling fhe-paper-core v0.1.0 (/workspace/FHE/optimization/count/fhe-paper-core)
+    Finished `release` profile [optimized] target(s) in 0.49s
+     Running `fhe-build/count-optimization/release/hardening_context`

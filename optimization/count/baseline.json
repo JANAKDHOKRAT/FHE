@@ -1,0 +1,6 @@
+{
+  "baseline_inventory": "baseline-sha256.json",
+  "baseline_archive_sha256": "27ef648bbe940045509b671631a6e975a5c84fddd55da4e40711edb61713f7eb",
+  "scope": "separate experimental copy; original prio3 sources unchanged",
+  "baseline_archive": "baseline/source.tar.gz"
+}

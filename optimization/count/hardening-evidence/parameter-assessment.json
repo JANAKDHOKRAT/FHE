@@ -1,0 +1,251 @@
+{
+  "status": "scoped heuristic screening completed",
+  "selected": {
+    "ADPS16": {
+      "usvp": 143.664,
+      "dual_hybrid": 143.664,
+      "bdd": 143.6640115061174,
+      "dual": 143.664
+    },
+    "MATZOV": {
+      "usvp": 175.43758381386408,
+      "dual_hybrid": 176.3989386188639,
+      "bdd": 175.4337466105168,
+      "dual": 176.39939232431846
+    }
+  },
+  "minimum_log2_rop_by_model": {
+    "ADPS16": 143.664,
+    "MATZOV": 175.4337466105168
+  },
+  "warning": "Not an exact security level or proof; unstructured LWE cost models only, RLWE ring-specific attacks and KDM assumptions not modeled; BKW/arora/hybrid-BDD families not run. Sigma3.19f; unlimited samples; full QP.",
+  "stopped_runs": "After d4 was screened, redundant multi-candidate runs were intentionally stopped while on d5; do not treat incomplete d5/d6/d8 results as passed.",
+  "results": [
+    {
+      "profile": "baseline-g4",
+      "n": 65536,
+      "QP_bits": 1688,
+      "sigma": 3.190000057220459,
+      "m": "infinity",
+      "model": "ADPS16",
+      "results": {
+        "usvp": {
+          "log2_rop": 98.988,
+          "cost": "         rop: \u22482^99.0\n         red: \u22482^99.0\n           \u03b4: 1.004461\n           \u03b2:      339\n           d:   125894\n         tag:     usvp"
+        },
+        "dual_hybrid": {
+          "log2_rop": 98.98799999999999,
+          "cost": "         rop: \u22482^99.0\n         red: \u22482^99.0\n       guess: \u22482^22.3\n           \u03b2:      339\n           p:        7\n           \u03b6:        0\n           t:        0\n          \u03b2':      339\n           N: \u22482^12.0\n           m: \u22482^16.0"
+        }
+      },
+      "seconds": 6.095322741995915
+    },
+    {
+      "profile": "baseline-g4",
+      "n": 65536,
+      "QP_bits": 1688,
+      "sigma": 3.190000057220459,
+      "m": "infinity",
+      "model": "MATZOV",
+      "results": {
+        "usvp": {
+          "log2_rop": 132.91051971310543,
+          "cost": "         rop: \u22482^132.9\n         red: \u22482^132.9\n           \u03b4: 1.004461\n           \u03b2:      339\n           d:   125894\n         tag:     usvp"
+        },
+        "dual_hybrid": {
+          "log2_rop": 133.68748474151275,
+          "cost": "         rop: \u22482^133.7\n         red: \u22482^133.7\n       guess: \u22482^113.5\n           \u03b2:      338\n           p:        3\n           \u03b6:        0\n           t:       60\n          \u03b2':      371\n           N: \u22482^71.5\n           m: \u22482^16.0"
+        }
+      },
+      "seconds": 16.348447531010606
+    },
+    {
+      "profile": "projected-small-g4",
+      "n": 32768,
+      "QP_bits": 855,
+      "sigma": 3.190000057220459,
+      "m": "infinity",
+      "model": "ADPS16",
+      "results": {
+        "usvp": {
+          "log2_rop": 97.23599999999999,
+          "cost": "         rop: \u22482^97.2\n         red: \u22482^97.2\n           \u03b4: 1.004515\n           \u03b2:      333\n           d:    62778\n         tag:     usvp"
+        },
+        "dual_hybrid": {
+          "log2_rop": 97.23599999999999,
+          "cost": "         rop: \u22482^97.2\n         red: \u22482^97.2\n       guess: \u22482^38.2\n           \u03b2:      333\n           p:        7\n           \u03b6:        0\n           t:        0\n          \u03b2':      333\n           N: \u22482^27.9\n           m: \u22482^15.0"
+        }
+      },
+      "seconds": 5.78944916499313
+    },
+    {
+      "profile": "projected-small-g4",
+      "n": 32768,
+      "QP_bits": 855,
+      "sigma": 3.190000057220459,
+      "m": "infinity",
+      "model": "MATZOV",
+      "results": {
+        "usvp": {
+          "log2_rop": 130.24003184811633,
+          "cost": "         rop: \u22482^130.2\n         red: \u22482^130.2\n           \u03b4: 1.004515\n           \u03b2:      333\n           d:    62778\n         tag:     usvp"
+        },
+        "dual_hybrid": {
+          "log2_rop": 131.02136288196124,
+          "cost": "         rop: \u22482^131.0\n         red: \u22482^131.0\n       guess: \u22482^113.5\n           \u03b2:      332\n           p:        3\n           \u03b6:        0\n           t:       60\n          \u03b2':      362\n           N: \u22482^59.1\n           m: \u22482^15.0"
+        }
+      },
+      "seconds": 9.11957359900407
+    },
+    {
+      "profile": "projected-786433-d2",
+      "n": 65536,
+      "QP_bits": 1542,
+      "sigma": 3.190000057220459,
+      "m": "infinity",
+      "model": "ADPS16",
+      "results": {
+        "usvp": {
+          "log2_rop": 113.00399999999999,
+          "cost": "         rop: \u22482^113.0\n         red: \u22482^113.0\n           \u03b4: 1.004074\n           \u03b2:      387\n           d:   125929\n         tag:     usvp"
+        },
+        "dual_hybrid": {
+          "log2_rop": 113.00399999999999,
+          "cost": "         rop: \u22482^113.0\n         red: \u22482^113.0\n       guess: \u22482^27.2\n           \u03b2:      387\n           p:       18\n           \u03b6:        0\n           t:        0\n          \u03b2':      387\n           N: \u22482^17.0\n           m: \u22482^16.0"
+        }
+      },
+      "seconds": 13.854301626008237
+    },
+    {
+      "profile": "projected-786433-d2",
+      "n": 65536,
+      "QP_bits": 1542,
+      "sigma": 3.190000057220459,
+      "m": "infinity",
+      "model": "MATZOV",
+      "results": {
+        "usvp": {
+          "log2_rop": 146.22457199757343,
+          "cost": "         rop: \u22482^146.2\n         red: \u22482^146.2\n           \u03b4: 1.004074\n           \u03b2:      387\n           d:   125929\n         tag:     usvp"
+        },
+        "dual_hybrid": {
+          "log2_rop": 147.00709962070175,
+          "cost": "         rop: \u22482^147.0\n         red: \u22482^147.0\n       guess: \u22482^129.6\n           \u03b2:      386\n           p:        3\n           \u03b6:        0\n           t:       70\n          \u03b2':      416\n           N: \u22482^68.4\n           m: \u22482^16.0"
+        }
+      },
+      "seconds": 11.078849315003026
+    },
+    {
+      "profile": "projected-786433-d3",
+      "n": 65536,
+      "QP_bits": 1362,
+      "sigma": 3.190000057220459,
+      "m": "infinity",
+      "model": "ADPS16",
+      "results": {
+        "usvp": {
+          "log2_rop": 134.904,
+          "cost": "         rop: \u22482^134.9\n         red: \u22482^134.9\n           \u03b4: 1.003600\n           \u03b2:      462\n           d:   127011\n         tag:     usvp"
+        },
+        "dual_hybrid": {
+          "log2_rop": 134.904,
+          "cost": "         rop: \u22482^134.9\n         red: \u22482^134.9\n       guess: \u22482^57.0\n           \u03b2:      462\n           p:       68\n           \u03b6:        0\n           t:        0\n          \u03b2':      462\n           N: \u22482^46.7\n           m: \u22482^16.0"
+        }
+      },
+      "seconds": 69.58890306999092
+    },
+    {
+      "profile": "projected-786433-d3",
+      "n": 65536,
+      "QP_bits": 1362,
+      "sigma": 3.190000057220459,
+      "m": "infinity",
+      "model": "MATZOV",
+      "results": {
+        "usvp": {
+          "log2_rop": 167.07619913059028,
+          "cost": "         rop: \u22482^167.1\n         red: \u22482^167.1\n           \u03b4: 1.003600\n           \u03b2:      462\n           d:   127011\n         tag:     usvp"
+        },
+        "dual_hybrid": {
+          "log2_rop": 167.7920427533972,
+          "cost": "         rop: \u22482^167.8\n         red: \u22482^167.8\n       guess: \u22482^145.6\n           \u03b2:      461\n           p:        3\n           \u03b6:        0\n           t:       80\n          \u03b2':      486\n           N: \u22482^97.6\n           m: \u22482^16.0"
+        }
+      },
+      "seconds": 20.718288648000453
+    },
+    {
+      "profile": "projected-786433-d4",
+      "n": 65536,
+      "QP_bits": 1302,
+      "sigma": 3.190000057220459,
+      "m": "infinity",
+      "model": "ADPS16",
+      "results": {
+        "usvp": {
+          "log2_rop": 143.664,
+          "cost": "         rop: \u22482^143.7\n         red: \u22482^143.7\n           \u03b4: 1.003443\n           \u03b2:      492\n           d:   128311\n         tag:     usvp"
+        },
+        "dual_hybrid": {
+          "log2_rop": 143.664,
+          "cost": "         rop: \u22482^143.7\n         red: \u22482^143.7\n       guess: \u22482^87.9\n           \u03b2:      492\n           p:       11\n           \u03b6:        0\n           t:       20\n          \u03b2':      492\n           N: \u22482^71.6\n           m: \u22482^16.0"
+        }
+      },
+      "seconds": 18.495387513990863
+    },
+    {
+      "profile": "projected-786433-d4",
+      "n": 65536,
+      "QP_bits": 1302,
+      "sigma": 3.190000057220459,
+      "m": "infinity",
+      "model": "MATZOV",
+      "results": {
+        "usvp": {
+          "log2_rop": 175.43758381386408,
+          "cost": "         rop: \u22482^175.4\n         red: \u22482^175.4\n           \u03b4: 1.003443\n           \u03b2:      492\n           d:   128311\n         tag:     usvp"
+        },
+        "dual_hybrid": {
+          "log2_rop": 176.3989386188639,
+          "cost": "         rop: \u22482^176.4\n         red: \u22482^176.4\n       guess: \u22482^159.3\n           \u03b2:      492\n           p:        2\n           \u03b6:       20\n           t:      100\n          \u03b2':      515\n           N: \u22482^102.4\n           m: \u22482^16.0"
+        }
+      },
+      "seconds": 19.834631842008093
+    },
+    {
+      "profile": "projected-786433-d4",
+      "model": "ADPS16",
+      "algorithm": "bdd",
+      "seconds": 58.64976851599931,
+      "status": "completed",
+      "log2_rop": 143.6640115061174,
+      "cost": "         rop: \u22482^143.7\n         red: \u22482^143.7\n         svp: \u22482^126.7\n           \u03b2:      492\n           \u03b7:      433\n           d:   130944\n         tag:      bdd"
+    },
+    {
+      "profile": "projected-786433-d4",
+      "model": "ADPS16",
+      "algorithm": "dual",
+      "seconds": 0.11284952200367115,
+      "status": "completed",
+      "log2_rop": 143.664,
+      "cost": "         rop: \u22482^143.7\n         mem: \u22482^111.0\n           m: \u22482^16.0\n           \u03b2:      492\n           d:   131032\n           \u21bb:        1\n         tag:     dual"
+    },
+    {
+      "profile": "projected-786433-d4",
+      "model": "MATZOV",
+      "algorithm": "bdd",
+      "seconds": 67.32760759399389,
+      "status": "completed",
+      "log2_rop": 175.4337466105168,
+      "cost": "         rop: \u22482^175.4\n         red: \u22482^175.4\n         svp: \u22482^166.5\n           \u03b2:      492\n           \u03b7:      520\n           d:   127702\n         tag:      bdd"
+    },
+    {
+      "profile": "projected-786433-d4",
+      "model": "MATZOV",
+      "algorithm": "dual",
+      "seconds": 0.13381754400325008,
+      "status": "completed",
+      "log2_rop": 176.39939232431846,
+      "cost": "         rop: \u22482^176.4\n         mem: \u22482^115.9\n           m: \u22482^16.0\n           \u03b2:      492\n           d:   131032\n           \u21bb:        1\n         tag:     dual"
+    }
+  ]
+}

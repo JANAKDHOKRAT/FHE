@@ -1,0 +1,11 @@
+   Compiling count-auth v0.1.0 (/workspace/FHE/optimization/count/count-auth)
+    Finished `release` profile [optimized] target(s) in 3.36s
+     Running tests/count_integration.rs (fhe-build/count-optimization/release/deps/count_integration-8a8464b6e31f05f5)
+
+running 1 test
+test actual_bgv_count_authentication_release_and_restart has been running for over 60 seconds
+REAL_FHE_RESULT correct_count=1 clients=2 framed_report_bytes=16793800 release_bytes=1310916 policy_cap=16793664 ring=65536 depth=22 digits=4
+test actual_bgv_count_authentication_release_and_restart ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 103.21s
+

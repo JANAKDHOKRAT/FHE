@@ -1,0 +1,4 @@
+
+thread 'main' (39168) panicked at src/main.rs:49:94:
+called `Result::unwrap()` on an `Err` value: Rebuild("ciphertext rebuild has not been verified on this OpenFHE library for these parameters; call verify_rebuild_once at startup")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

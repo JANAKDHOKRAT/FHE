@@ -1,0 +1,1 @@
+{"reason": "Stopped initial build during startup to replace ungenerated arbitrary rotations h=3,5,6,7 with compositions of generated power-of-two rotations. No circuit pass counted."}

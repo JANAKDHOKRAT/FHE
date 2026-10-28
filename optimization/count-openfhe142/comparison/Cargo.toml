@@ -1,0 +1,10 @@
+[package]
+name="count-matched142"
+version="0.1.0"
+edition="2024"
+[dependencies]
+fhe-paper-core={path="../fhe-paper-core"}
+fhe-prio3={path="../fhe-prio3"}
+openfhe-tbgv-rs={path="../openfhe-tbgv-rs"}
+serde_json="1"
+[workspace]

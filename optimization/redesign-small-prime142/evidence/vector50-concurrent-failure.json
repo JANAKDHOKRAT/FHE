@@ -1,0 +1,1 @@
+{"observed_returncode": -9, "stderr_bytes": 0, "stdout_bytes": 0, "cgroup_memory_events": "low 0\nhigh 0\nmax 4128\noom 4\noom_kill 2\noom_group_kill 0\n", "concurrent_vector100": true, "circuit_pass": false, "next_action": "repeat serially after vector100 completes"}

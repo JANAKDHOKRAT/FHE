@@ -1,0 +1,347 @@
+[
+  {
+    "name": "gate_noise",
+    "executable": "/workspace/fhe-build/count-port142/release/deps/gate_noise-f2632084b9fb3006",
+    "exit_code": 0,
+    "seconds": 181.1406002700005,
+    "log": "/workspace/fhe-validation/count-openfhe142-2026-10-28/integration/gate_noise.log",
+    "outcomes": [
+      {
+        "status": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0
+      }
+    ]
+  },
+  {
+    "name": "policy",
+    "executable": "/workspace/fhe-build/count-port142/release/deps/policy-05f1b4316b24a1a2",
+    "exit_code": 0,
+    "seconds": 298.5045991579991,
+    "log": "/workspace/fhe-validation/count-openfhe142-2026-10-28/integration/policy.log",
+    "outcomes": [
+      {
+        "status": "ok",
+        "passed": 4,
+        "failed": 0,
+        "ignored": 0
+      }
+    ]
+  },
+  {
+    "name": "vdec",
+    "executable": "/workspace/fhe-build/count-port142/release/deps/vdec-52ebcb76e25fe7e1",
+    "exit_code": 0,
+    "seconds": 20.94719536499906,
+    "log": "/workspace/fhe-validation/count-openfhe142-2026-10-28/integration/vdec.log",
+    "outcomes": [
+      {
+        "status": "ok",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0
+      }
+    ]
+  },
+  {
+    "name": "shares_moments",
+    "executable": "/workspace/fhe-build/count-port142/release/deps/shares_moments-553b5e1bcc85bad9",
+    "exit_code": 0,
+    "seconds": 348.38415205899946,
+    "log": "/workspace/fhe-validation/count-openfhe142-2026-10-28/integration/shares_moments.log",
+    "outcomes": [
+      {
+        "status": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0
+      }
+    ]
+  },
+  {
+    "name": "upgrade",
+    "executable": "/workspace/fhe-build/count-port142/release/deps/upgrade-359bb8c4d11ef0a2",
+    "exit_code": 0,
+    "seconds": 404.7849792859997,
+    "log": "/workspace/fhe-validation/count-openfhe142-2026-10-28/integration/upgrade.log",
+    "outcomes": [
+      {
+        "status": "ok",
+        "passed": 5,
+        "failed": 0,
+        "ignored": 0
+      }
+    ]
+  },
+  {
+    "name": "shares_split",
+    "executable": "/workspace/fhe-build/count-port142/release/deps/shares_split-323c8dd40474fe47",
+    "exit_code": 0,
+    "seconds": 1339.7875581339995,
+    "log": "/workspace/fhe-validation/count-openfhe142-2026-10-28/integration/shares_split.log",
+    "outcomes": [
+      {
+        "status": "ok",
+        "passed": 10,
+        "failed": 0,
+        "ignored": 0
+      }
+    ]
+  },
+  {
+    "name": "split_key",
+    "executable": "/workspace/fhe-build/count-port142/release/deps/split_key-62c75f50763e5958",
+    "exit_code": 0,
+    "seconds": 1293.6563965919995,
+    "log": "/workspace/fhe-validation/count-openfhe142-2026-10-28/integration/split_key.log",
+    "outcomes": [
+      {
+        "status": "ok",
+        "passed": 7,
+        "failed": 0,
+        "ignored": 0
+      }
+    ]
+  },
+  {
+    "name": "share_noise",
+    "executable": "/workspace/fhe-build/count-port142/release/deps/share_noise-b7a0d63a826495cc",
+    "exit_code": 0,
+    "seconds": 396.8684780599997,
+    "log": "/workspace/fhe-validation/count-openfhe142-2026-10-28/integration/share_noise.log",
+    "outcomes": [
+      {
+        "status": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0
+      }
+    ]
+  },
+  {
+    "name": "client_proofs",
+    "executable": "/workspace/fhe-build/count-port142/release/deps/client_proofs-fbcf63615239f0da",
+    "exit_code": 0,
+    "seconds": 101.96222241100077,
+    "log": "/workspace/fhe-validation/count-openfhe142-2026-10-28/integration/client_proofs.log",
+    "outcomes": [
+      {
+        "status": "ok",
+        "passed": 7,
+        "failed": 0,
+        "ignored": 0
+      }
+    ]
+  },
+  {
+    "name": "ceremony_sweep",
+    "executable": "/workspace/fhe-build/count-port142/release/deps/ceremony_sweep-b1e1626768678880",
+    "exit_code": 0,
+    "seconds": 0.0076059310013079084,
+    "log": "/workspace/fhe-validation/count-openfhe142-2026-10-28/integration/ceremony_sweep.log",
+    "outcomes": [
+      {
+        "status": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 1
+      }
+    ]
+  },
+  {
+    "name": "wire",
+    "executable": "/workspace/fhe-build/count-port142/release/deps/wire-418cf649156c15c0",
+    "exit_code": 0,
+    "seconds": 275.2672262640008,
+    "log": "/workspace/fhe-validation/count-openfhe142-2026-10-28/integration/wire.log",
+    "outcomes": [
+      {
+        "status": "ok",
+        "passed": 7,
+        "failed": 0,
+        "ignored": 0
+      }
+    ]
+  },
+  {
+    "name": "wfe",
+    "executable": "/workspace/fhe-build/count-port142/release/deps/wfe-ae5db213d836aa52",
+    "exit_code": 0,
+    "seconds": 35.21264975899976,
+    "log": "/workspace/fhe-validation/count-openfhe142-2026-10-28/integration/wfe.log",
+    "outcomes": [
+      {
+        "status": "ok",
+        "passed": 4,
+        "failed": 0,
+        "ignored": 0
+      }
+    ]
+  },
+  {
+    "name": "malicious_aggregator",
+    "executable": "/workspace/fhe-build/count-port142/release/deps/malicious_aggregator-da564cb0c69fb594",
+    "exit_code": 0,
+    "seconds": 318.6617045380008,
+    "log": "/workspace/fhe-validation/count-openfhe142-2026-10-28/integration/malicious_aggregator.log",
+    "outcomes": [
+      {
+        "status": "ok",
+        "passed": 5,
+        "failed": 0,
+        "ignored": 0
+      }
+    ]
+  },
+  {
+    "name": "ceremony",
+    "executable": "/workspace/fhe-build/count-port142/release/deps/ceremony-2ebb2df95bcc56bb",
+    "exit_code": 0,
+    "seconds": 49.70641763700041,
+    "log": "/workspace/fhe-validation/count-openfhe142-2026-10-28/integration/ceremony.log",
+    "outcomes": [
+      {
+        "status": "ok",
+        "passed": 4,
+        "failed": 0,
+        "ignored": 0
+      }
+    ]
+  },
+  {
+    "name": "suppression",
+    "executable": "/workspace/fhe-build/count-port142/release/deps/suppression-c9a2ee9d6ecdcef7",
+    "exit_code": 0,
+    "seconds": 2616.640710138001,
+    "log": "/workspace/fhe-validation/count-openfhe142-2026-10-28/integration/suppression.log",
+    "outcomes": [
+      {
+        "status": "ok",
+        "passed": 7,
+        "failed": 0,
+        "ignored": 0
+      }
+    ]
+  },
+  {
+    "name": "regression",
+    "executable": "/workspace/fhe-build/count-port142/release/deps/regression-71b3b70c29487750",
+    "exit_code": 0,
+    "seconds": 1239.5645542620005,
+    "log": "/workspace/fhe-validation/count-openfhe142-2026-10-28/integration/regression.log",
+    "outcomes": [
+      {
+        "status": "ok",
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0
+      }
+    ]
+  },
+  {
+    "name": "exact",
+    "executable": "/workspace/fhe-build/count-port142/release/deps/exact-70d6bc7a4c29305a",
+    "exit_code": 0,
+    "seconds": 1072.8237178840027,
+    "log": "/workspace/fhe-validation/count-openfhe142-2026-10-28/integration/exact.log",
+    "outcomes": [
+      {
+        "status": "ok",
+        "passed": 4,
+        "failed": 0,
+        "ignored": 0
+      }
+    ]
+  },
+  {
+    "name": "protocol",
+    "executable": "/workspace/fhe-build/count-port142/release/deps/protocol-c4461ba15f9ce865",
+    "exit_code": 0,
+    "seconds": 107.96884909499931,
+    "log": "/workspace/fhe-validation/count-openfhe142-2026-10-28/integration/protocol.log",
+    "outcomes": [
+      {
+        "status": "ok",
+        "passed": 14,
+        "failed": 0,
+        "ignored": 0
+      }
+    ]
+  },
+  {
+    "name": "gate_rounds",
+    "executable": "/workspace/fhe-build/count-port142/release/deps/gate_rounds-c47970f1ac940f3e",
+    "exit_code": 0,
+    "seconds": 56.6496174519998,
+    "log": "/workspace/fhe-validation/count-openfhe142-2026-10-28/integration/gate_rounds.log",
+    "outcomes": [
+      {
+        "status": "ok",
+        "passed": 4,
+        "failed": 0,
+        "ignored": 0
+      }
+    ]
+  },
+  {
+    "name": "key_noise_protocol",
+    "executable": "/workspace/fhe-build/count-port142/release/deps/key_noise_protocol-f2315836d61d2360",
+    "exit_code": 0,
+    "seconds": 126.85978721200081,
+    "log": "/workspace/fhe-validation/count-openfhe142-2026-10-28/integration/key_noise_protocol.log",
+    "outcomes": [
+      {
+        "status": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0
+      }
+    ]
+  },
+  {
+    "name": "bounds",
+    "executable": "/workspace/fhe-build/count-port142/release/deps/bounds-bf728abd27f7919a",
+    "exit_code": 0,
+    "seconds": 415.82272098799876,
+    "log": "/workspace/fhe-validation/count-openfhe142-2026-10-28/integration/bounds.log",
+    "outcomes": [
+      {
+        "status": "ok",
+        "passed": 6,
+        "failed": 0,
+        "ignored": 0
+      }
+    ]
+  },
+  {
+    "name": "shares_aggregators",
+    "executable": "/workspace/fhe-build/count-port142/release/deps/shares_aggregators-68f95ab311328bbe",
+    "exit_code": 0,
+    "seconds": 614.2658561499993,
+    "log": "/workspace/fhe-validation/count-openfhe142-2026-10-28/integration/shares_aggregators.log",
+    "outcomes": [
+      {
+        "status": "ok",
+        "passed": 6,
+        "failed": 0,
+        "ignored": 0
+      }
+    ]
+  },
+  {
+    "name": "mitigations",
+    "executable": "/workspace/fhe-build/count-port142/release/deps/mitigations-4a348964ab8bd629",
+    "exit_code": 0,
+    "seconds": 1601.402535721998,
+    "log": "/workspace/fhe-validation/count-openfhe142-2026-10-28/integration/mitigations.log",
+    "outcomes": [
+      {
+        "status": "ok",
+        "passed": 11,
+        "failed": 0,
+        "ignored": 0
+      }
+    ]
+  }
+]

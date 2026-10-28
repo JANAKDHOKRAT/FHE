@@ -1,0 +1,17 @@
+{
+  "command": [
+    "taskset",
+    "-c",
+    "0",
+    "/workspace/fhe-build/count-port142/release/prio_cost",
+    "histogram",
+    "3"
+  ],
+  "returncode": 0,
+  "final_pass_record": true,
+  "wall_seconds": 0.0038420580021920614,
+  "user_seconds": 0.003241,
+  "system_seconds": 0.0,
+  "process_peak_rss_kib": 9984,
+  "scope": "all simulated roles, setup and diagnostics included; not isolated server RAM"
+}

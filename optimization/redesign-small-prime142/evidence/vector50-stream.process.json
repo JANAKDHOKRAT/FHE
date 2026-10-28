@@ -1,0 +1,12 @@
+{
+  "command": [
+    "/workspace/fhe-build/count-port142/release/vector_lookup",
+    "50",
+    "--stream-keys"
+  ],
+  "returncode": 0,
+  "wall_seconds": 701.9207633589976,
+  "user_seconds": 650.985965,
+  "system_seconds": 50.627949,
+  "process_peak_rss_kib": 7453952
+}

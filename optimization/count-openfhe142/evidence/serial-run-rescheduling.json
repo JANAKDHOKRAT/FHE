@@ -1,0 +1,7 @@
+{
+  "reason": "Resume remaining integration programs in independent processes; each process single-threaded. No assertions/test cases disabled. Completed unit tests and batch_noise retained. Interrupted partial programs rerun in full.",
+  "terminated_owned_pids": [
+    9889,
+    12792
+  ]
+}

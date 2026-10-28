@@ -1,0 +1,13 @@
+{"depth":18,"digits":7,"encoding":"scalar bucket index","key_switch":"HYBRID","libraries":["/workspace/fhe-deps/install-1.4.2/lib/libOPENFHEpke.so.1.4.2","/workspace/fhe-deps/install-1.4.2/lib/libOPENFHEcore.so.1.4.2","/workspace/fhe-deps/install-1.4.2/lib/libOPENFHEbinfhe.so.1.4.2"],"mult_key_bytes":80753713,"p":65537,"public_key_bytes":11538679,"q":[2148728833,274879414273,274880987137,274881052673,274882035713,274882428929,274882756609,274883215361,274883411969,274883543041,274883739649,274884919297,274885378049,274886295553,274886950913,274888261633,274888327169,274889113601,274889637889,786433],"qp":[2148728833,274879414273,274880987137,274881052673,274882035713,274882428929,274882756609,274883215361,274883411969,274883543041,274883739649,274884919297,274885378049,274886295553,274886950913,274888261633,274888327169,274889113601,274889637889,786433,1152921422732787713,1152921409847689217],"ring":32768,"rotation_key_bytes":1130515061,"status":"PROFILE"}
+{"all_slots_checked":32768,"length":3,"report_bytes":6176895,"status":"HISTOGRAM_REPORT_PASS","valid":true,"value":0}
+{"all_slots_checked":32768,"length":3,"report_bytes":6176895,"status":"HISTOGRAM_REPORT_PASS","valid":true,"value":2}
+{"all_slots_checked":32768,"length":3,"report_bytes":6176895,"status":"HISTOGRAM_REPORT_PASS","valid":false,"value":3}
+{"all_slots_checked":32768,"length":3,"report_bytes":6176895,"status":"HISTOGRAM_REPORT_PASS","valid":false,"value":65536}
+{"all_slots_checked":32768,"length":3,"report_bytes":6176895,"status":"HISTOGRAM_REPORT_PASS","valid":false,"value":32768}
+{"aggregate":[1,0,1],"length":3,"production_security_certified":false,"report_bytes":6176895,"reports":5,"status":"HISTOGRAM_PASS"}
+{"all_slots_checked":32768,"length":8,"report_bytes":6176895,"status":"HISTOGRAM_REPORT_PASS","valid":true,"value":0}
+{"all_slots_checked":32768,"length":8,"report_bytes":6176895,"status":"HISTOGRAM_REPORT_PASS","valid":true,"value":7}
+{"all_slots_checked":32768,"length":8,"report_bytes":6176895,"status":"HISTOGRAM_REPORT_PASS","valid":false,"value":8}
+{"all_slots_checked":32768,"length":8,"report_bytes":6176895,"status":"HISTOGRAM_REPORT_PASS","valid":false,"value":65536}
+{"all_slots_checked":32768,"length":8,"report_bytes":6176895,"status":"HISTOGRAM_REPORT_PASS","valid":false,"value":32768}
+{"aggregate":[1,0,0,0,0,0,0,1],"length":8,"production_security_certified":false,"report_bytes":6176895,"reports":5,"status":"HISTOGRAM_PASS"}

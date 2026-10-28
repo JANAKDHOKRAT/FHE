@@ -1,0 +1,16 @@
+{
+  "command": [
+    "taskset",
+    "-c",
+    "0",
+    "/workspace/fhe-validation/full-cost142/boolean-cost",
+    "100"
+  ],
+  "returncode": 0,
+  "final_pass_record": true,
+  "wall_seconds": 277.7492463430099,
+  "user_seconds": 276.973682,
+  "system_seconds": 0.686403,
+  "process_peak_rss_kib": 1265700,
+  "scope": "all simulated roles, setup and diagnostics included; not isolated server RAM"
+}

@@ -1,0 +1,13 @@
+[package]
+name="full-cost142"
+version="0.1.0"
+edition="2024"
+[dependencies]
+prio="=0.18.1-alpha.3"
+fhe-paper-core={path="../count-openfhe142/fhe-paper-core"}
+fhe-prio3={path="../count-openfhe142/fhe-prio3"}
+openfhe-tbgv-rs={path="../count-openfhe142/openfhe-tbgv-rs"}
+rand="0.8"
+serde={version="1",features=["derive"]}
+serde_json="1"
+[workspace]

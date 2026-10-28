@@ -1,0 +1,6 @@
+{"status":"SETUP","backend":"Boolean","length":1,"setup_ns":3248895143,"keygen_ns":2495570083,"material_sizing_serialization_ns":700796498,"public_key_bytes":8413229,"secret_key_bytes":4061,"context_bytes":201,"evaluation_key_bytes":464718498,"switch_key_bytes":398475301,"bootstrap_key_bytes":66243197,"profile":"STD128/GINX"}
+{"status":"REPORT_EVALUATED","backend":"Boolean","report":0,"report_core_ns":445692145}
+{"status":"REPORT_EVALUATED","backend":"Boolean","report":1,"report_core_ns":642209394}
+{"status":"REPORT_EVALUATED","backend":"Boolean","report":2,"report_core_ns":845053200}
+{"status":"REPORT_EVALUATED","backend":"Boolean","report":3,"report_core_ns":1164542978}
+{"status":"PASS","backend":"Boolean","task":"count","length":1,"batch_size":4,"setup_ns":3248895143,"client_total_ns":11004681,"server_total_ns":3097500311,"server_finalize_ns":2594,"collector_total_ns":25358,"diagnostic_ns":35343,"aggregate_wire_bytes":12189,"aggregate_ciphertext_bytes_sum":12207,"aggregate_coordinate_vectors_bytes_sum":12189,"aggregate_ciphertexts":3,"evaluation_key_bytes":464718498,"public_key_bytes":8413229,"secret_key_bytes":4061,"context_bytes":201,"bootstrapped_gates":28,"report_bytes":[8245,8245,8245,8245],"actual":[2],"expected":[2],"profile":"STD128/GINX","scope":"original circuit; loaded keys; no network or deployment wrapper"}

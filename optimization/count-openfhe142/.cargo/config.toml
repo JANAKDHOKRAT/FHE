@@ -1,0 +1,3 @@
+# OpenFHE context/key initialization mutates global tables; tests must not race.
+[env]
+RUST_TEST_THREADS = { value = "1", force = true }

@@ -1,0 +1,12 @@
+
+running 7 tests
+test a_count_below_k_is_suppressed ... ok
+test a_mask_cancelling_another_is_refused ... ok
+test a_shifted_partial_of_y_is_caught ... ok
+test cells_below_k_are_zero_and_the_others_exact ... ok
+test diverging_outputs_and_released_counts_are_refused ... ok
+test multihot_weight_slots_are_never_released ... ok
+test the_count_round_still_enforces_the_batch_minimum ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2616.54s
+

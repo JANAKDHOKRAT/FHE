@@ -1,0 +1,9 @@
+
+running 4 tests
+test overlapping_and_full_view_policies ... ok
+test policy_validation ... ok
+test silent_batched_policies_with_invalid_report ... ok
+test verdict_two_collectors_disjoint_elements_and_moments ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 298.48s
+

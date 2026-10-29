@@ -1,0 +1,42 @@
+START prio-count-1
+EXIT prio-count-1 0
+START boolean-count-1
+EXIT boolean-count-1 0
+START bgv-count-1
+EXIT bgv-count-1 0
+START prio-sum-1
+EXIT prio-sum-1 0
+START bgv-sum-1
+EXIT bgv-sum-1 0
+START prio-histogram-3
+EXIT prio-histogram-3 0
+START bgv-histogram-3
+EXIT bgv-histogram-3 0
+START prio-histogram-8
+EXIT prio-histogram-8 0
+START bgv-histogram-8
+EXIT bgv-histogram-8 0
+START prio-sumvec-10
+EXIT prio-sumvec-10 0
+START boolean-sumvec-10
+EXIT boolean-sumvec-10 0
+START bgv-sumvec-10
+EXIT bgv-sumvec-10 0
+START prio-sumvec-25
+EXIT prio-sumvec-25 0
+START boolean-sumvec-25
+EXIT boolean-sumvec-25 0
+START bgv-sumvec-25
+EXIT bgv-sumvec-25 0
+START prio-sumvec-50
+EXIT prio-sumvec-50 0
+START boolean-sumvec-50
+EXIT boolean-sumvec-50 0
+START bgv-sumvec-50
+EXIT bgv-sumvec-50 0
+START prio-sumvec-100
+EXIT prio-sumvec-100 0
+START boolean-sumvec-100
+EXIT boolean-sumvec-100 0
+START bgv-sumvec-100
+EXIT bgv-sumvec-100 0

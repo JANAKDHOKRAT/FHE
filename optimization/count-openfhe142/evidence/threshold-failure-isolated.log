@@ -1,0 +1,9 @@
+
+running 1 test
+test key_noise_gap_silent_bottom ... silent fresh: towers 29, Q_l 2^1250.2, Q' 2^1215.2 | honest noise 2^12.5 t, fused 2^1215.2 t | margin 1201.7 bits, room above flooding 14.4 bits | check passes (max/(n Q'/2) = 0.9988, 245.1 ms) | q0/4 passes
+silent bottom (24 squarings): towers 5, Q_l 2^241.0, Q' 2^206.0 | honest noise 2^43.6 t, fused 2^206.0 t | margin 161.4 bits, room above flooding 14.4 bits | check passes (max/(n Q'/2) = 0.9968, 37.8 ms) | q0/4 passes
+silent bottom, sum of 2^16: towers 5, Q_l 2^241.0, Q' 2^206.0 | honest noise 2^59.6 t, fused 2^206.0 t | margin 145.4 bits, room above flooding 14.4 bits | check passes (max/(n Q'/2) = 0.9950, 36.8 ms) | q0/4 passes
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 12.61s
+

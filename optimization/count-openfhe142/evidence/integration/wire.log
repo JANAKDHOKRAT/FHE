@@ -1,0 +1,12 @@
+
+running 7 tests
+test every_exchanged_object_is_canonical_and_the_sizes_are_as_measured ... ok
+test every_header_field_is_checked ... ok
+test hostile_partial_decryptions_are_refused_at_every_receiver ... ok
+test legacy_openfhe_bytes_and_the_crash_recipes_are_refused ... ok
+test packed_against_openfhe_size_and_time ... ok
+test seeded_mutation_fuzz_of_packed_chunks ... ok
+test silent_mode_low_level_partials ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 275.20s
+

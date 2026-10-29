@@ -1,0 +1,9 @@
+
+running 4 tests
+test a_prover_without_short_randomness_cannot_prove ... ok
+test honest_contribution_verifies_and_decrypts ... ok
+test proofs_bind_context_ciphertext_and_responses ... ok
+test slot_codec_matches_openfhe_slot_order ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 35.20s
+

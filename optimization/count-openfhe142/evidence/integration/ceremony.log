@@ -1,0 +1,9 @@
+
+running 4 tests
+test every_deviation_is_caught_by_the_honest_parties ... ok
+test oversized_key_noise_is_stopped_at_the_ceremony_up_to_the_flooding_range ... ok
+test parties_on_other_parameters_or_identities_stop_at_the_first_round ... ok
+test three_aggregators_generate_working_keys_without_a_dealer ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 49.69s
+

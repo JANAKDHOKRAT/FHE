@@ -1,0 +1,9 @@
+
+running 4 tests
+test aggregator_rounds_suppress_cells ... ok
+test every_round_refuses_its_attack ... ok
+test split_key_rounds_refuse_a_batch_below_the_minimum ... ok
+test split_key_rounds_release_large_cells_and_suppress_small_ones ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 56.60s
+

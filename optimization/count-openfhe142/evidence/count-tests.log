@@ -1,0 +1,33 @@
+    Blocking waiting for file lock on artifact directory
+   Compiling fhe-prio3 v0.1.0 (/workspace/FHE/optimization/count-openfhe142/fhe-prio3)
+   Compiling fhe-paper-core v0.1.0 (/workspace/FHE/optimization/count-openfhe142/fhe-paper-core)
+    Finished `release` profile [optimized] target(s) in 45.52s
+     Running tests/count142.rs (fhe-build/count-port142/release/deps/count142-87d4e65ca29ed638)
+
+running 1 test
+test existing_small_count_profile_on_openfhe142 ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 93.50s
+
+     Running tests/count_algebra.rs (fhe-build/count-port142/release/deps/count_algebra-c00a7950e3aaa41a)
+
+running 1 test
+test exhaustive_count_equivalence ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+     Running tests/count_boundary_attacks.rs (fhe-build/count-port142/release/deps/count_boundary_attacks-ac37ae84b7a58112)
+
+running 1 test
+test count_boundaries_and_attack_reproductions ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 497.03s
+
+     Running tests/count_scope.rs (fhe-build/count-port142/release/deps/count_scope-db242abe9c507f64)
+
+running 2 tests
+test projection_cli_cannot_silently_enter_threshold_mode ... ok
+test projection_is_opt_in_and_count_exact_only ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+

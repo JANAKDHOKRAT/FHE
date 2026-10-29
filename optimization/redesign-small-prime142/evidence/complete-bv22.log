@@ -1,0 +1,8 @@
+PROFILE p=65537 ring=32768 depth=21 security=HEStd_128_classic key_switch=BV digit_size=22 log2Qceil=863
+REPORT_PASS task=sumvec10 i=0 valid=1 level=21 bytes_native=12061981
+REPORT_PASS task=sumvec10 i=1 valid=1 level=21 bytes_native=12061981
+REPORT_PASS task=sumvec10 i=2 valid=1 level=21 bytes_native=12061981
+REPORT_PASS task=sumvec10 i=3 valid=0 level=21 bytes_native=12061981
+REPORT_PASS task=sumvec10 i=4 valid=0 level=21 bytes_native=12061981
+REPORT_PASS task=sumvec10 i=5 valid=0 level=21 bytes_native=12061981
+TASK_PASS sumvec10 reports=6 native_report_bytes=12061981

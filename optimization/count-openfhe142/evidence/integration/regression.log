@@ -1,0 +1,8 @@
+
+running 3 tests
+test silent_batched_regression_excludes_invalid_records ... ok
+test silent_eight_bit_regression_beyond_the_former_cap ... ok
+test verdict_mode_regression_matches_plaintext ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1239.55s
+

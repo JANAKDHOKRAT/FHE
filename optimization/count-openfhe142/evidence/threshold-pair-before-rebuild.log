@@ -1,0 +1,26 @@
+
+running 2 tests
+flooding of one partial, in units of Q'/2: max 0.999993, mean -0.0000, E[x^2] 0.3327 (uniform: 1/3), kurtosis 1.800 (uniform: 1.8)
+fresh ciphertext: towers 7, Q_l 2^345.0, Q' 2^298.0 | honest noise 2^12.1 t, fused 2^298.0 t | margin 284.9 bits, room above flooding 14.0 bits | check passes (max/(n Q'/2) = 0.9939, 49.8 ms) | q0/4 passes
+sum of 2^20 (max_batch_size): towers 7, Q_l 2^345.0, Q' 2^298.0 | honest noise 2^32.1 t, fused 2^298.0 t | margin 264.9 bits, room above flooding 14.0 bits | check passes (max/(n Q'/2) = 0.9926, 33.1 ms) | q0/4 passes
+depth 3 (the verdict check value): towers 4, Q_l 2^221.0, Q' 2^174.0 | honest noise 2^188.0 t, fused 2^188.0 t | margin -15.0 bits, room above flooding 14.0 bits | check FAILS (max/(n Q'/2) = 16387.9474, 18.2 ms) | q0/4 fails
+
+thread 'key_noise_gap_verdict_parameters' (11379) panicked at tests/key_noise_gap.rs:111:5:
+depth 3 (the verdict check value): an honest fusion fails the flooding check
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test key_noise_gap_verdict_parameters ... FAILED
+silent fresh: towers 29, Q_l 2^1250.2, Q' 2^1215.2 | honest noise 2^12.5 t, fused 2^1215.2 t | margin 1201.7 bits, room above flooding 14.4 bits | check passes (max/(n Q'/2) = 0.9979, 224.7 ms) | q0/4 passes
+silent bottom (24 squarings): towers 5, Q_l 2^241.0, Q' 2^206.0 | honest noise 2^220.4 t, fused 2^220.4 t | margin -15.4 bits, room above flooding 14.4 bits | check FAILS (max/(n Q'/2) = 21846.8412, 35.3 ms) | q0/4 fails
+
+thread 'key_noise_gap_silent_bottom' (11378) panicked at tests/key_noise_gap.rs:111:5:
+silent bottom (24 squarings): an honest fusion fails the flooding check
+test key_noise_gap_silent_bottom ... FAILED
+
+failures:
+
+failures:
+    key_noise_gap_silent_bottom
+    key_noise_gap_verdict_parameters
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 13.17s
+

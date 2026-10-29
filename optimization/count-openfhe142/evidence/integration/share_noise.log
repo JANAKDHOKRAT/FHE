@@ -1,0 +1,6 @@
+
+running 1 test
+test share_contributions_stay_exact_and_far_below_the_flooding_at_production_parameters ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 396.79s
+

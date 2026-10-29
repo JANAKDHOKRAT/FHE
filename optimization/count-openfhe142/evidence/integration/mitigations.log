@@ -1,0 +1,16 @@
+
+running 11 tests
+test aggregator_without_registry_refuses_auth_tasks ... ok
+test authentication_blocks_unregistered_forgeries_and_enforces_quota ... ok
+test batch_closes_after_aggregate_share_and_size_cap_holds ... ok
+test batched_silent_cross_group_injection_is_ignored ... ok
+test batched_silent_sum_shares_one_chain ... ok
+test batched_silent_worst_case_inputs_gate ... ok
+test messages_roundtrip_with_auth ... ok
+test silent_mode_histogram_three_aggregators_and_noisy_report_detected ... ok
+test silent_mode_min_batch_counts_valid_reports_only ... ok
+test silent_mode_sum_with_invalid_report_contributing_zero ... ok
+test verdict_mode_noise_ordering ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1601.33s
+

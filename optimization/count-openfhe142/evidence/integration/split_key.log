@@ -1,0 +1,12 @@
+
+running 7 tests
+test a_raw_report_sent_to_be_refreshed_comes_back_masked ... ok
+test a_shifted_partial_of_the_count_is_caught ... ok
+test aggregate_is_exact_over_valid_reports ... ok
+test batch_below_the_minimum_is_refused ... ok
+test each_share_alone_decrypts_only_noise ... ok
+test malformed_or_replayed_contributions_are_refused ... ok
+test small_cells_are_suppressed_with_the_split_key ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1293.57s
+

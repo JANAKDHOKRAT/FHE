@@ -5,6 +5,10 @@ locked dependencies, tests, formal explanations, measured evidence, and the
 Boolean/Prio3 comparison adapters. It has no source dependency on another folder
 in this repository. External compilers, Rust crates and OpenFHE are still needed.
 
+**New reader: start with [START-HERE.md](START-HERE.md).** It explains each task
+with examples, why its circuit was chosen, where its code lives, and how to
+distinguish checking old evidence from running new encrypted experiments.
+
 This is the selected measured baseline, **not a universally best implementation
 or a production-security certification**. It excludes the newer experimental
 circuit searches and 2.5% transport experiment. Existing folders are preserved.

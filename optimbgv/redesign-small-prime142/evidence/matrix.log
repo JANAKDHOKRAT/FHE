@@ -1,0 +1,504 @@
+PARAM 18 FLEXIBLEAUTOEXT 0 1 65536 0 754
+PARAM 18 FLEXIBLEAUTOEXT 0 2 65536 0 754
+PARAM 18 FLEXIBLEAUTOEXT 0 3 65536 0 754
+PARAM 18 FLEXIBLEAUTOEXT 0 4 65536 0 754
+PARAM 18 FLEXIBLEAUTOEXT 0 5 65536 0 754
+PARAM 18 FLEXIBLEAUTOEXT 0 7 32768 1 735
+REFUSED 18 FLEXIBLEAUTOEXT 0 8 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 20 towers into 8 digits. Please select different number of digits.
+PARAM 18 FLEXIBLEAUTOEXT 0 10 32768 1 735
+REFUSED 18 FLEXIBLEAUTOEXT 0 16 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 20 towers into 16 digits. Please select different number of digits.
+PARAM 18 FLEXIBLEAUTOEXT 0 20 32768 1 735
+REFUSED 18 FLEXIBLEAUTOEXT 0 22 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.88:PrecomputeCRTTables(): HYBRID key switching parameters: Can't appropriately distribute 20 towers into 22 digits. Please select different number of digits.
+REFUSED 18 FLEXIBLEAUTOEXT 0 28 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.88:PrecomputeCRTTables(): HYBRID key switching parameters: Can't appropriately distribute 20 towers into 28 digits. Please select different number of digits.
+PARAM 18 FLEXIBLEAUTOEXT 1 1 32768 1 735
+PARAM 18 FLEXIBLEAUTOEXT 1 2 32768 1 735
+PARAM 18 FLEXIBLEAUTOEXT 1 3 32768 1 735
+PARAM 18 FLEXIBLEAUTOEXT 1 4 32768 1 735
+PARAM 18 FLEXIBLEAUTOEXT 1 5 32768 1 735
+PARAM 18 FLEXIBLEAUTOEXT 1 7 32768 1 736
+PARAM 18 FLEXIBLEAUTOEXT 1 8 32768 1 737
+PARAM 18 FLEXIBLEAUTOEXT 1 10 32768 1 738
+PARAM 18 FLEXIBLEAUTOEXT 1 16 32768 1 744
+PARAM 18 FLEXIBLEAUTOEXT 1 20 32768 1 748
+PARAM 18 FLEXIBLEAUTOEXT 1 22 32768 1 749
+PARAM 18 FLEXIBLEAUTOEXT 1 28 32768 1 791
+PARAM 18 FLEXIBLEAUTO 0 1 65536 0 845
+PARAM 18 FLEXIBLEAUTO 0 2 65536 0 845
+PARAM 18 FLEXIBLEAUTO 0 3 65536 0 845
+PARAM 18 FLEXIBLEAUTO 0 4 65536 0 845
+PARAM 18 FLEXIBLEAUTO 0 5 65536 0 845
+PARAM 18 FLEXIBLEAUTO 0 7 65536 0 845
+REFUSED 18 FLEXIBLEAUTO 0 8 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 19 towers into 8 digits. Please select different number of digits.
+PARAM 18 FLEXIBLEAUTO 0 10 65536 0 845
+REFUSED 18 FLEXIBLEAUTO 0 16 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 19 towers into 16 digits. Please select different number of digits.
+REFUSED 18 FLEXIBLEAUTO 0 20 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.88:PrecomputeCRTTables(): HYBRID key switching parameters: Can't appropriately distribute 19 towers into 20 digits. Please select different number of digits.
+REFUSED 18 FLEXIBLEAUTO 0 22 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.88:PrecomputeCRTTables(): HYBRID key switching parameters: Can't appropriately distribute 19 towers into 22 digits. Please select different number of digits.
+REFUSED 18 FLEXIBLEAUTO 0 28 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.88:PrecomputeCRTTables(): HYBRID key switching parameters: Can't appropriately distribute 19 towers into 28 digits. Please select different number of digits.
+PARAM 18 FLEXIBLEAUTO 1 1 65536 0 1016
+PARAM 18 FLEXIBLEAUTO 1 2 65536 0 1016
+PARAM 18 FLEXIBLEAUTO 1 3 65536 0 1016
+PARAM 18 FLEXIBLEAUTO 1 4 65536 0 1035
+PARAM 18 FLEXIBLEAUTO 1 5 65536 0 1036
+PARAM 18 FLEXIBLEAUTO 1 7 65536 0 1073
+REFUSED 18 FLEXIBLEAUTO 1 8 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.246:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 18 FLEXIBLEAUTO 1 10 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.246:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 18 FLEXIBLEAUTO 1 16 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.246:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 18 FLEXIBLEAUTO 1 20 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.246:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 18 FLEXIBLEAUTO 1 22 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.199:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 18 FLEXIBLEAUTO 1 28 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.199:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+PARAM 18 FIXEDAUTO 0 1 131072 0 868
+PARAM 18 FIXEDAUTO 0 2 65536 0 849
+PARAM 18 FIXEDAUTO 0 3 65536 0 849
+PARAM 18 FIXEDAUTO 0 4 65536 0 849
+PARAM 18 FIXEDAUTO 0 5 65536 0 849
+PARAM 18 FIXEDAUTO 0 7 65536 0 849
+REFUSED 18 FIXEDAUTO 0 8 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 19 towers into 8 digits. Please select different number of digits.
+PARAM 18 FIXEDAUTO 0 10 65536 0 849
+REFUSED 18 FIXEDAUTO 0 16 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 19 towers into 16 digits. Please select different number of digits.
+REFUSED 18 FIXEDAUTO 0 20 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.88:PrecomputeCRTTables(): HYBRID key switching parameters: Can't appropriately distribute 19 towers into 20 digits. Please select different number of digits.
+REFUSED 18 FIXEDAUTO 0 22 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.88:PrecomputeCRTTables(): HYBRID key switching parameters: Can't appropriately distribute 19 towers into 22 digits. Please select different number of digits.
+REFUSED 18 FIXEDAUTO 0 28 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.88:PrecomputeCRTTables(): HYBRID key switching parameters: Can't appropriately distribute 19 towers into 28 digits. Please select different number of digits.
+PARAM 18 FIXEDAUTO 1 1 65536 0 1016
+PARAM 18 FIXEDAUTO 1 2 65536 0 1016
+PARAM 18 FIXEDAUTO 1 3 65536 0 1016
+PARAM 18 FIXEDAUTO 1 4 65536 0 1035
+PARAM 18 FIXEDAUTO 1 5 65536 0 1036
+PARAM 18 FIXEDAUTO 1 7 65536 0 1073
+REFUSED 18 FIXEDAUTO 1 8 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.246:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 18 FIXEDAUTO 1 10 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.246:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 18 FIXEDAUTO 1 16 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.246:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 18 FIXEDAUTO 1 20 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.246:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 18 FIXEDAUTO 1 22 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.199:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 18 FIXEDAUTO 1 28 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.199:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+PARAM 20 FLEXIBLEAUTOEXT 0 1 65536 0 832
+PARAM 20 FLEXIBLEAUTOEXT 0 2 65536 0 832
+PARAM 20 FLEXIBLEAUTOEXT 0 3 65536 0 832
+PARAM 20 FLEXIBLEAUTOEXT 0 4 65536 0 832
+PARAM 20 FLEXIBLEAUTOEXT 0 5 65536 0 832
+REFUSED 20 FLEXIBLEAUTOEXT 0 7 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 22 towers into 7 digits. Please select different number of digits.
+PARAM 20 FLEXIBLEAUTOEXT 0 8 65536 0 832
+REFUSED 20 FLEXIBLEAUTOEXT 0 10 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 22 towers into 10 digits. Please select different number of digits.
+REFUSED 20 FLEXIBLEAUTOEXT 0 16 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 22 towers into 16 digits. Please select different number of digits.
+REFUSED 20 FLEXIBLEAUTOEXT 0 20 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 22 towers into 20 digits. Please select different number of digits.
+PARAM 20 FLEXIBLEAUTOEXT 0 22 32768 1 811
+REFUSED 20 FLEXIBLEAUTOEXT 0 28 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.88:PrecomputeCRTTables(): HYBRID key switching parameters: Can't appropriately distribute 22 towers into 28 digits. Please select different number of digits.
+PARAM 20 FLEXIBLEAUTOEXT 1 1 32768 1 811
+PARAM 20 FLEXIBLEAUTOEXT 1 2 32768 1 811
+PARAM 20 FLEXIBLEAUTOEXT 1 3 32768 1 811
+PARAM 20 FLEXIBLEAUTOEXT 1 4 32768 1 811
+PARAM 20 FLEXIBLEAUTOEXT 1 5 32768 1 811
+PARAM 20 FLEXIBLEAUTOEXT 1 7 32768 1 812
+PARAM 20 FLEXIBLEAUTOEXT 1 8 32768 1 813
+PARAM 20 FLEXIBLEAUTOEXT 1 10 32768 1 815
+PARAM 20 FLEXIBLEAUTOEXT 1 16 32768 1 820
+PARAM 20 FLEXIBLEAUTOEXT 1 20 32768 1 824
+PARAM 20 FLEXIBLEAUTOEXT 1 22 32768 1 825
+PARAM 20 FLEXIBLEAUTOEXT 1 28 32768 1 871
+PARAM 20 FLEXIBLEAUTO 0 1 131072 0 956
+PARAM 20 FLEXIBLEAUTO 0 2 65536 0 935
+PARAM 20 FLEXIBLEAUTO 0 3 65536 0 935
+PARAM 20 FLEXIBLEAUTO 0 4 65536 0 935
+PARAM 20 FLEXIBLEAUTO 0 5 65536 0 935
+PARAM 20 FLEXIBLEAUTO 0 7 65536 0 935
+REFUSED 20 FLEXIBLEAUTO 0 8 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 21 towers into 8 digits. Please select different number of digits.
+REFUSED 20 FLEXIBLEAUTO 0 10 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 21 towers into 10 digits. Please select different number of digits.
+REFUSED 20 FLEXIBLEAUTO 0 16 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 21 towers into 16 digits. Please select different number of digits.
+REFUSED 20 FLEXIBLEAUTO 0 20 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 21 towers into 20 digits. Please select different number of digits.
+REFUSED 20 FLEXIBLEAUTO 0 22 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.88:PrecomputeCRTTables(): HYBRID key switching parameters: Can't appropriately distribute 21 towers into 22 digits. Please select different number of digits.
+REFUSED 20 FLEXIBLEAUTO 0 28 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.88:PrecomputeCRTTables(): HYBRID key switching parameters: Can't appropriately distribute 21 towers into 28 digits. Please select different number of digits.
+PARAM 20 FLEXIBLEAUTO 1 1 65536 0 1124
+PARAM 20 FLEXIBLEAUTO 1 2 65536 0 1124
+PARAM 20 FLEXIBLEAUTO 1 3 65536 0 1125
+PARAM 20 FLEXIBLEAUTO 1 4 65536 0 1145
+PARAM 20 FLEXIBLEAUTO 1 5 65536 0 1146
+PARAM 20 FLEXIBLEAUTO 1 7 65536 0 1187
+REFUSED 20 FLEXIBLEAUTO 1 8 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.246:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 20 FLEXIBLEAUTO 1 10 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.246:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 20 FLEXIBLEAUTO 1 16 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.246:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 20 FLEXIBLEAUTO 1 20 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.246:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 20 FLEXIBLEAUTO 1 22 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.199:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 20 FLEXIBLEAUTO 1 28 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.199:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+PARAM 20 FIXEDAUTO 0 1 131072 0 960
+PARAM 20 FIXEDAUTO 0 2 65536 0 939
+PARAM 20 FIXEDAUTO 0 3 65536 0 939
+PARAM 20 FIXEDAUTO 0 4 65536 0 939
+PARAM 20 FIXEDAUTO 0 5 65536 0 939
+PARAM 20 FIXEDAUTO 0 7 65536 0 939
+REFUSED 20 FIXEDAUTO 0 8 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 21 towers into 8 digits. Please select different number of digits.
+REFUSED 20 FIXEDAUTO 0 10 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 21 towers into 10 digits. Please select different number of digits.
+REFUSED 20 FIXEDAUTO 0 16 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 21 towers into 16 digits. Please select different number of digits.
+REFUSED 20 FIXEDAUTO 0 20 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 21 towers into 20 digits. Please select different number of digits.
+REFUSED 20 FIXEDAUTO 0 22 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.88:PrecomputeCRTTables(): HYBRID key switching parameters: Can't appropriately distribute 21 towers into 22 digits. Please select different number of digits.
+REFUSED 20 FIXEDAUTO 0 28 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.88:PrecomputeCRTTables(): HYBRID key switching parameters: Can't appropriately distribute 21 towers into 28 digits. Please select different number of digits.
+PARAM 20 FIXEDAUTO 1 1 65536 0 1124
+PARAM 20 FIXEDAUTO 1 2 65536 0 1124
+PARAM 20 FIXEDAUTO 1 3 65536 0 1125
+PARAM 20 FIXEDAUTO 1 4 65536 0 1145
+PARAM 20 FIXEDAUTO 1 5 65536 0 1146
+PARAM 20 FIXEDAUTO 1 7 65536 0 1187
+REFUSED 20 FIXEDAUTO 1 8 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.246:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 20 FIXEDAUTO 1 10 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.246:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 20 FIXEDAUTO 1 16 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.246:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 20 FIXEDAUTO 1 20 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.246:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 20 FIXEDAUTO 1 22 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.199:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 20 FIXEDAUTO 1 28 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.199:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+PARAM 23 FLEXIBLEAUTOEXT 0 1 131072 0 972
+PARAM 23 FLEXIBLEAUTOEXT 0 2 65536 0 949
+PARAM 23 FLEXIBLEAUTOEXT 0 3 65536 0 949
+PARAM 23 FLEXIBLEAUTOEXT 0 4 65536 0 949
+PARAM 23 FLEXIBLEAUTOEXT 0 5 65536 0 949
+PARAM 23 FLEXIBLEAUTOEXT 0 7 65536 0 949
+REFUSED 23 FLEXIBLEAUTOEXT 0 8 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 25 towers into 8 digits. Please select different number of digits.
+REFUSED 23 FLEXIBLEAUTOEXT 0 10 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 25 towers into 10 digits. Please select different number of digits.
+REFUSED 23 FLEXIBLEAUTOEXT 0 16 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 25 towers into 16 digits. Please select different number of digits.
+REFUSED 23 FLEXIBLEAUTOEXT 0 20 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 25 towers into 20 digits. Please select different number of digits.
+REFUSED 23 FLEXIBLEAUTOEXT 0 22 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 25 towers into 22 digits. Please select different number of digits.
+REFUSED 23 FLEXIBLEAUTOEXT 0 28 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.88:PrecomputeCRTTables(): HYBRID key switching parameters: Can't appropriately distribute 25 towers into 28 digits. Please select different number of digits.
+PARAM 23 FLEXIBLEAUTOEXT 1 1 65536 0 949
+PARAM 23 FLEXIBLEAUTOEXT 1 2 65536 0 949
+PARAM 23 FLEXIBLEAUTOEXT 1 3 65536 0 949
+PARAM 23 FLEXIBLEAUTOEXT 1 4 65536 0 949
+PARAM 23 FLEXIBLEAUTOEXT 1 5 65536 0 949
+PARAM 23 FLEXIBLEAUTOEXT 1 7 65536 0 950
+PARAM 23 FLEXIBLEAUTOEXT 1 8 65536 0 951
+PARAM 23 FLEXIBLEAUTOEXT 1 10 65536 0 953
+PARAM 23 FLEXIBLEAUTOEXT 1 16 65536 0 958
+PARAM 23 FLEXIBLEAUTOEXT 1 20 65536 0 962
+PARAM 23 FLEXIBLEAUTOEXT 1 22 65536 0 964
+PARAM 23 FLEXIBLEAUTOEXT 1 28 65536 0 1016
+PARAM 23 FLEXIBLEAUTO 0 1 131072 0 1094
+PARAM 23 FLEXIBLEAUTO 0 2 65536 0 1070
+PARAM 23 FLEXIBLEAUTO 0 3 65536 0 1070
+PARAM 23 FLEXIBLEAUTO 0 4 65536 0 1070
+PARAM 23 FLEXIBLEAUTO 0 5 65536 0 1070
+REFUSED 23 FLEXIBLEAUTO 0 7 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 24 towers into 7 digits. Please select different number of digits.
+PARAM 23 FLEXIBLEAUTO 0 8 65536 0 1070
+REFUSED 23 FLEXIBLEAUTO 0 10 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 24 towers into 10 digits. Please select different number of digits.
+REFUSED 23 FLEXIBLEAUTO 0 16 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 24 towers into 16 digits. Please select different number of digits.
+REFUSED 23 FLEXIBLEAUTO 0 20 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 24 towers into 20 digits. Please select different number of digits.
+REFUSED 23 FLEXIBLEAUTO 0 22 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 24 towers into 22 digits. Please select different number of digits.
+REFUSED 23 FLEXIBLEAUTO 0 28 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.88:PrecomputeCRTTables(): HYBRID key switching parameters: Can't appropriately distribute 24 towers into 28 digits. Please select different number of digits.
+PARAM 23 FLEXIBLEAUTO 1 1 65536 0 1286
+PARAM 23 FLEXIBLEAUTO 1 2 65536 0 1286
+PARAM 23 FLEXIBLEAUTO 1 3 65536 0 1287
+PARAM 23 FLEXIBLEAUTO 1 4 65536 0 1310
+PARAM 23 FLEXIBLEAUTO 1 5 65536 0 1334
+PARAM 23 FLEXIBLEAUTO 1 7 65536 0 1359
+REFUSED 23 FLEXIBLEAUTO 1 8 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.246:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 23 FLEXIBLEAUTO 1 10 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.246:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 23 FLEXIBLEAUTO 1 16 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.246:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 23 FLEXIBLEAUTO 1 20 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.246:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 23 FLEXIBLEAUTO 1 22 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.199:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 23 FLEXIBLEAUTO 1 28 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.199:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+PARAM 23 FIXEDAUTO 0 1 131072 0 1098
+PARAM 23 FIXEDAUTO 0 2 65536 0 1075
+PARAM 23 FIXEDAUTO 0 3 65536 0 1075
+PARAM 23 FIXEDAUTO 0 4 65536 0 1075
+PARAM 23 FIXEDAUTO 0 5 65536 0 1075
+REFUSED 23 FIXEDAUTO 0 7 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 24 towers into 7 digits. Please select different number of digits.
+PARAM 23 FIXEDAUTO 0 8 65536 0 1075
+REFUSED 23 FIXEDAUTO 0 10 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 24 towers into 10 digits. Please select different number of digits.
+REFUSED 23 FIXEDAUTO 0 16 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 24 towers into 16 digits. Please select different number of digits.
+REFUSED 23 FIXEDAUTO 0 20 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 24 towers into 20 digits. Please select different number of digits.
+REFUSED 23 FIXEDAUTO 0 22 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 24 towers into 22 digits. Please select different number of digits.
+REFUSED 23 FIXEDAUTO 0 28 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.88:PrecomputeCRTTables(): HYBRID key switching parameters: Can't appropriately distribute 24 towers into 28 digits. Please select different number of digits.
+PARAM 23 FIXEDAUTO 1 1 65536 0 1286
+PARAM 23 FIXEDAUTO 1 2 65536 0 1286
+PARAM 23 FIXEDAUTO 1 3 65536 0 1287
+PARAM 23 FIXEDAUTO 1 4 65536 0 1310
+PARAM 23 FIXEDAUTO 1 5 65536 0 1334
+PARAM 23 FIXEDAUTO 1 7 65536 0 1359
+REFUSED 23 FIXEDAUTO 1 8 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.246:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 23 FIXEDAUTO 1 10 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.246:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 23 FIXEDAUTO 1 16 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.246:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 23 FIXEDAUTO 1 20 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.246:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 23 FIXEDAUTO 1 22 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.199:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 23 FIXEDAUTO 1 28 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.199:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+PARAM 24 FLEXIBLEAUTOEXT 0 1 131072 0 1012
+PARAM 24 FLEXIBLEAUTOEXT 0 2 65536 0 988
+PARAM 24 FLEXIBLEAUTOEXT 0 3 65536 0 988
+PARAM 24 FLEXIBLEAUTOEXT 0 4 65536 0 988
+PARAM 24 FLEXIBLEAUTOEXT 0 5 65536 0 988
+PARAM 24 FLEXIBLEAUTOEXT 0 7 65536 0 988
+REFUSED 24 FLEXIBLEAUTOEXT 0 8 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 26 towers into 8 digits. Please select different number of digits.
+REFUSED 24 FLEXIBLEAUTOEXT 0 10 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 26 towers into 10 digits. Please select different number of digits.
+REFUSED 24 FLEXIBLEAUTOEXT 0 16 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 26 towers into 16 digits. Please select different number of digits.
+REFUSED 24 FLEXIBLEAUTOEXT 0 20 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 26 towers into 20 digits. Please select different number of digits.
+REFUSED 24 FLEXIBLEAUTOEXT 0 22 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 26 towers into 22 digits. Please select different number of digits.
+REFUSED 24 FLEXIBLEAUTOEXT 0 28 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.88:PrecomputeCRTTables(): HYBRID key switching parameters: Can't appropriately distribute 26 towers into 28 digits. Please select different number of digits.
+PARAM 24 FLEXIBLEAUTOEXT 1 1 65536 0 988
+PARAM 24 FLEXIBLEAUTOEXT 1 2 65536 0 988
+PARAM 24 FLEXIBLEAUTOEXT 1 3 65536 0 988
+PARAM 24 FLEXIBLEAUTOEXT 1 4 65536 0 988
+PARAM 24 FLEXIBLEAUTOEXT 1 5 65536 0 988
+PARAM 24 FLEXIBLEAUTOEXT 1 7 65536 0 989
+PARAM 24 FLEXIBLEAUTOEXT 1 8 65536 0 990
+PARAM 24 FLEXIBLEAUTOEXT 1 10 65536 0 992
+PARAM 24 FLEXIBLEAUTOEXT 1 16 65536 0 997
+PARAM 24 FLEXIBLEAUTOEXT 1 20 65536 0 1001
+PARAM 24 FLEXIBLEAUTOEXT 1 22 65536 0 1003
+PARAM 24 FLEXIBLEAUTOEXT 1 28 65536 0 1057
+PARAM 24 FLEXIBLEAUTO 0 1 131072 0 1140
+PARAM 24 FLEXIBLEAUTO 0 2 65536 0 1115
+PARAM 24 FLEXIBLEAUTO 0 3 65536 0 1115
+PARAM 24 FLEXIBLEAUTO 0 4 65536 0 1115
+PARAM 24 FLEXIBLEAUTO 0 5 65536 0 1115
+PARAM 24 FLEXIBLEAUTO 0 7 65536 0 1115
+REFUSED 24 FLEXIBLEAUTO 0 8 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 25 towers into 8 digits. Please select different number of digits.
+REFUSED 24 FLEXIBLEAUTO 0 10 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 25 towers into 10 digits. Please select different number of digits.
+REFUSED 24 FLEXIBLEAUTO 0 16 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 25 towers into 16 digits. Please select different number of digits.
+REFUSED 24 FLEXIBLEAUTO 0 20 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 25 towers into 20 digits. Please select different number of digits.
+REFUSED 24 FLEXIBLEAUTO 0 22 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 25 towers into 22 digits. Please select different number of digits.
+REFUSED 24 FLEXIBLEAUTO 0 28 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.88:PrecomputeCRTTables(): HYBRID key switching parameters: Can't appropriately distribute 25 towers into 28 digits. Please select different number of digits.
+PARAM 24 FLEXIBLEAUTO 1 1 65536 0 1340
+PARAM 24 FLEXIBLEAUTO 1 2 65536 0 1340
+PARAM 24 FLEXIBLEAUTO 1 3 65536 0 1341
+PARAM 24 FLEXIBLEAUTO 1 4 65536 0 1365
+PARAM 24 FLEXIBLEAUTO 1 5 65536 0 1390
+PARAM 24 FLEXIBLEAUTO 1 7 65536 0 1416
+REFUSED 24 FLEXIBLEAUTO 1 8 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.246:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 24 FLEXIBLEAUTO 1 10 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.246:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 24 FLEXIBLEAUTO 1 16 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.246:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 24 FLEXIBLEAUTO 1 20 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.246:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 24 FLEXIBLEAUTO 1 22 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.199:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 24 FLEXIBLEAUTO 1 28 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.199:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+PARAM 24 FIXEDAUTO 0 1 131072 0 1144
+PARAM 24 FIXEDAUTO 0 2 65536 0 1120
+PARAM 24 FIXEDAUTO 0 3 65536 0 1120
+PARAM 24 FIXEDAUTO 0 4 65536 0 1120
+PARAM 24 FIXEDAUTO 0 5 65536 0 1120
+PARAM 24 FIXEDAUTO 0 7 65536 0 1120
+REFUSED 24 FIXEDAUTO 0 8 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 25 towers into 8 digits. Please select different number of digits.
+REFUSED 24 FIXEDAUTO 0 10 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 25 towers into 10 digits. Please select different number of digits.
+REFUSED 24 FIXEDAUTO 0 16 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 25 towers into 16 digits. Please select different number of digits.
+REFUSED 24 FIXEDAUTO 0 20 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 25 towers into 20 digits. Please select different number of digits.
+REFUSED 24 FIXEDAUTO 0 22 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 25 towers into 22 digits. Please select different number of digits.
+REFUSED 24 FIXEDAUTO 0 28 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.88:PrecomputeCRTTables(): HYBRID key switching parameters: Can't appropriately distribute 25 towers into 28 digits. Please select different number of digits.
+PARAM 24 FIXEDAUTO 1 1 65536 0 1340
+PARAM 24 FIXEDAUTO 1 2 65536 0 1340
+PARAM 24 FIXEDAUTO 1 3 65536 0 1341
+PARAM 24 FIXEDAUTO 1 4 65536 0 1365
+PARAM 24 FIXEDAUTO 1 5 65536 0 1390
+PARAM 24 FIXEDAUTO 1 7 65536 0 1416
+REFUSED 24 FIXEDAUTO 1 8 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.246:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 24 FIXEDAUTO 1 10 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.246:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 24 FIXEDAUTO 1 16 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.246:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 24 FIXEDAUTO 1 20 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.246:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 24 FIXEDAUTO 1 22 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.199:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 24 FIXEDAUTO 1 28 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.199:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+PARAM 25 FLEXIBLEAUTOEXT 0 1 131072 0 1052
+PARAM 25 FLEXIBLEAUTOEXT 0 2 65536 0 1027
+PARAM 25 FLEXIBLEAUTOEXT 0 3 65536 0 1027
+PARAM 25 FLEXIBLEAUTOEXT 0 4 65536 0 1027
+PARAM 25 FLEXIBLEAUTOEXT 0 5 65536 0 1027
+PARAM 25 FLEXIBLEAUTOEXT 0 7 65536 0 1027
+REFUSED 25 FLEXIBLEAUTOEXT 0 8 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 27 towers into 8 digits. Please select different number of digits.
+REFUSED 25 FLEXIBLEAUTOEXT 0 10 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 27 towers into 10 digits. Please select different number of digits.
+REFUSED 25 FLEXIBLEAUTOEXT 0 16 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 27 towers into 16 digits. Please select different number of digits.
+REFUSED 25 FLEXIBLEAUTOEXT 0 20 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 27 towers into 20 digits. Please select different number of digits.
+REFUSED 25 FLEXIBLEAUTOEXT 0 22 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 27 towers into 22 digits. Please select different number of digits.
+REFUSED 25 FLEXIBLEAUTOEXT 0 28 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.88:PrecomputeCRTTables(): HYBRID key switching parameters: Can't appropriately distribute 27 towers into 28 digits. Please select different number of digits.
+PARAM 25 FLEXIBLEAUTOEXT 1 1 65536 0 1027
+PARAM 25 FLEXIBLEAUTOEXT 1 2 65536 0 1027
+PARAM 25 FLEXIBLEAUTOEXT 1 3 65536 0 1027
+PARAM 25 FLEXIBLEAUTOEXT 1 4 65536 0 1027
+PARAM 25 FLEXIBLEAUTOEXT 1 5 65536 0 1027
+PARAM 25 FLEXIBLEAUTOEXT 1 7 65536 0 1028
+PARAM 25 FLEXIBLEAUTOEXT 1 8 65536 0 1029
+PARAM 25 FLEXIBLEAUTOEXT 1 10 65536 0 1031
+PARAM 25 FLEXIBLEAUTOEXT 1 16 65536 0 1036
+PARAM 25 FLEXIBLEAUTOEXT 1 20 65536 0 1040
+PARAM 25 FLEXIBLEAUTOEXT 1 22 65536 0 1042
+PARAM 25 FLEXIBLEAUTOEXT 1 28 65536 0 1098
+PARAM 25 FLEXIBLEAUTO 0 1 131072 0 1186
+PARAM 25 FLEXIBLEAUTO 0 2 131072 0 1186
+PARAM 25 FLEXIBLEAUTO 0 3 65536 0 1160
+PARAM 25 FLEXIBLEAUTO 0 4 65536 0 1160
+PARAM 25 FLEXIBLEAUTO 0 5 65536 0 1160
+PARAM 25 FLEXIBLEAUTO 0 7 65536 0 1160
+REFUSED 25 FLEXIBLEAUTO 0 8 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 26 towers into 8 digits. Please select different number of digits.
+REFUSED 25 FLEXIBLEAUTO 0 10 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 26 towers into 10 digits. Please select different number of digits.
+REFUSED 25 FLEXIBLEAUTO 0 16 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 26 towers into 16 digits. Please select different number of digits.
+REFUSED 25 FLEXIBLEAUTO 0 20 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 26 towers into 20 digits. Please select different number of digits.
+REFUSED 25 FLEXIBLEAUTO 0 22 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 26 towers into 22 digits. Please select different number of digits.
+REFUSED 25 FLEXIBLEAUTO 0 28 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.88:PrecomputeCRTTables(): HYBRID key switching parameters: Can't appropriately distribute 26 towers into 28 digits. Please select different number of digits.
+PARAM 25 FLEXIBLEAUTO 1 1 65536 0 1394
+PARAM 25 FLEXIBLEAUTO 1 2 65536 0 1394
+PARAM 25 FLEXIBLEAUTO 1 3 65536 0 1395
+PARAM 25 FLEXIBLEAUTO 1 4 65536 0 1420
+PARAM 25 FLEXIBLEAUTO 1 5 65536 0 1446
+PARAM 25 FLEXIBLEAUTO 1 7 65536 0 1473
+REFUSED 25 FLEXIBLEAUTO 1 8 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.246:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 25 FLEXIBLEAUTO 1 10 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.246:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 25 FLEXIBLEAUTO 1 16 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.246:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 25 FLEXIBLEAUTO 1 20 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.246:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 25 FLEXIBLEAUTO 1 22 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.199:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 25 FLEXIBLEAUTO 1 28 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.199:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+PARAM 25 FIXEDAUTO 0 1 131072 0 1191
+PARAM 25 FIXEDAUTO 0 2 131072 0 1191
+PARAM 25 FIXEDAUTO 0 3 65536 0 1165
+PARAM 25 FIXEDAUTO 0 4 65536 0 1165
+PARAM 25 FIXEDAUTO 0 5 65536 0 1165
+PARAM 25 FIXEDAUTO 0 7 65536 0 1165
+REFUSED 25 FIXEDAUTO 0 8 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 26 towers into 8 digits. Please select different number of digits.
+REFUSED 25 FIXEDAUTO 0 10 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 26 towers into 10 digits. Please select different number of digits.
+REFUSED 25 FIXEDAUTO 0 16 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 26 towers into 16 digits. Please select different number of digits.
+REFUSED 25 FIXEDAUTO 0 20 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 26 towers into 20 digits. Please select different number of digits.
+REFUSED 25 FIXEDAUTO 0 22 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 26 towers into 22 digits. Please select different number of digits.
+REFUSED 25 FIXEDAUTO 0 28 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.88:PrecomputeCRTTables(): HYBRID key switching parameters: Can't appropriately distribute 26 towers into 28 digits. Please select different number of digits.
+PARAM 25 FIXEDAUTO 1 1 65536 0 1394
+PARAM 25 FIXEDAUTO 1 2 65536 0 1394
+PARAM 25 FIXEDAUTO 1 3 65536 0 1395
+PARAM 25 FIXEDAUTO 1 4 65536 0 1420
+PARAM 25 FIXEDAUTO 1 5 65536 0 1446
+PARAM 25 FIXEDAUTO 1 7 65536 0 1473
+REFUSED 25 FIXEDAUTO 1 8 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.246:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 25 FIXEDAUTO 1 10 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.246:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 25 FIXEDAUTO 1 16 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.246:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 25 FIXEDAUTO 1 20 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.246:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 25 FIXEDAUTO 1 22 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.199:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 25 FIXEDAUTO 1 28 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.199:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+PARAM 26 FLEXIBLEAUTOEXT 0 1 131072 0 1092
+PARAM 26 FLEXIBLEAUTOEXT 0 2 65536 0 1066
+PARAM 26 FLEXIBLEAUTOEXT 0 3 65536 0 1066
+PARAM 26 FLEXIBLEAUTOEXT 0 4 65536 0 1066
+PARAM 26 FLEXIBLEAUTOEXT 0 5 65536 0 1066
+PARAM 26 FLEXIBLEAUTOEXT 0 7 65536 0 1066
+REFUSED 26 FLEXIBLEAUTOEXT 0 8 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 28 towers into 8 digits. Please select different number of digits.
+PARAM 26 FLEXIBLEAUTOEXT 0 10 65536 0 1066
+REFUSED 26 FLEXIBLEAUTOEXT 0 16 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 28 towers into 16 digits. Please select different number of digits.
+REFUSED 26 FLEXIBLEAUTOEXT 0 20 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 28 towers into 20 digits. Please select different number of digits.
+REFUSED 26 FLEXIBLEAUTOEXT 0 22 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 28 towers into 22 digits. Please select different number of digits.
+PARAM 26 FLEXIBLEAUTOEXT 0 28 65536 0 1066
+PARAM 26 FLEXIBLEAUTOEXT 1 1 65536 0 1066
+PARAM 26 FLEXIBLEAUTOEXT 1 2 65536 0 1066
+PARAM 26 FLEXIBLEAUTOEXT 1 3 65536 0 1066
+PARAM 26 FLEXIBLEAUTOEXT 1 4 65536 0 1066
+PARAM 26 FLEXIBLEAUTOEXT 1 5 65536 0 1066
+PARAM 26 FLEXIBLEAUTOEXT 1 7 65536 0 1067
+PARAM 26 FLEXIBLEAUTOEXT 1 8 65536 0 1068
+PARAM 26 FLEXIBLEAUTOEXT 1 10 65536 0 1070
+PARAM 26 FLEXIBLEAUTOEXT 1 16 65536 0 1075
+PARAM 26 FLEXIBLEAUTOEXT 1 20 65536 0 1079
+PARAM 26 FLEXIBLEAUTOEXT 1 22 65536 0 1081
+PARAM 26 FLEXIBLEAUTOEXT 1 28 65536 0 1139
+PARAM 26 FLEXIBLEAUTO 0 1 131072 0 1232
+PARAM 26 FLEXIBLEAUTO 0 2 131072 0 1232
+PARAM 26 FLEXIBLEAUTO 0 3 65536 0 1205
+PARAM 26 FLEXIBLEAUTO 0 4 65536 0 1205
+PARAM 26 FLEXIBLEAUTO 0 5 65536 0 1205
+PARAM 26 FLEXIBLEAUTO 0 7 65536 0 1205
+REFUSED 26 FLEXIBLEAUTO 0 8 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 27 towers into 8 digits. Please select different number of digits.
+REFUSED 26 FLEXIBLEAUTO 0 10 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 27 towers into 10 digits. Please select different number of digits.
+REFUSED 26 FLEXIBLEAUTO 0 16 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 27 towers into 16 digits. Please select different number of digits.
+REFUSED 26 FLEXIBLEAUTO 0 20 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 27 towers into 20 digits. Please select different number of digits.
+REFUSED 26 FLEXIBLEAUTO 0 22 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 27 towers into 22 digits. Please select different number of digits.
+REFUSED 26 FLEXIBLEAUTO 0 28 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.88:PrecomputeCRTTables(): HYBRID key switching parameters: Can't appropriately distribute 27 towers into 28 digits. Please select different number of digits.
+PARAM 26 FLEXIBLEAUTO 1 1 65536 0 1448
+PARAM 26 FLEXIBLEAUTO 1 2 65536 0 1448
+PARAM 26 FLEXIBLEAUTO 1 3 65536 0 1449
+PARAM 26 FLEXIBLEAUTO 1 4 65536 0 1476
+PARAM 26 FLEXIBLEAUTO 1 5 65536 0 1502
+PARAM 26 FLEXIBLEAUTO 1 7 65536 0 1530
+REFUSED 26 FLEXIBLEAUTO 1 8 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.246:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 26 FLEXIBLEAUTO 1 10 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.246:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 26 FLEXIBLEAUTO 1 16 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.246:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 26 FLEXIBLEAUTO 1 20 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.199:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 26 FLEXIBLEAUTO 1 22 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.199:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 26 FLEXIBLEAUTO 1 28 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.199:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+PARAM 26 FIXEDAUTO 0 1 131072 0 1237
+PARAM 26 FIXEDAUTO 0 2 131072 0 1237
+PARAM 26 FIXEDAUTO 0 3 65536 0 1210
+PARAM 26 FIXEDAUTO 0 4 65536 0 1210
+PARAM 26 FIXEDAUTO 0 5 65536 0 1210
+PARAM 26 FIXEDAUTO 0 7 65536 0 1210
+REFUSED 26 FIXEDAUTO 0 8 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 27 towers into 8 digits. Please select different number of digits.
+REFUSED 26 FIXEDAUTO 0 10 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 27 towers into 10 digits. Please select different number of digits.
+REFUSED 26 FIXEDAUTO 0 16 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 27 towers into 16 digits. Please select different number of digits.
+REFUSED 26 FIXEDAUTO 0 20 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 27 towers into 20 digits. Please select different number of digits.
+REFUSED 26 FIXEDAUTO 0 22 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 27 towers into 22 digits. Please select different number of digits.
+REFUSED 26 FIXEDAUTO 0 28 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.88:PrecomputeCRTTables(): HYBRID key switching parameters: Can't appropriately distribute 27 towers into 28 digits. Please select different number of digits.
+PARAM 26 FIXEDAUTO 1 1 65536 0 1448
+PARAM 26 FIXEDAUTO 1 2 65536 0 1448
+PARAM 26 FIXEDAUTO 1 3 65536 0 1449
+PARAM 26 FIXEDAUTO 1 4 65536 0 1476
+PARAM 26 FIXEDAUTO 1 5 65536 0 1502
+PARAM 26 FIXEDAUTO 1 7 65536 0 1530
+REFUSED 26 FIXEDAUTO 1 8 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.246:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 26 FIXEDAUTO 1 10 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.246:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 26 FIXEDAUTO 1 16 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.246:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 26 FIXEDAUTO 1 20 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.199:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 26 FIXEDAUTO 1 22 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.199:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 26 FIXEDAUTO 1 28 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.199:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+PARAM 27 FLEXIBLEAUTOEXT 0 1 131072 0 1132
+PARAM 27 FLEXIBLEAUTOEXT 0 2 65536 0 1105
+PARAM 27 FLEXIBLEAUTOEXT 0 3 65536 0 1105
+PARAM 27 FLEXIBLEAUTOEXT 0 4 65536 0 1105
+PARAM 27 FLEXIBLEAUTOEXT 0 5 65536 0 1105
+REFUSED 27 FLEXIBLEAUTOEXT 0 7 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 29 towers into 7 digits. Please select different number of digits.
+PARAM 27 FLEXIBLEAUTOEXT 0 8 65536 0 1105
+PARAM 27 FLEXIBLEAUTOEXT 0 10 65536 0 1105
+REFUSED 27 FLEXIBLEAUTOEXT 0 16 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 29 towers into 16 digits. Please select different number of digits.
+REFUSED 27 FLEXIBLEAUTOEXT 0 20 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 29 towers into 20 digits. Please select different number of digits.
+REFUSED 27 FLEXIBLEAUTOEXT 0 22 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 29 towers into 22 digits. Please select different number of digits.
+REFUSED 27 FLEXIBLEAUTOEXT 0 28 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 29 towers into 28 digits. Please select different number of digits.
+PARAM 27 FLEXIBLEAUTOEXT 1 1 65536 0 1105
+PARAM 27 FLEXIBLEAUTOEXT 1 2 65536 0 1105
+PARAM 27 FLEXIBLEAUTOEXT 1 3 65536 0 1105
+PARAM 27 FLEXIBLEAUTOEXT 1 4 65536 0 1105
+PARAM 27 FLEXIBLEAUTOEXT 1 5 65536 0 1105
+PARAM 27 FLEXIBLEAUTOEXT 1 7 65536 0 1106
+PARAM 27 FLEXIBLEAUTOEXT 1 8 65536 0 1107
+PARAM 27 FLEXIBLEAUTOEXT 1 10 65536 0 1109
+PARAM 27 FLEXIBLEAUTOEXT 1 16 65536 0 1114
+PARAM 27 FLEXIBLEAUTOEXT 1 20 65536 0 1118
+PARAM 27 FLEXIBLEAUTOEXT 1 22 65536 0 1120
+PARAM 27 FLEXIBLEAUTOEXT 1 28 65536 0 1180
+PARAM 27 FLEXIBLEAUTO 0 1 131072 0 1278
+PARAM 27 FLEXIBLEAUTO 0 2 131072 0 1278
+PARAM 27 FLEXIBLEAUTO 0 3 65536 0 1250
+PARAM 27 FLEXIBLEAUTO 0 4 65536 0 1250
+PARAM 27 FLEXIBLEAUTO 0 5 65536 0 1250
+PARAM 27 FLEXIBLEAUTO 0 7 65536 0 1250
+REFUSED 27 FLEXIBLEAUTO 0 8 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 28 towers into 8 digits. Please select different number of digits.
+PARAM 27 FLEXIBLEAUTO 0 10 65536 0 1250
+REFUSED 27 FLEXIBLEAUTO 0 16 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 28 towers into 16 digits. Please select different number of digits.
+REFUSED 27 FLEXIBLEAUTO 0 20 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 28 towers into 20 digits. Please select different number of digits.
+REFUSED 27 FLEXIBLEAUTO 0 22 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 28 towers into 22 digits. Please select different number of digits.
+PARAM 27 FLEXIBLEAUTO 0 28 65536 0 1250
+PARAM 27 FLEXIBLEAUTO 1 1 65536 0 1502
+PARAM 27 FLEXIBLEAUTO 1 2 65536 0 1503
+PARAM 27 FLEXIBLEAUTO 1 3 65536 0 1530
+PARAM 27 FLEXIBLEAUTO 1 4 65536 0 1531
+PARAM 27 FLEXIBLEAUTO 1 5 65536 0 1558
+PARAM 27 FLEXIBLEAUTO 1 7 65536 0 1587
+REFUSED 27 FLEXIBLEAUTO 1 8 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.246:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 27 FLEXIBLEAUTO 1 10 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.246:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 27 FLEXIBLEAUTO 1 16 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.246:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 27 FLEXIBLEAUTO 1 20 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.199:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 27 FLEXIBLEAUTO 1 22 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.199:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 27 FLEXIBLEAUTO 1 28 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.199:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+PARAM 27 FIXEDAUTO 0 1 131072 0 1283
+PARAM 27 FIXEDAUTO 0 2 131072 0 1283
+PARAM 27 FIXEDAUTO 0 3 65536 0 1255
+PARAM 27 FIXEDAUTO 0 4 65536 0 1255
+PARAM 27 FIXEDAUTO 0 5 65536 0 1255
+PARAM 27 FIXEDAUTO 0 7 65536 0 1255
+REFUSED 27 FIXEDAUTO 0 8 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 28 towers into 8 digits. Please select different number of digits.
+PARAM 27 FIXEDAUTO 0 10 65536 0 1255
+REFUSED 27 FIXEDAUTO 0 16 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 28 towers into 16 digits. Please select different number of digits.
+REFUSED 27 FIXEDAUTO 0 20 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 28 towers into 20 digits. Please select different number of digits.
+REFUSED 27 FIXEDAUTO 0 22 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/schemerns/rns-cryptoparameters.cpp:l.415:EstimateLogP(): HYBRID key switching parameters: Can't appropriately distribute 28 towers into 22 digits. Please select different number of digits.
+PARAM 27 FIXEDAUTO 0 28 65536 0 1255
+PARAM 27 FIXEDAUTO 1 1 65536 0 1502
+PARAM 27 FIXEDAUTO 1 2 65536 0 1503
+PARAM 27 FIXEDAUTO 1 3 65536 0 1530
+PARAM 27 FIXEDAUTO 1 4 65536 0 1531
+PARAM 27 FIXEDAUTO 1 5 65536 0 1558
+PARAM 27 FIXEDAUTO 1 7 65536 0 1587
+REFUSED 27 FIXEDAUTO 1 8 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.246:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 27 FIXEDAUTO 1 10 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.246:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 27 FIXEDAUTO 1 16 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.246:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 27 FIXEDAUTO 1 20 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.199:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 27 FIXEDAUTO 1 22 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.199:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.
+REFUSED 27 FIXEDAUTO 1 28 /workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.199:computeModuli(): Change parameters! Try reducing the number of additions per level, number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.

@@ -1,0 +1,17 @@
+{
+  "platform": "Linux-6.18.55-x86_64-with-glibc2.41",
+  "cpu": "AMD EPYC 9V74 80-Core Processor",
+  "affinity_cpu": 0,
+  "omp_num_threads": 1,
+  "memory_limit_bytes": "34359738368",
+  "openfhe_commit": "aa391988d354d4360f390f223a90e0d1b98839d7",
+  "batch_size": 4,
+  "samples_per_configuration": 1,
+  "scope": "all available tasks, matching measurements; Boolean only where original complete validator exists",
+  "mode": "serial, loaded evaluator keys, separate one-time setup; no network",
+  "binaries": {
+    "prio_cost": "6d92d6fc8d58791fb48ced1fffc22a488f97ffb69b7557c8fa62bc2606d33dcf",
+    "bgv_cost": "ad6c4a764f5af204ae94ed365b53cebfba1574f57711ae422ecd76605aecfff2",
+    "boolean-cost": "86e979ab8e4f20e16fe7f1f8e6b9e22ccefe4164e84a4c1b748014a882cdeed1"
+  }
+}

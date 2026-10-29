@@ -1,0 +1,1 @@
+Completed:199 compatibility tests passed, one pre-existing optional measurement ignored. Matched common1.4.2 Count comparison20 batches/80 reports passed. See README.md, QUALIFICATION.json, comparison/RESULTS.md and evidence/. Original code preserved; nothing committed or pushed. Production security limitations unchanged.

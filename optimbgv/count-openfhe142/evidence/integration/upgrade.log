@@ -1,0 +1,10 @@
+
+running 5 tests
+test accumulators_are_stored_apart_and_change_only_when_folded_in ... ok
+test collector_tells_old_stored_shares_from_corrupt_ones ... ok
+test open_verdict_batch_from_before_resumes ... ok
+test released_shares_from_before_are_refused_at_restore ... ok
+test silent_state_from_before_is_refused_at_restore ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 404.72s
+

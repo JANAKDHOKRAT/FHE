@@ -1,0 +1,12 @@
+
+running 7 tests
+test authentication_quota_and_replay_are_checked_before_any_proof_work ... ok
+test every_malformed_or_misplaced_proof_is_refused_by_every_aggregator ... ok
+test proven_reports_aggregate_exactly_and_invalid_ones_are_zeroed ... ok
+test related_noisy_or_unprovable_ciphertexts_are_refused ... ok
+test size_bounds_cover_every_encoding ... ok
+test two_chunk_reports_are_exact_and_a_chunk_cannot_be_moved_to_another_report ... ok
+test worst_case_proven_inputs_stay_exact_and_far_below_the_flooding ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 101.92s
+

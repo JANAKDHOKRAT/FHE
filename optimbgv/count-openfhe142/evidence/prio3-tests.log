@@ -1,0 +1,84 @@
+    Blocking waiting for file lock on artifact directory
+    Finished `release` profile [optimized] target(s) in 34.32s
+     Running unittests src/lib.rs (fhe-build/count-port142/release/deps/fhe_prio3-c0ffc820f1f76c55)
+
+running 55 tests
+test aggregator::tests::states_from_before_share_upload_decode ... ok
+test attest::tests::attestation_binds_task_material_and_identities ... ok
+test auth::tests::sign_and_verify ... ok
+test config::native_count_packing_tests::prefix_packing_is_count_only_and_threshold_validation_stays_strict ... ok
+test config::native_layout_tests::variable_row_does_not_relax_threshold_layout ... ok
+test config::tests::binding_is_stable_for_legacy_tasks ... ok
+test config::tests::client_proofs_binding_files_and_rules ... ok
+test config::tests::depths ... ok
+test config::tests::exact_check_shapes_depths_files_and_rules ... ok
+test config::tests::moment_digit_width_is_the_widest_that_cannot_wrap ... ok
+test config::tests::the_former_cap_let_the_widest_square_wrap ... ok
+test config::tests::topology_and_suppression_rules ... ok
+test field::tests::field_ops ... ok
+test field::tests::primality ... ok
+test gate::tests::plans_follow_the_topology_and_the_suppression ... ok
+test gate::tests::streamed_product_and_gate_decrypt_exactly_within_ceil_log2_depth ... ok
+test gate::tests::ungate_recovers_released_cells_and_flags_suppressed_ones ... ok
+test gate::tests::ungate_refuses_outputs_no_honest_gate_produces ... ok
+test keys::tests::aggregator_secret_round_trips_and_refuses_bare_shares ... ok
+test keys::tests::collector_secret_round_trips_and_is_not_an_aggregator_secret ... ok
+test layout::tests::batched ... ok
+test layout::tests::batched_slot_algebra ... ok
+test layout::tests::blocked ... ok
+test layout::tests::interleaved ... ok
+test layout::tests::moment_cells_cover_every_digit_product_once ... ok
+test layout::tests::moment_recombination_is_exact_at_the_digit_bound ... ok
+test layout::tests::moment_term_sum_refuses_out_of_bound_and_stray_slots ... ok
+test packed::tests::bit_packing_roundtrip_all_widths ... ok
+test packed::tests::encode_refuses_what_parse_refuses ... ok
+test packed::tests::format_roundtrip_and_canonical_for_every_shape ... ok
+test packed::tests::padding_bits_are_detected ... ok
+test seal::tests::seal_roundtrip_and_rejections ... ok
+test sharding::tests::combine_adds_everything_and_refits ... ok
+test sharding::tests::shard_ids_are_distinct_and_deterministic ... ok
+test sharding::tests::suppression_survives_combination ... ok
+test shares::tests::a_party_cannot_open_another_partys_input_and_tampering_is_unopenable ... ok
+test shares::tests::each_share_alone_is_independent_of_the_measurement ... ok
+test shares::tests::non_canonical_and_misshaped_inputs ... ok
+test shares::tests::seed_expansion_is_uniform_below_p_and_bound_to_its_inputs ... ok
+test shares::tests::shares_add_up_to_the_encoding_and_reports_are_small ... ok
+test shares::tests::upload_keys_are_validated ... ok
+test types::tests::aggregate_roundtrip ... ok
+test types::tests::bounded_sumvec_encoding_and_per_element_ranges ... ok
+test types::tests::consistency_check ... ok
+test types::tests::constraint_fit_is_exact_on_every_assignment ... ok
+test types::tests::histogram_and_multihot ... ok
+test types::tests::parameter_validation ... ok
+test types::tests::range_checked_encoding_matches_the_draft_reference ... ok
+test types::tests::regression_from_moments_matches_closed_form ... ok
+test types::tests::sum_encoding_matches_draft ... ok
+test types::tests::widest_sound_ranges_under_the_real_primes ... ok
+test verify::tests::exact_circuit_computes_the_predicate_in_every_group ... ok
+test verify::tests::exact_circuit_refuses_mismatched_inputs ... ok
+test wfe::tests::monomial_multiplication_is_negacyclic ... ok
+test xof::tests::deterministic_and_separated ... ok
+
+test result: ok. 55 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 63.32s
+
+     Running unittests src/bin/simulate.rs (fhe-build/count-port142/release/deps/simulate-e0ce62655fbd8adc)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/batch_noise.rs (fhe-build/count-port142/release/deps/batch_noise-4a5c17fc304bdb97)
+
+running 1 test
+test full_batch_noise_stays_exact_through_count_and_release ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 422.43s
+
+     Running tests/bounds.rs (fhe-build/count-port142/release/deps/bounds-bf728abd27f7919a)
+
+running 6 tests
+test bounds_are_bound_into_the_task ... ok
+test every_bit_vector_is_in_range_and_no_constraint_is_needed ... ok
+test moments_over_mixed_widths_match_plaintext ... ok
+test silent_mode_bounded_invalid_contributes_zero ... ok
+test silent_mode_sum_range_is_enforced_up_to_what_p_allows ... 

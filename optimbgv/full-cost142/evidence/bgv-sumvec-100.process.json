@@ -1,0 +1,17 @@
+{
+  "command": [
+    "taskset",
+    "-c",
+    "0",
+    "/workspace/fhe-build/count-port142/release/bgv_cost",
+    "sumvec",
+    "100"
+  ],
+  "returncode": 0,
+  "final_pass_record": true,
+  "wall_seconds": 2844.0611502980028,
+  "user_seconds": 2723.13377,
+  "system_seconds": 120.128678,
+  "process_peak_rss_kib": 8156480,
+  "scope": "all simulated roles, setup and diagnostics included; not isolated server RAM"
+}

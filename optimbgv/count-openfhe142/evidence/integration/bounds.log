@@ -1,0 +1,11 @@
+
+running 6 tests
+test bounds_are_bound_into_the_task ... ok
+test every_bit_vector_is_in_range_and_no_constraint_is_needed ... ok
+test moments_over_mixed_widths_match_plaintext ... ok
+test silent_mode_bounded_invalid_contributes_zero ... ok
+test silent_mode_sum_range_is_enforced_up_to_what_p_allows ... ok
+test verdict_mode_per_element_bounds_are_exact ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 415.80s
+

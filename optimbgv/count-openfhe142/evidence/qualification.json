@@ -1,0 +1,31 @@
+{
+  "status": "scoped compatibility qualification passed",
+  "openfhe": "1.4.2",
+  "wrapper": {
+    "passed": 24,
+    "ignored": 0
+  },
+  "fhe_prio3": {
+    "passed": 170,
+    "ignored": 1,
+    "retained_completed_integration_program": "batch_noise",
+    "unit_tests_retained": 55,
+    "other_programs": 23
+  },
+  "count_core": {
+    "passed": 5,
+    "ignored": 0
+  },
+  "profile": {
+    "p": 65537,
+    "ring": 32768,
+    "depth": 18,
+    "key_switch_digits": 7,
+    "groups": 4,
+    "max_batch": 32,
+    "report_bytes": 6176895,
+    "full_Q_QP_match_previous_profile": true
+  },
+  "production_security_certified": false,
+  "note": "Original1.3.1 code and professor1.4.2 artifact preserved. Existing protocol/malicious-ciphertext/circuit-privacy limitations unchanged. Ignored pre-existing measurement is not a pass."
+}

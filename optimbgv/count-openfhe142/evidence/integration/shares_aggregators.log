@@ -1,0 +1,11 @@
+
+running 6 tests
+test a_leader_cannot_feed_the_helper_another_flush_or_replace_its_contribution ... ok
+test aggregate_is_exact_with_the_count_round ... ok
+test contributions_with_broken_proofs_are_refused_by_either_aggregator ... ok
+test signed_reports_and_quotas_are_enforced_by_both_aggregators ... ok
+test the_helper_refuses_reports_the_leader_should_have_refused ... ok
+test the_helper_resumes_after_a_restart_mid_flush ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 614.16s
+

@@ -1,0 +1,26 @@
+{
+  "date": "2026-10-28",
+  "openfhe_commit": "aa391988d354d4360f390f223a90e0d1b98839d7",
+  "repository_baseline_commit": "44fa1f40dd391b1e680dde8d549a75b142c07ef6",
+  "platform": "Linux-6.18.55-x86_64-with-glibc2.41",
+  "cpu": "AMD EPYC 9V74 80-Core Processor",
+  "memory_limit_bytes": "34359738368",
+  "memory_events_final": "low 0\nhigh 0\nmax 4128\noom 4\noom_kill 2\noom_group_kill 0\n",
+  "openfhe_sdk": "/workspace/fhe-deps/install-1.4.2",
+  "omp_num_threads": 1,
+  "production_security_certified": false,
+  "independent_new_profile_screening": "Not run; Sage executable/modules unavailable",
+  "primary_returncodes": {
+    "sum100-full": 0,
+    "histogram": 0,
+    "vector10": 0,
+    "vector25": 0,
+    "vector50-stream": 0,
+    "vector100-fixed": 0,
+    "vector10-stream-regression": 0
+  },
+  "redesign-small-prime142_current_binary_sha256": "453ac343ca508d6b0198e4c9687c614a533e6de995c6a6bb021e36c11139f3c2",
+  "histogram_lookup_current_binary_sha256": "4b199e68ffc9ceec90dc4f757f29c4d56b0e58b42ba3431cf36dd476a1a311cf",
+  "vector_lookup_current_binary_sha256": "d7557c8e70afbd44183a44adf4d2f615929b2a8b5d21c76e9b060867d7f9e7f4",
+  "binary_hash_scope": "Current release executables; exact pre-stream vector runner hash is recorded separately."
+}

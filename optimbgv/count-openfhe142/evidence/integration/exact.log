@@ -1,0 +1,9 @@
+
+running 4 tests
+test full_batch_at_depth_28_is_exact_with_margin ... ok
+test split_key_histogram_counts_exactly_the_valid_reports ... ok
+test sum_rejects_the_cancellation_pair ... ok
+test two_chunks_are_checked_together ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1072.70s
+

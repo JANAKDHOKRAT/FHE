@@ -1,0 +1,70 @@
+
+running 2 tests
+flooding of one partial, in units of Q'/2: max 0.999986, mean 0.0014, E[x^2] 0.3327 (uniform: 1/3), kurtosis 1.798 (uniform: 1.8)
+fresh ciphertext: towers 7, Q_l 2^345.0, Q' 2^298.0 | honest noise 2^12.1 t, fused 2^298.0 t | margin 284.9 bits, room above flooding 14.0 bits | check passes (max/(n Q'/2) = 0.9944, 24.6 ms) | q0/4 passes
+sum of 2^20 (max_batch_size): towers 7, Q_l 2^345.0, Q' 2^298.0 | honest noise 2^32.1 t, fused 2^298.0 t | margin 264.9 bits, room above flooding 14.0 bits | check passes (max/(n Q'/2) = 0.9975, 24.7 ms) | q0/4 passes
+depth 3 (the verdict check value): towers 4, Q_l 2^221.0, Q' 2^174.0 | honest noise 2^53.9 t, fused 2^174.0 t | margin 119.1 bits, room above flooding 14.0 bits | check passes (max/(n Q'/2) = 0.9964, 16.0 ms) | q0/4 passes
+smallest honest smudging margin: 119.1 bits
+inflation E = 2^k (constant), Q' = 2^298.0:
+   k | decrypts | q0/4 | flooding check (max/(n Q'/2)) | u guessed right
+    0 |    false | fail | CAUGHT (16387.7811) | 0.3365
+   16 |    false | fail | CAUGHT (16387.5342) | 0.3344
+   32 |     true | pass |   pass (0.9977) | 0.3360
+   48 |     true | pass |   pass (0.9976) | 0.3326
+   64 |     true | pass |   pass (0.9970) | 0.3369
+   80 |     true | pass |   pass (0.9949) | 0.3375
+   96 |     true | pass |   pass (0.9918) | 0.3391
+  112 |     true | pass |   pass (0.9927) | 0.3326
+  128 |     true | pass |   pass (0.9986) | 0.3328
+  144 |     true | pass |   pass (0.9910) | 0.3354
+  160 |     true | pass |   pass (0.9982) | 0.3376
+  176 |     true | pass |   pass (0.9966) | 0.3350
+  192 |    false | fail | CAUGHT (16387.8984) | 0.3335
+  208 |     true | pass |   pass (0.9972) | 0.3347
+  224 |     true | pass |   pass (0.9874) | 0.3360
+  240 |     true | pass |   pass (0.9968) | 0.3361
+  256 |     true | pass |   pass (0.9964) | 0.3369
+  272 |     true | pass |   pass (0.9955) | 0.3375
+  288 |     true | pass |   pass (0.9955) | 0.3345
+  304 |     true | pass | CAUGHT (64.9895) | 1.0000
+  292 |     true | pass | CAUGHT (1.0112) | 0.3320
+  293 |    false | fail | CAUGHT (16387.8704) | 0.3361
+  294 |     true | pass | CAUGHT (1.0530) | 0.3757
+  295 |     true | pass | CAUGHT (1.1148) | 0.4198
+  296 |     true | pass | CAUGHT (1.2435) | 0.4903
+  297 |     true | pass | CAUGHT (1.4939) | 0.6206
+silent fresh: towers 29, Q_l 2^1250.2, Q' 2^1215.2 | honest noise 2^1229.6 t, fused 2^1229.6 t | margin -15.4 bits, room above flooding 14.4 bits | check FAILS (max/(n Q'/2) = 21846.5878, 245.7 ms) | q0/4 fails
+
+thread 'key_noise_gap_silent_bottom' (8299) panicked at tests/key_noise_gap.rs:111:5:
+silent fresh: an honest fusion fails the flooding check
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test key_noise_gap_silent_bottom ... FAILED
+  298 |     true | pass | CAUGHT (1.9908) | 0.8354
+  299 |     true | pass | CAUGHT (2.9990) | 1.0000
+  300 |     true | pass | CAUGHT (4.9956) | 1.0000
+  301 |     true | pass | CAUGHT (8.9941) | 1.0000
+  302 |     true | pass | CAUGHT (16.9910) | 1.0000
+  303 |     true | pass | CAUGHT (32.9913) | 1.0000
+  304 |     true | pass | CAUGHT (64.9805) | 1.0000
+  305 |     true | pass | CAUGHT (128.9880) | 1.0000
+  306 |     true | pass | CAUGHT (256.9863) | 1.0000
+  307 |     true | pass | CAUGHT (512.9796) | 1.0000
+  308 |     true | pass | CAUGHT (1024.9787) | 1.0000
+  309 |     true | pass | CAUGHT (2048.9630) | 1.0000
+  310 |     true | pass | CAUGHT (4096.9291) | 1.0000
+tuned party: flooding check passes (ratio 0.9977)
+tuned party: flooding check passes (ratio 0.9976)
+tuned party: flooding check passes (ratio 0.9951)
+tuned party: flooding check passes (ratio 0.9979)
+tuned party: flooding check passes (ratio 0.9993)
+tuned party: flooding check passes (ratio 0.9947)
+tuned party: passes every check 6/6; u guessed right 0.5573 after one decryption (1/3 by chance, 5/9 predicted), 0.9405 after 6
+test key_noise_gap_verdict_parameters ... ok
+
+failures:
+
+failures:
+    key_noise_gap_silent_bottom
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.52s
+

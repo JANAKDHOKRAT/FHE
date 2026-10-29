@@ -1,0 +1,9 @@
+[package]
+name = "redesign-small-prime142"
+version = "0.1.0"
+edition = "2024"
+[dependencies]
+fhe-prio3 = {path="../count-openfhe142/fhe-prio3"}
+openfhe-tbgv-rs = {path="../count-openfhe142/openfhe-tbgv-rs"}
+serde_json = "1"
+[workspace]

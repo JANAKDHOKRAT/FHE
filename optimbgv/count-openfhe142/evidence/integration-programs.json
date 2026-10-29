@@ -1,0 +1,98 @@
+[
+  {
+    "name": "shares_moments",
+    "executable": "/workspace/fhe-build/count-port142/release/deps/shares_moments-553b5e1bcc85bad9"
+  },
+  {
+    "name": "policy",
+    "executable": "/workspace/fhe-build/count-port142/release/deps/policy-05f1b4316b24a1a2"
+  },
+  {
+    "name": "gate_noise",
+    "executable": "/workspace/fhe-build/count-port142/release/deps/gate_noise-f2632084b9fb3006"
+  },
+  {
+    "name": "suppression",
+    "executable": "/workspace/fhe-build/count-port142/release/deps/suppression-c9a2ee9d6ecdcef7"
+  },
+  {
+    "name": "vdec",
+    "executable": "/workspace/fhe-build/count-port142/release/deps/vdec-52ebcb76e25fe7e1"
+  },
+  {
+    "name": "upgrade",
+    "executable": "/workspace/fhe-build/count-port142/release/deps/upgrade-359bb8c4d11ef0a2"
+  },
+  {
+    "name": "shares_split",
+    "executable": "/workspace/fhe-build/count-port142/release/deps/shares_split-323c8dd40474fe47"
+  },
+  {
+    "name": "split_key",
+    "executable": "/workspace/fhe-build/count-port142/release/deps/split_key-62c75f50763e5958"
+  },
+  {
+    "name": "share_noise",
+    "executable": "/workspace/fhe-build/count-port142/release/deps/share_noise-b7a0d63a826495cc"
+  },
+  {
+    "name": "wire",
+    "executable": "/workspace/fhe-build/count-port142/release/deps/wire-418cf649156c15c0"
+  },
+  {
+    "name": "client_proofs",
+    "executable": "/workspace/fhe-build/count-port142/release/deps/client_proofs-fbcf63615239f0da"
+  },
+  {
+    "name": "ceremony_sweep",
+    "executable": "/workspace/fhe-build/count-port142/release/deps/ceremony_sweep-b1e1626768678880"
+  },
+  {
+    "name": "malicious_aggregator",
+    "executable": "/workspace/fhe-build/count-port142/release/deps/malicious_aggregator-da564cb0c69fb594"
+  },
+  {
+    "name": "wfe",
+    "executable": "/workspace/fhe-build/count-port142/release/deps/wfe-ae5db213d836aa52"
+  },
+  {
+    "name": "regression",
+    "executable": "/workspace/fhe-build/count-port142/release/deps/regression-71b3b70c29487750"
+  },
+  {
+    "name": "ceremony",
+    "executable": "/workspace/fhe-build/count-port142/release/deps/ceremony-2ebb2df95bcc56bb"
+  },
+  {
+    "name": "exact",
+    "executable": "/workspace/fhe-build/count-port142/release/deps/exact-70d6bc7a4c29305a"
+  },
+  {
+    "name": "mitigations",
+    "executable": "/workspace/fhe-build/count-port142/release/deps/mitigations-4a348964ab8bd629"
+  },
+  {
+    "name": "protocol",
+    "executable": "/workspace/fhe-build/count-port142/release/deps/protocol-c4461ba15f9ce865"
+  },
+  {
+    "name": "gate_rounds",
+    "executable": "/workspace/fhe-build/count-port142/release/deps/gate_rounds-c47970f1ac940f3e"
+  },
+  {
+    "name": "batch_noise",
+    "executable": "/workspace/fhe-build/count-port142/release/deps/batch_noise-4a5c17fc304bdb97"
+  },
+  {
+    "name": "key_noise_protocol",
+    "executable": "/workspace/fhe-build/count-port142/release/deps/key_noise_protocol-f2315836d61d2360"
+  },
+  {
+    "name": "shares_aggregators",
+    "executable": "/workspace/fhe-build/count-port142/release/deps/shares_aggregators-68f95ab311328bbe"
+  },
+  {
+    "name": "bounds",
+    "executable": "/workspace/fhe-build/count-port142/release/deps/bounds-bf728abd27f7919a"
+  }
+]

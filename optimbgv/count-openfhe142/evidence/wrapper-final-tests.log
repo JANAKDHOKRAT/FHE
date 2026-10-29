@@ -1,0 +1,86 @@
+   Compiling openfhe-tbgv-rs v0.1.0 (/workspace/FHE/optimization/count-openfhe142/openfhe-tbgv-rs)
+    Finished `release` profile [optimized] target(s) in 0.87s
+     Running unittests src/lib.rs (fhe-build/count-port142/release/deps/openfhe_tbgv_rs-429fdc0c028bbb18)
+
+running 6 tests
+test selftest::tests::detects_a_rebuild_at_the_wrong_level ... ok
+test selftest::tests::detects_a_rebuild_that_alters_one_residue ... ok
+test selftest::tests::detects_a_rebuild_from_a_reference_under_another_key ... ok
+test selftest::tests::detects_a_rebuild_that_ignores_the_noise_degree ... ok
+test selftest::tests::detects_a_rebuild_that_ignores_the_scaling_factor ... ok
+test selftest::tests::passes_on_the_loaded_library_and_gates_build_ciphertext ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.59s
+
+     Running tests/crs_ceremony.rs (fhe-build/count-port142/release/deps/crs_ceremony-447483db4e9e0eb3)
+
+running 2 tests
+test contributions_are_checked_before_they_enter ... ok
+test three_parties_build_joint_keys_from_residues ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.14s
+
+     Running tests/encryption_with.rs (fhe-build/count-port142/release/deps/encryption_with-c8cf2be470370884)
+
+running 1 test
+test encryption_with_chosen_randomness ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.67s
+
+     Running tests/key_noise_gap.rs (fhe-build/count-port142/release/deps/key_noise_gap-24ce534087eaec61)
+
+running 2 tests
+test key_noise_gap_verdict_parameters ... ok
+test key_noise_gap_silent_bottom ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 22.07s
+
+     Running tests/native_startup.rs (fhe-build/count-port142/release/deps/native_startup-d96475c67bae545d)
+
+running 2 tests
+test qualification_modes_are_separate ... ok
+test startup_cache_does_not_cross_key_switching_profiles ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.94s
+
+     Running tests/openfhe_loader_facts.rs (fhe-build/count-port142/release/deps/openfhe_loader_facts-a0e04885adb629d4)
+
+running 1 test
+test loader_accepts_a_residue_at_or_above_its_modulus ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.23s
+
+     Running tests/raw_residues.rs (fhe-build/count-port142/release/deps/raw_residues-6409ac78a36789bf)
+
+running 3 tests
+test rebuild_is_exact_for_every_protocol_object_kind ... ok
+test rebuild_is_refused_before_the_self_test ... ok
+test rebuild_refuses_every_malformed_argument ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.49s
+
+     Running tests/threshold.rs (fhe-build/count-port142/release/deps/threshold-86cf95c340f55aa9)
+
+running 6 tests
+test context_and_key_serialization_roundtrip ... ok
+test fuse_requires_exactly_one_lead ... ok
+test injected_noise_keeps_plaintext_until_it_overflows ... ok
+test plaintext_rejects_unreduced_values ... ok
+test three_party_arithmetic_and_threshold_decryption ... ok
+test two_party_arithmetic_and_threshold_decryption ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.64s
+
+     Running tests/vdec_primitives.rs (fhe-build/count-port142/release/deps/vdec_primitives-4a32746c1231a1fe)
+
+running 1 test
+test primitives_at_the_top_and_bottom_of_the_chain ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 15.64s
+
+   Doc-tests openfhe_tbgv_rs
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

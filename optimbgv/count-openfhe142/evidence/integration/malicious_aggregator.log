@@ -1,0 +1,10 @@
+
+running 5 tests
+test a_shifted_release_partial_is_caught_by_the_collector ... ok
+test aggregators_refuse_forged_or_repeated_release_checks ... ok
+test silent_count_forgery_is_caught_before_any_release ... ok
+test verdict_forced_acceptance_needs_an_adapted_partial_and_is_refused ... ok
+test verdict_mask_cancellation_needs_the_honest_mask_and_is_refused ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 318.63s
+

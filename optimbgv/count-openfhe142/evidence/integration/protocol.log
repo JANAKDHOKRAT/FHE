@@ -1,0 +1,19 @@
+
+running 14 tests
+test aggregators_with_different_verify_keys_accept_nothing ... ok
+test challenge_is_bound_to_report_task_and_verify_key ... ok
+test collector_needs_every_aggregator_and_agreement ... ok
+test count_two_aggregators ... ok
+test histogram_three_aggregators ... ok
+test large_sumvec_spans_two_chunks ... ok
+test linear_constraints_are_enforced ... ok
+test malicious_clients_are_rejected ... ok
+test min_batch_size_is_enforced ... ok
+test multihot_two_aggregators ... ok
+test structural_rejections_and_replay ... ok
+test sum_two_aggregators ... ok
+test sumvec_two_aggregators ... ok
+test tail_slots_cannot_cancel_the_check ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 107.95s
+

@@ -1,0 +1,308 @@
+{
+  "scope": "Matched original-profile Count implementations on common OpenFHE1.4.2; batch4; same phases and key/context-loading policy. Not a universal scheme/security claim.",
+  "qualification": {
+    "status": "scoped compatibility qualification passed",
+    "openfhe": "1.4.2",
+    "wrapper": {
+      "passed": 24,
+      "ignored": 0
+    },
+    "fhe_prio3": {
+      "passed": 170,
+      "ignored": 1,
+      "retained_completed_integration_program": "batch_noise",
+      "unit_tests_retained": 55,
+      "other_programs": 23
+    },
+    "count_core": {
+      "passed": 5,
+      "ignored": 0
+    },
+    "profile": {
+      "p": 65537,
+      "ring": 32768,
+      "depth": 18,
+      "key_switch_digits": 7,
+      "groups": 4,
+      "max_batch": 32,
+      "report_bytes": 6176895,
+      "full_Q_QP_match_previous_profile": true
+    },
+    "production_security_certified": false,
+    "note": "Original1.3.1 code and professor1.4.2 artifact preserved. Existing protocol/malicious-ciphertext/circuit-privacy limitations unchanged. Ignored pre-existing measurement is not a pass."
+  },
+  "batches": 20,
+  "encrypted_reports": 80,
+  "backends": {
+    "Boolean": {
+      "report_bytes": 8245,
+      "aggregate_bytes": 12189,
+      "public_key_bytes": 8413229,
+      "context_bytes": 201,
+      "evaluation_key_bytes": 464718498,
+      "server_core_s": {
+        "minimum": 2.558359218,
+        "median": 2.648436071,
+        "maximum": 2.825002501,
+        "samples": [
+          2.663234749,
+          2.612263593,
+          2.558359218,
+          2.633637393,
+          2.707632802,
+          2.825002501
+        ]
+      },
+      "server_with_init_s": {
+        "minimum": 2.8441631270000003,
+        "median": 2.910910195,
+        "maximum": 3.1170334100000003,
+        "samples": [
+          2.9229079099999997,
+          2.8989124800000003,
+          2.8441631270000003,
+          2.894629308,
+          3.004575517,
+          3.1170334100000003
+        ]
+      },
+      "client_per_report_s": {
+        "minimum": 0.00231848125,
+        "median": 0.0023658986249999996,
+        "maximum": 0.00274053425,
+        "samples": [
+          0.00274053425,
+          0.00238995375,
+          0.0023418435,
+          0.002489992,
+          0.00233855125,
+          0.00231848125
+        ]
+      },
+      "collector_batch_s": {
+        "minimum": 1.8467e-05,
+        "median": 1.9905e-05,
+        "maximum": 2.4136e-05,
+        "samples": [
+          1.959e-05,
+          2.022e-05,
+          1.8467e-05,
+          1.8868e-05,
+          2.0731e-05,
+          2.4136e-05
+        ]
+      },
+      "combined_measured_stages_s": {
+        "minimum": 2.853548968,
+        "median": 2.921191076,
+        "maximum": 3.1263314710000003,
+        "samples": [
+          2.9338896369999996,
+          2.9084925150000003,
+          2.853548968,
+          2.904608144,
+          3.013950453,
+          3.1263314710000003
+        ]
+      },
+      "epochs": [
+        {
+          "epoch": 1,
+          "core_median_s": 2.612263593,
+          "with_init_median_s": 2.8989124800000003
+        },
+        {
+          "epoch": 2,
+          "core_median_s": 2.707632802,
+          "with_init_median_s": 3.004575517
+        }
+      ],
+      "setup": [
+        {
+          "type": "setup",
+          "backend": "Boolean",
+          "profile": "STD128/GINX",
+          "epoch": 1,
+          "setup_ns": 2240276576,
+          "key_serialize_ns": 650829121,
+          "constants_ns": 24971386,
+          "public_key_bytes": 8413229,
+          "context_bytes": 201,
+          "switch_key_bytes": 398475301,
+          "bootstrap_key_bytes": 66243197
+        },
+        {
+          "type": "setup",
+          "backend": "Boolean",
+          "profile": "STD128/GINX",
+          "epoch": 2,
+          "setup_ns": 2223151129,
+          "key_serialize_ns": 643871693,
+          "constants_ns": 22423517,
+          "public_key_bytes": 8413229,
+          "context_bytes": 201,
+          "switch_key_bytes": 398475301,
+          "bootstrap_key_bytes": 66243197
+        }
+      ],
+      "processes": [
+        {
+          "process_measurement": true,
+          "wall_ns": 17623567267,
+          "user_seconds": 16.419791,
+          "system_seconds": 1.199453,
+          "max_rss_kib": 1687040,
+          "exit_code": 0
+        },
+        {
+          "process_measurement": true,
+          "wall_ns": 18023008219,
+          "user_seconds": 16.844019,
+          "system_seconds": 1.17385,
+          "max_rss_kib": 1686960,
+          "exit_code": 0
+        }
+      ]
+    },
+    "BGV": {
+      "report_bytes": 6176895,
+      "aggregate_bytes": 581724,
+      "public_key_bytes": 11538679,
+      "context_bytes": 1515,
+      "evaluation_key_bytes": 242261163,
+      "server_core_s": {
+        "minimum": 2.200229738,
+        "median": 2.2396294020000003,
+        "maximum": 2.283521053,
+        "samples": [
+          2.239071614,
+          2.23966442,
+          2.200229738,
+          2.239594384,
+          2.269627052,
+          2.283521053
+        ]
+      },
+      "server_with_init_s": {
+        "minimum": 2.675229483,
+        "median": 2.82056916,
+        "maximum": 2.900873411,
+        "samples": [
+          2.6912652440000002,
+          2.780287302,
+          2.675229483,
+          2.860851018,
+          2.875732874,
+          2.900873411
+        ]
+      },
+      "client_per_report_s": {
+        "minimum": 0.075259163,
+        "median": 0.07622425837499999,
+        "maximum": 0.079474758,
+        "samples": [
+          0.076612497,
+          0.07752007625,
+          0.075259163,
+          0.079474758,
+          0.07571233375,
+          0.07583601975
+        ]
+      },
+      "collector_batch_s": {
+        "minimum": 0.005651606,
+        "median": 0.0062238485,
+        "maximum": 0.006932616,
+        "samples": [
+          0.005886089,
+          0.006331771,
+          0.005651606,
+          0.006506724,
+          0.006932616,
+          0.006115926
+        ]
+      },
+      "combined_measured_stages_s": {
+        "minimum": 2.9819177409999997,
+        "median": 3.140978076,
+        "maximum": 3.210333416,
+        "samples": [
+          3.003601321,
+          3.0966993780000003,
+          2.9819177409999997,
+          3.185256774,
+          3.1855148250000003,
+          3.210333416
+        ]
+      },
+      "epochs": [
+        {
+          "epoch": 1,
+          "core_median_s": 2.239071614,
+          "with_init_median_s": 2.6912652440000002
+        },
+        {
+          "epoch": 2,
+          "core_median_s": 2.269627052,
+          "with_init_median_s": 2.875732874
+        }
+      ],
+      "setup": [
+        {
+          "backend": "BGV",
+          "client_init_ns": 98808506,
+          "collector_init_ns": 9323114163,
+          "context_bytes": 1515,
+          "epoch": 1,
+          "mult_key_bytes": 80753713,
+          "peak_rss_kib": 640052,
+          "public_key_bytes": 11538679,
+          "rotation_indices": [
+            1,
+            2
+          ],
+          "rotation_key_bytes": 161507450,
+          "setup_including_key_serialize_ns": 2120462087,
+          "task_init_ns": 111107206,
+          "type": "setup"
+        },
+        {
+          "backend": "BGV",
+          "client_init_ns": 103102552,
+          "collector_init_ns": 9700783575,
+          "context_bytes": 1515,
+          "epoch": 2,
+          "mult_key_bytes": 80753713,
+          "peak_rss_kib": 639876,
+          "public_key_bytes": 11538679,
+          "rotation_indices": [
+            1,
+            2
+          ],
+          "rotation_key_bytes": 161507450,
+          "setup_including_key_serialize_ns": 2428888383,
+          "task_init_ns": 124423058,
+          "type": "setup"
+        }
+      ],
+      "processes": [
+        {
+          "process_measurement": true,
+          "wall_ns": 26975063577,
+          "user_seconds": 25.176539,
+          "system_seconds": 1.793634,
+          "max_rss_kib": 748228,
+          "exit_code": 0
+        },
+        {
+          "process_measurement": true,
+          "wall_ns": 28789775644,
+          "user_seconds": 25.986681,
+          "system_seconds": 2.788574,
+          "max_rss_kib": 748328,
+          "exit_code": 0
+        }
+      ]
+    }
+  }
+}

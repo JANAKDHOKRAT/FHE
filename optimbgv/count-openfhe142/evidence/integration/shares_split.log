@@ -1,0 +1,15 @@
+
+running 10 tests
+test a_batch_below_the_minimum_is_refused_and_small_cells_are_suppressed ... ok
+test aggregate_is_exact_over_valid_reports_and_reports_are_small ... ok
+test contributions_are_deterministic_and_each_flush_is_contributed_once ... ok
+test contributions_replayed_from_another_flush_are_refused ... ok
+test contributions_with_broken_or_misbound_proofs_are_refused ... ok
+test every_party_resumes_after_a_restart_at_every_step ... ok
+test malformed_replayed_and_foreign_reports_are_refused ... ok
+test shares_that_do_not_open_count_as_zero_and_the_report_is_zeroed ... ok
+test the_cancelling_errors_of_an_unweighted_check_are_caught ... ok
+test the_collector_refuses_replayed_reports_and_equivocating_flushes ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1339.64s
+

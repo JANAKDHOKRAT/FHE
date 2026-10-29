@@ -59,8 +59,8 @@ directly; it does not provide a separately exposed valid/invalid flag. Removing
 unnecessary validity intermediates is therefore legitimate only under this
 output contract, not automatically for other tasks.
 
-Code: `count-openfhe142/fhe-paper-core/src/verify.rs` and `src/lib.rs` within
-that same crate; the measured adapter is `full-cost142/src/bin/bgv_cost.rs`,
+Code: `count-openfhe142/fhe-prio3/src/verify.rs` implements the projection;
+`count-openfhe142/fhe-paper-core/src/lib.rs` integrates it; the measured adapter is `full-cost142/src/bin/bgv_cost.rs`,
 function `count`. The retained profile uses depth 18, seven HYBRID digits,
 four groups and a qualified cap of 32 reports; the cost run has four reports.
 

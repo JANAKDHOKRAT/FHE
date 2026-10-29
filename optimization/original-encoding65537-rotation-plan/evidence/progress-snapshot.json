@@ -1,0 +1,18 @@
+{
+  "time_utc": "2026-10-29T17:42:38.903762+00:00",
+  "active_native_session": 13243,
+  "active_native_pid": 26505,
+  "evidence_watch_session": 72577,
+  "log": "optimization/original-encoding65537-rotation-plan/prime-diagnostic/vector100-late.jsonl",
+  "reports_completed": 1,
+  "slot_checks_completed": 143,
+  "stock_build": "PASS",
+  "research_build": "PASS",
+  "reproduced_parameter_record": "IDENTICAL",
+  "original_OpenFHE_source": "CLEAN",
+  "research_diff_matches_patch": true,
+  "published_optimbgv_changed": false,
+  "all_selected_tasks_qualified": false,
+  "production_security_gate": "NOT GREEN",
+  "pushed": false
+}

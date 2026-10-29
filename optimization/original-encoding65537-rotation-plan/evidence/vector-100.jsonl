@@ -1,0 +1,1 @@
+{"status":"FAILED","reason":"/workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.72:computeRingDimension(): The specified ring dimension (32768) does not comply with HE standards recommendation (65536)."}

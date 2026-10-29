@@ -1,0 +1,22 @@
+{
+  "full_digits.cpp": {
+    "original_path": "optimization/original-encoding65537-revisit/full_digits.cpp",
+    "sha256": "267106e2023cbd2bc946b0b29e3d5f319e1430adb8c85e65019270942443b5aa"
+  },
+  "native_checks.h": {
+    "original_path": "optimization/original-encoding65537-revisit/native_checks.h",
+    "sha256": "3ae1ace69fbbae8e4636eccd1c9f31e2441c20e73fb26ced14bc28b7d4b01ae6"
+  },
+  "packed.h": {
+    "original_path": "optimization/original-encoding65537-revisit/packed.h",
+    "sha256": "480330abc0fb4bd26d714f8381fa0aeb6bb788b6ec6ef35acb6651c4b459b9ca"
+  },
+  "evidence/histogram-full-digits.jsonl": {
+    "original_path": "optimization/original-encoding65537-revisit/evidence/histogram-full-digits.jsonl",
+    "sha256": "ffd607b60bab5b91c6a49ba59d8025a41b2257f8e95f0d674eedcc3bdf3a26d6"
+  },
+  "evidence/full-digits-exits.txt": {
+    "original_path": "optimization/original-encoding65537-revisit/evidence/full-digits-exits.txt",
+    "sha256": "677da91ab3bb0021606022f4c086101d8ba49b6336a2c51aa2a48b4f588f9289"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "scope": "Synthetic test data, public key and ciphertexts only; no secret key saved",
+  "directory": "/workspace/fhe-validation/original-rotation100-late-fixtures-20261029",
+  "files": {
+    "aggregate.bin": {
+      "bytes": 557116,
+      "sha256": "335e70dc05fe119cdffa4585de33526c14de8ae4190006b5a299d60c7f28ca15"
+    },
+    "public_key.bin": {
+      "bytes": 13110741,
+      "sha256": "7b56b3ee6541b6e6aad29ab5b2ec319b4eeeccf53ffdb0d734a1146dda08579a"
+    },
+    "report.bin": {
+      "bytes": 7405695,
+      "sha256": "0ed23f4686066fb3f988d3dc3d94e90dc5f31656589fb432874d6525ef3e368c"
+    }
+  }
+}

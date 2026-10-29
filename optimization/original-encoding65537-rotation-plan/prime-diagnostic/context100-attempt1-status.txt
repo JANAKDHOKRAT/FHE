@@ -1,0 +1,1 @@
+Stopped without result: experimental NextPrime seed was not congruent to 1 mod 2n, causing a prime-search hang. No encrypted result claimed. Fixed by explicit seed alignment; original library and security guards unchanged.

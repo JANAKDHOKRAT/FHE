@@ -1,0 +1,7 @@
+{
+  "status": "STOPPED_INCOMPLETE_SUPERSEDED",
+  "reason": "Replace repeated Fermat exponentiation by covered/shared shifted indicators; preserve partial checks, do not count as task pass.",
+  "reports_completed": 0,
+  "slot_checks": 19,
+  "source_sha256": "ac30ecfecf02725a17aa29fc72c8bd8cfd0abda06440312c05bbc6e5333cd057"
+}

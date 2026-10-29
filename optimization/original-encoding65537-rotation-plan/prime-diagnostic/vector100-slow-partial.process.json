@@ -1,0 +1,14 @@
+{
+  "command": [
+    "/workspace/fhe-validation/bound-prime-vector100",
+    "sumvec",
+    "100"
+  ],
+  "returncode": -15,
+  "final_pass_record": false,
+  "wall_seconds": 1221.8222557589997,
+  "user_seconds": 1954.883765,
+  "system_seconds": 364.793507,
+  "process_peak_rss_kib": 9362724,
+  "scope": "all simulated roles, setup and diagnostics included; not isolated server RAM"
+}

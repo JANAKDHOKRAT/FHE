@@ -1,0 +1,63 @@
+diff --git a/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp b/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp
+index 13ad96f..c604cb0 100644
+--- a/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp
++++ b/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp
+@@ -188,6 +188,15 @@ std::pair<std::vector<NativeInteger>, uint32_t> ParameterGenerationBGVRNS::compu
+     BGVNoiseEstimates noiseEstimates =
+         computeNoiseEstimates(cryptoParams, ringDimension, evalAddCount, keySwitchCount, auxTowers, numPrimes);
+     uint64_t cyclOrder = getCyclicOrder(ringDimension, plainModulus, scalTech);
++    auto tightPrime = [&](double bound) {
++        if (!(bound > 1.0))
++            OPENFHE_THROW("Invalid positive modulus lower bound.");
++        auto ceiling = static_cast<uint64_t>(std::ceil(bound * (1.0 + 1e-10)));
++        // NextPrime preserves its input residue; align the seed to 1 mod 2n.
++        auto seed = ((ceiling - 1) / cyclOrder) * cyclOrder + 1;
++        return NextPrime<NativeInteger>(NativeInteger(seed), cyclOrder);
++    };
++
+ 
+     double firstModLowerBound = 0;
+     if (scalTech == FLEXIBLEAUTOEXT)
+@@ -201,7 +210,13 @@ std::pair<std::vector<NativeInteger>, uint32_t> ParameterGenerationBGVRNS::compu
+             "number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.");
+     }
+ 
+-    moduliQ[0] = FirstPrime<NativeInteger>(firstModSize, cyclOrder);
++    // Research-only: select above the same noise bound without power-of-two rounding.
++    // All original ring/security checks remain. Independently verify actual primes.
++    if (scalTech == FLEXIBLEAUTOEXT && cryptoParamsBGVRNS->GetKeySwitchTechnique() == BV) {
++        moduliQ[0] = tightPrime(firstModLowerBound);
++    } else {
++        moduliQ[0] = FirstPrime<NativeInteger>(firstModSize, cyclOrder);
++    }
+ 
+     if (scalTech == FLEXIBLEAUTOEXT) {
+         double extraModLowerBound =
+@@ -216,7 +231,13 @@ std::pair<std::vector<NativeInteger>, uint32_t> ParameterGenerationBGVRNS::compu
+                 "number of key switches per level, or the digit size. We cannot support moduli greater than 60 bits.");
+         }
+ 
++        // Research-only: select above the same noise bound without power-of-two rounding.
++    // All original ring/security checks remain. Independently verify actual primes.
++    if (scalTech == FLEXIBLEAUTOEXT && cryptoParamsBGVRNS->GetKeySwitchTechnique() == BV) {
++        moduliQ[numPrimes] = tightPrime(extraModLowerBound);
++    } else {
+         moduliQ[numPrimes] = FirstPrime<NativeInteger>(extraModSize, cyclOrder);
++    }
+         while (moduliQ[numPrimes] == moduliQ[0] || moduliQ[numPrimes] == plainModulusInt) {
+             moduliQ[numPrimes] = NextPrime<NativeInteger>(moduliQ[numPrimes], cyclOrder);
+         }
+@@ -249,7 +270,13 @@ std::pair<std::vector<NativeInteger>, uint32_t> ParameterGenerationBGVRNS::compu
+         }
+ 
+         // Compute moduli.
++        // Research-only: select above the same noise bound without power-of-two rounding.
++    // All original ring/security checks remain. Independently verify actual primes.
++    if (scalTech == FLEXIBLEAUTOEXT && cryptoParamsBGVRNS->GetKeySwitchTechnique() == BV) {
++        moduliQ[1] = tightPrime(modLowerBound);
++    } else {
+         moduliQ[1] = FirstPrime<NativeInteger>(modSize, cyclOrder);
++    }
+         if (scalTech == FLEXIBLEAUTOEXT) {
+             while (moduliQ[1] == moduliQ[0] || moduliQ[1] == moduliQ[numPrimes] || moduliQ[1] == plainModulusInt) {
+                 moduliQ[1] = NextPrime<NativeInteger>(moduliQ[1], cyclOrder);

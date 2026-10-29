@@ -1,0 +1,2 @@
+sum 7 0
+histogram 8 0

@@ -1,0 +1,8 @@
+[package]
+name="original-rotation-inspect"
+version="0.1.0"
+edition="2024"
+[dependencies]
+fhe-prio3={path="../../count-openfhe142/fhe-prio3"}
+serde_json="1"
+[workspace]

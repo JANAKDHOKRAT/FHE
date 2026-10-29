@@ -1,0 +1,173 @@
+{
+  "status": "RESEARCH_EVIDENCE_SUMMARY",
+  "cases": [
+    {
+      "task": "count",
+      "length": 1,
+      "status": "FINITE_ENCRYPTED_QUALIFICATION_PASS",
+      "report_bytes": 5578879,
+      "evaluation_key_bytes": 199258085,
+      "reference_lookup_evaluation_key_bytes": 242261163,
+      "reports": 5,
+      "slot_checks": 16,
+      "depth": 17,
+      "raw_log": "optimization/original-encoding65537-rotation-plan/evidence/low-count-1.jsonl",
+      "raw_log_sha256": "38564827da88f3c07ffd5d352cd3e4f47367c6cfb65c790a51392630b8e16b7e",
+      "reference": {
+        "raw_log": "optimbgv/full-cost142/evidence/bgv-count-1.jsonl",
+        "raw_log_sha256": "85d172faf68dba3c062e296b711794694b9e8b83dc87ea2312a4253e640b4265",
+        "report_bytes": 6176895,
+        "note": "Different encodings/profiles; Count reference packs four groups, new Count is per report"
+      },
+      "production_qualified": false
+    },
+    {
+      "task": "sum",
+      "length": 7,
+      "status": "FINITE_ENCRYPTED_QUALIFICATION_PASS",
+      "report_bytes": 6340735,
+      "evaluation_key_bytes": 726766219,
+      "reference_lookup_evaluation_key_bytes": 1776581938,
+      "reports": 5,
+      "slot_checks": 46,
+      "depth": 19,
+      "raw_log": "optimization/original-encoding65537-rotation-plan/evidence/low-sum-7.jsonl",
+      "raw_log_sha256": "825d917608f106915c0c5cbec7e3b128427aea30c726e8e462e1fe5769a8f891",
+      "reference": {
+        "raw_log": "optimbgv/full-cost142/evidence/bgv-sum-1.jsonl",
+        "raw_log_sha256": "5c40e0a741f471f2c891597434b386b82ae5e688ea0cf6d4dd5df25161b1b8bb",
+        "report_bytes": 6176895,
+        "note": "Different encodings/profiles; Count reference packs four groups, new Count is per report"
+      },
+      "production_qualified": false
+    },
+    {
+      "task": "histogram",
+      "length": 3,
+      "status": "FINITE_ENCRYPTED_QUALIFICATION_PASS",
+      "report_bytes": 5881983,
+      "evaluation_key_bytes": 660697159,
+      "reference_lookup_evaluation_key_bytes": 1211305863,
+      "reports": 5,
+      "slot_checks": 26,
+      "depth": 18,
+      "raw_log": "optimization/original-encoding65537-rotation-plan/evidence/low-histogram-3.jsonl",
+      "raw_log_sha256": "13140325c475e99fa1a9b3311ef8b8427db5e5e9d0732be795d9df86de879ee6",
+      "reference": {
+        "raw_log": "optimbgv/full-cost142/evidence/bgv-histogram-3.jsonl",
+        "raw_log_sha256": "593cabba7b02a9abe1ece18b5c829b5cd909077cb5a1f3ce083ec82bd0c79a84",
+        "report_bytes": 6176895,
+        "note": "Different encodings/profiles; Count reference packs four groups, new Count is per report"
+      },
+      "production_qualified": false
+    },
+    {
+      "task": "sumvec",
+      "length": 10,
+      "status": "FINITE_ENCRYPTED_QUALIFICATION_PASS",
+      "report_bytes": 6652031,
+      "evaluation_key_bytes": 795981403,
+      "reference_lookup_evaluation_key_bytes": 2261104288,
+      "reports": 5,
+      "slot_checks": 61,
+      "depth": 20,
+      "raw_log": "optimization/original-encoding65537-rotation-plan/evidence/low-sumvec-10.jsonl",
+      "raw_log_sha256": "c59a4e23f7784e93ab5b548e80ab8e99d8b3295c4ff76ece90e47cd1da1a90ab",
+      "reference": {
+        "raw_log": "optimbgv/full-cost142/evidence/bgv-sumvec-10.jsonl",
+        "raw_log_sha256": "3a3f60f2fe767bb4a8ba2a0d420df5af711bfbee39dc29ae6d2105fde22089a2",
+        "report_bytes": 6176895,
+        "note": "Different encodings/profiles; Count reference packs four groups, new Count is per report"
+      },
+      "production_qualified": false
+    },
+    {
+      "task": "sumvec",
+      "length": 25,
+      "status": "FINITE_ENCRYPTED_QUALIFICATION_PASS",
+      "report_bytes": 7086207,
+      "evaluation_key_bytes": 2219081020,
+      "reference_lookup_evaluation_key_bytes": 2261104288,
+      "reports": 5,
+      "slot_checks": 136,
+      "depth": 21,
+      "raw_log": "optimization/original-encoding65537-rotation-plan/evidence/vector-25.jsonl",
+      "raw_log_sha256": "9aa6d1bb3d34fb29be837dcda18eef0f937136dab0764490c95ce9f3e4c12f3b",
+      "reference": {
+        "raw_log": "optimbgv/full-cost142/evidence/bgv-sumvec-25.jsonl",
+        "raw_log_sha256": "ca48a20ed7ef3be0563698458bcf4830a2362fd50e7623eea530524fa834db76",
+        "report_bytes": 6176895,
+        "note": "Different encodings/profiles; Count reference packs four groups, new Count is per report"
+      },
+      "production_qualified": false
+    },
+    {
+      "task": "sumvec",
+      "length": 50,
+      "status": "FINITE_ENCRYPTED_QUALIFICATION_PASS",
+      "report_bytes": 7389311,
+      "evaluation_key_bytes": 4228417619,
+      "reference_lookup_evaluation_key_bytes": 6783150432,
+      "reports": 5,
+      "slot_checks": 261,
+      "depth": 22,
+      "raw_log": "optimization/original-encoding65537-rotation-plan/evidence/vector-50.jsonl",
+      "raw_log_sha256": "80afd7bfc810c29000481a53d22769bbfd7f52277c335b433ff143758fcf6d08",
+      "reference": {
+        "raw_log": "optimbgv/full-cost142/evidence/bgv-sumvec-50.jsonl",
+        "raw_log_sha256": "555f75ad7449369f7dec5703a48b841286b480e5ad6afc2f3d5f18bcfbc32571",
+        "report_bytes": 6496383,
+        "note": "Different encodings/profiles; Count reference packs four groups, new Count is per report"
+      },
+      "production_qualified": false
+    },
+    {
+      "task": "histogram",
+      "length": 8,
+      "status": "FINITE_ENCRYPTED_QUALIFICATION_PASS",
+      "report_bytes": 6488191,
+      "evaluation_key_bytes": 795981379,
+      "reference_lookup_evaluation_key_bytes": 1211305863,
+      "reports": 5,
+      "slot_checks": 51,
+      "depth": 20,
+      "raw_log": "optimization/original-encoding65537-revisit/evidence/histogram-full-digits.jsonl",
+      "raw_log_sha256": "ffd607b60bab5b91c6a49ba59d8025a41b2257f8e95f0d674eedcc3bdf3a26d6",
+      "reference": {
+        "raw_log": "optimbgv/full-cost142/evidence/bgv-histogram-8.jsonl",
+        "raw_log_sha256": "8026e738707055f77389538f79fc95ce5add43733c6dac99594f0f6062b561cb",
+        "report_bytes": 6176895,
+        "note": "Different encodings/profiles; Count reference packs four groups, new Count is per report"
+      },
+      "production_qualified": false,
+      "provenance_note": "Prior run, not rerun for this table"
+    },
+    {
+      "task": "sumvec",
+      "length": 100,
+      "status": "FINITE_ENCRYPTED_QUALIFICATION_PASS",
+      "report_bytes": 7405695,
+      "evaluation_key_bytes": 6397146236,
+      "reference_lookup_evaluation_key_bytes": 7429158368,
+      "reports": 4,
+      "slot_checks": 430,
+      "depth": 23,
+      "raw_log": "optimization/original-encoding65537-rotation-plan/prime-diagnostic/vector100-late.jsonl",
+      "raw_log_sha256": "f0e9aed5eb81467818b2e4ea8416c001c884a9eef8d9761315e3b475eaf7763e",
+      "reference": {
+        "raw_log": "optimbgv/full-cost142/evidence/bgv-sumvec-100.jsonl",
+        "raw_log_sha256": "5eea40d01966467e401a5e3fdf0a6404eaf1cd1e8ec505d8bc70d0a87678ced5",
+        "report_bytes": 6815871,
+        "note": "Different encodings/profiles; Count reference packs four groups, new Count is per report"
+      },
+      "production_qualified": false,
+      "aggregate_wire_bytes": 557116,
+      "aggregate_ciphertexts": 1,
+      "rust_aggregate_codec_checked": true,
+      "legacy_wrapper_status_mismatch": true
+    }
+  ],
+  "library_target": "HEStd_128_classic",
+  "encryption_security_proven": false,
+  "production_security_gate": "NOT GREEN"
+}

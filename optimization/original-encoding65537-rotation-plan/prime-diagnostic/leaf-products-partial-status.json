@@ -1,0 +1,6 @@
+{
+  "status": "STOPPED_INCOMPLETE_SUPERSEDED",
+  "reason": "Reuse canonical shifted windows rather than rebuilding each window from shifted leaves. Same field function, parameters, key set and declared budgets. No full task pass claimed.",
+  "reports_completed": 0,
+  "checks": 52
+}

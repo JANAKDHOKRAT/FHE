@@ -1,0 +1,9 @@
+{
+  "status": "ACTUAL_CONTEXT_BOUND_CHECK_PASS",
+  "actual_Q_bits": 881,
+  "all_primes_verified": true,
+  "all_stated_noise_bounds_preserved": true,
+  "full_encryption_security_proven": false,
+  "complete_noise_failure_theorem_proven": false,
+  "encrypted_circuit_tested": false
+}

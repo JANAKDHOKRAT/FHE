@@ -1,0 +1,27 @@
+{
+  "date": "2026-10-30",
+  "sources": {
+    "optimization/original-encoding65537-rotation-plan/prime-diagnostic/vector100-late-shared.cpp": {
+      "sha256": "7d5388d3171ebea6328508e07b8b73c0f8573c12553024dc7e6a11fa063ee632",
+      "review_scope": "Selected relevant code/sections, not full-library audit"
+    },
+    "optimization/original-encoding65537-rotation-plan/check_math.py": {
+      "sha256": "93a99ea65f05252a10a978fd28f602a20384c8231795e283cd6c1186d690b6b1",
+      "review_scope": "Selected relevant code/sections, not full-library audit"
+    },
+    "optimization/original-encoding65537-rotation-plan/MATHEMATICS.md": {
+      "sha256": "42aca2cd644dcc85a2db4711a156158d1a1bf4abfed82e50bf759877a66c9163",
+      "review_scope": "Selected relevant code/sections, not full-library audit"
+    },
+    "/workspace/fhe-validation/universal-math-review/HElib/src/keySwitching.cpp": {
+      "sha256": "417aa30c709354952c527d33acb812802f7b6e1bedb2b585aec7d847f647e413",
+      "review_scope": "Selected relevant code/sections, not full-library audit"
+    },
+    "/workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp": {
+      "sha256": "8a19f599d2703c7055a7dfe231f9cf6dd6de12d7432336eb665b86ba63c64f88",
+      "review_scope": "Selected relevant code/sections, not full-library audit"
+    }
+  },
+  "fresh_web_access": "OpenAlex and IACR ePrint requests failed403, including retries",
+  "independent_external_peer_review": false
+}

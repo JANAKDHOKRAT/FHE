@@ -1,0 +1,104 @@
+[
+  {
+    "K": 25,
+    "keys": [
+      1,
+      8,
+      -8
+    ],
+    "maximum_rotations": 10,
+    "key_switch_budget": 11
+  },
+  {
+    "K": 25,
+    "keys": [
+      -16,
+      -4,
+      -1,
+      1,
+      4,
+      16
+    ],
+    "maximum_rotations": 4,
+    "key_switch_budget": 5
+  },
+  {
+    "K": 25,
+    "keys": [
+      -16,
+      -1,
+      1,
+      16
+    ],
+    "maximum_rotations": 9,
+    "key_switch_budget": 10
+  },
+  {
+    "K": 50,
+    "keys": [
+      1,
+      8,
+      -8
+    ],
+    "maximum_rotations": 14,
+    "key_switch_budget": 15
+  },
+  {
+    "K": 50,
+    "keys": [
+      -16,
+      -4,
+      -1,
+      1,
+      4,
+      16
+    ],
+    "maximum_rotations": 6,
+    "key_switch_budget": 7
+  },
+  {
+    "K": 50,
+    "keys": [
+      -16,
+      -1,
+      1,
+      16
+    ],
+    "maximum_rotations": 10,
+    "key_switch_budget": 11
+  },
+  {
+    "K": 100,
+    "keys": [
+      1,
+      8,
+      -8
+    ],
+    "maximum_rotations": 20,
+    "key_switch_budget": 21
+  },
+  {
+    "K": 100,
+    "keys": [
+      -16,
+      -4,
+      -1,
+      1,
+      4,
+      16
+    ],
+    "maximum_rotations": 9,
+    "key_switch_budget": 10
+  },
+  {
+    "K": 100,
+    "keys": [
+      -16,
+      -1,
+      1,
+      16
+    ],
+    "maximum_rotations": 13,
+    "key_switch_budget": 14
+  }
+]

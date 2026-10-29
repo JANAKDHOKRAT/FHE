@@ -1,0 +1,17 @@
+{
+  "date": "2026-10-30",
+  "clean_checkout_base": "1b5dc5ff37e3c0541a854bdcc7dd4673cc1ff999",
+  "native_sources_unchanged": true,
+  "recorded_cases_verified": 8,
+  "reports": 39,
+  "full_slot_checks": 1027,
+  "ideal_field_and_schedules": "PASS",
+  "rational_actual_moduli_bounds": "PASS",
+  "rust_codec_rebuilt_from_clean_checkout": "FULL_CODEC_PASS",
+  "public_fixture_aggregate_bytes": 557116,
+  "negative_codec_cases": 7,
+  "retained_histogram8_cpp_syntax": "PASS",
+  "native_encrypted_experiments_rerun": false,
+  "production_security_certified": false,
+  "publication_scope": "Research snapshot only; unresolved security limitations retained"
+}

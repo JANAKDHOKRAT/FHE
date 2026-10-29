@@ -1,0 +1,3 @@
+-- Install configuration: "Release"
+-- Installing: /workspace/fhe-deps/install-bound-prime-study/lib/libOPENFHEpke.so.1.4.2
+-- Set non-toolchain portion of runtime path of "/workspace/fhe-deps/install-bound-prime-study/lib/libOPENFHEpke.so.1.4.2" to ""

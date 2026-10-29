@@ -1,0 +1,4 @@
+count 1 0
+histogram 3 0
+sumvec 10 0
+sum 7 0

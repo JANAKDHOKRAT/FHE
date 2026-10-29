@@ -1,0 +1,17 @@
+{
+  "keys": [
+    1,
+    8,
+    -11
+  ],
+  "post_depth": 6,
+  "offsets_per_root": 72,
+  "centers": [
+    0,
+    66,
+    -67,
+    -63,
+    70
+  ],
+  "roots": 5
+}

@@ -1,0 +1,15 @@
+{
+  "command": [
+    "/workspace/fhe-validation/original-low-dimensions",
+    "count",
+    "1"
+  ],
+  "returncode": 0,
+  "final_pass_record": true,
+  "expected_status": "EXPLORATORY_TASK_PASS",
+  "wall_seconds": 51.971967668003344,
+  "user_seconds": 44.876921,
+  "system_seconds": 5.818149,
+  "process_peak_rss_kib": 694296,
+  "scope": "all simulated roles, setup and diagnostics included; not isolated server RAM"
+}

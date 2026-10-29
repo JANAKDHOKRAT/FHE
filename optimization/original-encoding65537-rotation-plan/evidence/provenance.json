@@ -1,0 +1,29 @@
+{
+  "repository_HEAD": "1b5dc5ff37e3c0541a854bdcc7dd4673cc1ff999",
+  "sources": {
+    "vector.cpp": "f7844c78d79411f6fd0091f27a93ea869399bcde3e382db2eaa865c4f77889ef",
+    "low_dimensions.cpp": "fa61bfde5651873d5dc049cbc4088a4c03a6a9947ded8a27f7800ed1280db2cc",
+    "prime-diagnostic/vector100-shared-windows.cpp": "9c35b20d502879e1d1221557398a8884ec196c948cec893af09e1c3cc0ef3f6f",
+    "prime-diagnostic/openfhe-bound-primes.patch": "1c813a8bf0ff1642f726c8c210cb9d34385ef231b7aa53cc2010780ae916bbf3",
+    "prime-diagnostic/vector100-late-shared.cpp": "7d5388d3171ebea6328508e07b8b73c0f8573c12553024dc7e6a11fa063ee632",
+    "build.sh": "0131bcc49f58993c8d8a62d741d440fee64652a9c7b06124295390c2986c4019",
+    "native_checks.h": "3ae1ace69fbbae8e4636eccd1c9f31e2441c20e73fb26ced14bc28b7d4b01ae6",
+    "packed.h": "480330abc0fb4bd26d714f8381fa0aeb6bb788b6ec6ef35acb6651c4b459b9ca",
+    "check_math.py": "93a99ea65f05252a10a978fd28f602a20384c8231795e283cd6c1186d690b6b1",
+    "prime-diagnostic/bounds.py": "5d2e0a5c990b93644f62da5c231b6c556afc5273b7155878cf89aa312444c492",
+    "prime-diagnostic/check_context_fast.py": "429cfb802ea4500b090e40c6bfd2c149722e97f4fa0b2ea533e16392d6755e13"
+  },
+  "binaries": {
+    "/workspace/fhe-validation/rotation-plan-vector": "7e05e4dcee7a05ed248266f7f29c1387888fc82dba3402b9736bb07d2d11cbec",
+    "/workspace/fhe-validation/original-low-dimensions": "ca8a39a77155eed43f57e512d7fccdaa28a31e331090932166e64ba8adc077f9",
+    "/workspace/fhe-validation/bound-prime-vector100-shared": "7424e01affd9a8da554ceb3aa37c1dd6c0b5339b6d4b20f3b021035aa365964a",
+    "/workspace/fhe-validation/bound-prime-vector100-late": "2d5fbef1a515e4fbdfb1a7c23cd3d022260765408d0a7dfc1ea600aa09f1c05a"
+  },
+  "stock_OpenFHE": "aa391988d354d4360f390f223a90e0d1b98839d7",
+  "prototype_status": "RESEARCH_NOT_PRODUCTION_CERTIFIED",
+  "p": 65537,
+  "ring": 32768,
+  "unused_slots": "ignored; tested with hostile values",
+  "measured_binary_compiler_flags": "Not fully captured for the original measured binaries; build.sh records the reproduction flags.",
+  "active_selected_log": "prime-diagnostic/vector100-late.jsonl"
+}

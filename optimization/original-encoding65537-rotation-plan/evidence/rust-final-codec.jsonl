@@ -1,0 +1,1 @@
+{"aggregate_checked":true,"collector_output_bytes":557116,"negative_parser_cases":7,"report_bytes":7405695,"scope":"unchanged Rust wire parsing and byte-exact reencoding; no encrypted/security proof rerun","status":"FULL_CODEC_PASS"}

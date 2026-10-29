@@ -1,0 +1,18 @@
+{"depth":21,"adds":1,"digit":4,"status":"PARAMETERS_ONLY"}
+{"depth":21,"adds":1,"digit":8,"status":"PARAMETERS_ONLY"}
+{"depth":21,"adds":1,"digit":12,"status":"PARAMETERS_ONLY"}
+{"depth":21,"adds":1,"digit":16,"status":"PARAMETERS_ONLY"}
+{"depth":21,"adds":1,"digit":20,"status":"PARAMETERS_ONLY"}
+{"depth":21,"adds":1,"digit":24,"status":"PARAMETERS_ONLY"}
+{"depth":22,"adds":1,"digit":4,"status":"PARAMETERS_ONLY"}
+{"depth":22,"adds":1,"digit":8,"status":"PARAMETERS_ONLY"}
+{"depth":22,"adds":1,"digit":12,"status":"PARAMETERS_ONLY"}
+{"depth":22,"adds":1,"digit":16,"status":"PARAMETERS_ONLY"}
+{"depth":22,"adds":1,"digit":20,"status":"PARAMETERS_ONLY"}
+{"depth":22,"adds":1,"digit":24,"status":"REFUSED","reason":"/workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.72:computeRingDimension(): The specified ring dimension (32768) does not comply with HE standards recommendation (65536)."}
+{"depth":23,"adds":1,"digit":4,"status":"REFUSED","reason":"/workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.72:computeRingDimension(): The specified ring dimension (32768) does not comply with HE standards recommendation (65536)."}
+{"depth":23,"adds":1,"digit":8,"status":"REFUSED","reason":"/workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.72:computeRingDimension(): The specified ring dimension (32768) does not comply with HE standards recommendation (65536)."}
+{"depth":23,"adds":1,"digit":12,"status":"REFUSED","reason":"/workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.72:computeRingDimension(): The specified ring dimension (32768) does not comply with HE standards recommendation (65536)."}
+{"depth":23,"adds":1,"digit":16,"status":"REFUSED","reason":"/workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.72:computeRingDimension(): The specified ring dimension (32768) does not comply with HE standards recommendation (65536)."}
+{"depth":23,"adds":1,"digit":20,"status":"REFUSED","reason":"/workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.72:computeRingDimension(): The specified ring dimension (32768) does not comply with HE standards recommendation (65536)."}
+{"depth":23,"adds":1,"digit":24,"status":"REFUSED","reason":"/workspace/fhe-deps/openfhe-1.4.2/src/pke/lib/scheme/bgvrns/bgvrns-parametergeneration.cpp:l.72:computeRingDimension(): The specified ring dimension (32768) does not comply with HE standards recommendation (65536)."}

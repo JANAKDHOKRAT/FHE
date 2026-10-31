@@ -27,9 +27,8 @@
 //! sum restricted to the output coefficients `0 .. output_len`.
 use crate::bitvec::{BitVec, mul_bits_map};
 use crate::codec::ResidueCodec;
-use crate::{Error, Field, PLAIN_MOD, Result};
+use crate::{Error, FheField, Field, PLAIN_MOD, Result};
 use openfhe_tbgv_rs::{Ciphertext, Context, PartialDecryption, PublicKey, SecretShare, keygen_first, keygen_next, verify_linear_rebuild_once};
-use prio::field::{FieldElement, FieldElementWithInteger};
 use prio::flp::types::Count;
 use prio::flp::{Flp, Type};
 use prio::vdaf::xof::{IntoFieldVec, Xof, XofTurboShake128};
@@ -60,32 +59,32 @@ pub const FLOODING_SLACK_BITS: u32 = 20;
 pub const DIGIT_SIZE: u32 = 30;
 
 pub(crate) fn to_u64(x: Field) -> u64 {
-    u64::from(u32::from(x))
+    x.to_u64()
 }
 pub(crate) fn from_u64(v: u64) -> Field {
-    Field::from(u32::try_from(v).expect("value below p < 2^32"))
+    <Field as FheField>::from_u64(v)
 }
 
 /// The FLP types this protocol runs. A type may give its verifier map in
 /// closed form (checked against `Flp::query` at random points by
 /// `Task::new`); otherwise `Task::linear_map` reads it off `Flp::query`
 /// column by column, which costs `|input| + |proof| + 1` queries per proof.
-pub trait VerifierMap: Type<Field = Field> + Sync {
+pub trait VerifierMap<F: FheField>: Type<Field = F> + Sync {
     /// Rows over `input || proof` and constants, for one proof's query
     /// randomness.
-    fn closed_form(&self, _query_rand: &[Field]) -> Option<(Vec<Vec<Field>>, Vec<Field>)> {
+    fn closed_form(&self, _query_rand: &[F]) -> Option<(Vec<Vec<F>>, Vec<F>)> {
         None
     }
 }
 
-impl VerifierMap for Count<Field> {
-    fn closed_form(&self, query_rand: &[Field]) -> Option<(Vec<Vec<Field>>, Vec<Field>)> {
+impl<F: FheField> VerifierMap<F> for Count<F> {
+    fn closed_form(&self, query_rand: &[F]) -> Option<(Vec<Vec<F>>, Vec<F>)> {
         Some(mul_bits_map(1, false, query_rand))
     }
 }
 
-impl VerifierMap for BitVec<Field> {
-    fn closed_form(&self, query_rand: &[Field]) -> Option<(Vec<Vec<Field>>, Vec<Field>)> {
+impl<F: FheField> VerifierMap<F> for BitVec<F> {
+    fn closed_form(&self, query_rand: &[F]) -> Option<(Vec<Vec<F>>, Vec<F>)> {
         Some(mul_bits_map(self.calls(), self.calls() > 1, query_rand))
     }
 }
@@ -146,14 +145,15 @@ impl Layout {
 /// The FLP side of a task, shared by the threshold [`Task`] and the
 /// one-aggregator [`crate::single::SingleTask`]: the type, the proofs, where
 /// everything sits in the plaintext polynomial, and the verifier.
-pub struct FlpPlan<T: VerifierMap> {
+pub struct FlpPlan<F: FheField, T: VerifierMap<F>> {
+    _field: std::marker::PhantomData<F>,
     typ: T,
     task_id: [u8; 32],
     num_proofs: usize,
     layout: Layout,
 }
 
-impl<T: VerifierMap> FlpPlan<T> {
+impl<F: FheField, T: VerifierMap<F>> FlpPlan<F, T> {
     /// Refused: zero or more than `MAX_PROOFS` proofs; types that need joint
     /// randomness (input and proof share one ciphertext, so there is no
     /// input commitment to derive it from; see `bitvec` for a circuit without
@@ -170,18 +170,32 @@ impl<T: VerifierMap> FlpPlan<T> {
         if typ.output_len() != typ.input_len() {
             return Err(Error::Protocol("the aggregate must be the encoded input (output_len == input_len)".into()));
         }
-        let probe: Vec<Field> = (0..typ.input_len() as u32)
-            .map(|i| Field::from(i.wrapping_mul(2_654_435_761) % 1_000_003))
-            .collect();
+        let probe: Vec<F> = (0..typ.input_len() as u64).map(|i| F::from_u64(i * 2_654_435_761 % F::PLAIN_MOD)).collect();
         if typ.truncate(probe.clone())? != probe {
             return Err(Error::Protocol("truncate must be the identity".into()));
         }
-        if u64::from(Field::modulus()) != PLAIN_MOD {
+        if u64::from(F::modulus()) != F::PLAIN_MOD {
             return Err(Error::Protocol("field and plaintext modulus differ".into()));
+        }
+        // prio's NTT unwraps F::root(..): the largest transform of a gadget
+        // with wire length W doubles the wire polynomials' evaluations to 2W,
+        // which needs a root of unity of order 2W. FieldPrio2 has them up to
+        // 2^20, GF(65537) up to 2^16 (measured with prio 0.18.1: W = 2^15
+        // proves and verifies, W = 2^16 panics in ntt.rs). Refuse instead.
+        for g in typ.gadget() {
+            let w = (1 + g.calls()).next_power_of_two();
+            if F::root((2 * w).trailing_zeros() as usize).is_none() {
+                return Err(Error::Protocol(format!(
+                    "a gadget with {} calls needs roots of unity of order {} that this field lacks",
+                    g.calls(),
+                    2 * w
+                )));
+            }
         }
         let layout = Layout::new(&typ, num_proofs, ring)?;
         check_closed_form(&typ)?;
         Ok(Self {
+            _field: std::marker::PhantomData,
             typ,
             task_id,
             num_proofs,
@@ -198,12 +212,12 @@ impl<T: VerifierMap> FlpPlan<T> {
 
     /// `z = input || proof_1 || .. || proof_k`, each proof from prio's
     /// unchanged `Flp::prove` with fresh randomness.
-    pub(crate) fn prove(&self, input: &[Field]) -> Result<Vec<Field>> {
+    pub(crate) fn prove(&self, input: &[F]) -> Result<Vec<F>> {
         let typ = &self.typ;
         let k = self.num_proofs;
         let mut seed = [0u8; 32];
         OsRng.fill_bytes(&mut seed);
-        let prove_rands: Vec<Field> = XofTurboShake128::seed_stream(&seed, &[DST_PROVE, &self.task_id], &[&[k as u8]]).into_field_vec(typ.prove_rand_len() * k);
+        let prove_rands: Vec<F> = XofTurboShake128::seed_stream(&seed, &[DST_PROVE, &self.task_id], &[&[k as u8]]).into_field_vec(typ.prove_rand_len() * k);
         let mut z = input.to_vec();
         for p in 0..k {
             let pr = &prove_rands[p * typ.prove_rand_len()..(p + 1) * typ.prove_rand_len()];
@@ -213,7 +227,7 @@ impl<T: VerifierMap> FlpPlan<T> {
     }
 
     /// Prio3's `decide` on every proof's verifier.
-    pub(crate) fn decide(&self, verifier: &[Field]) -> Result<bool> {
+    pub(crate) fn decide(&self, verifier: &[F]) -> Result<bool> {
         let v = self.layout.verifier_len;
         if verifier.len() != self.layout.num_rows() {
             return Err(Error::Protocol("verifier has the wrong length".into()));
@@ -226,7 +240,7 @@ impl<T: VerifierMap> FlpPlan<T> {
     }
 
     /// Query randomness for every proof of one report (see the module docs).
-    pub fn query_rands(&self, verify_key: &[u8; 32], report: &[u8]) -> Result<Vec<Vec<Field>>> {
+    pub fn query_rands(&self, verify_key: &[u8; 32], report: &[u8]) -> Result<Vec<Vec<F>>> {
         if report.len() < NONCE_LEN {
             return Err(Error::Codec("report shorter than its nonce".into()));
         }
@@ -238,7 +252,7 @@ impl<T: VerifierMap> FlpPlan<T> {
         // Each gadget point is rejected with probability below 2^-11 for
         // calls < 2^20, so 64 spare elements per proof make running out
         // impossible in practice; it is still an error, not a panic.
-        let pool: Vec<Field> = XofTurboShake128::seed_stream(verify_key, &[DST_QUERY, &self.task_id], &[&[k as u8], &report[..NONCE_LEN], &digest])
+        let pool: Vec<F> = XofTurboShake128::seed_stream(verify_key, &[DST_QUERY, &self.task_id], &[&[k as u8], &report[..NONCE_LEN], &digest])
             .into_field_vec(k * (qlen + 64));
         let mut it = pool.into_iter();
         let mut out = Vec::with_capacity(k);
@@ -247,7 +261,7 @@ impl<T: VerifierMap> FlpPlan<T> {
             for i in 0..qlen {
                 loop {
                     let r = it.next().ok_or_else(|| Error::Protocol("query randomness exhausted".into()))?;
-                    if i >= compress && r.pow(wire_orders[i - compress]) == Field::one() {
+                    if i >= compress && r.pow(wire_orders[i - compress]) == F::one() {
                         continue;
                     }
                     qr.push(r);
@@ -264,14 +278,14 @@ impl<T: VerifierMap> FlpPlan<T> {
     /// read off `Flp::query` column by column. `query` is affine in
     /// `(input, proof)` for fixed randomness and `num_shares`
     /// (`tests/protocol.rs` checks both paths on random points).
-    pub fn linear_map(&self, query_rands: &[Vec<Field>]) -> Result<(Vec<Vec<Field>>, Vec<Field>)> {
+    pub fn linear_map(&self, query_rands: &[Vec<F>]) -> Result<(Vec<Vec<F>>, Vec<F>)> {
         let l = &self.layout;
         let (il, pl, v) = (l.input_len, l.proof_len, l.verifier_len);
         if query_rands.len() != l.num_proofs {
             return Err(Error::Protocol("one query randomness per proof".into()));
         }
-        let mut rows = vec![vec![Field::zero(); l.z_len]; l.num_rows()];
-        let mut constants = vec![Field::zero(); l.num_rows()];
+        let mut rows = vec![vec![F::zero(); l.z_len]; l.num_rows()];
+        let mut constants = vec![F::zero(); l.num_rows()];
         for (p, qr) in query_rands.iter().enumerate() {
             let Some((local, c)) = self.typ.closed_form(qr) else {
                 return self.linear_map_by_query(query_rands);
@@ -287,10 +301,10 @@ impl<T: VerifierMap> FlpPlan<T> {
 
     /// [`Self::linear_map`] read off `Flp::query` column by column, for
     /// types without a closed form (and to test closed forms).
-    pub fn linear_map_by_query(&self, query_rands: &[Vec<Field>]) -> Result<(Vec<Vec<Field>>, Vec<Field>)> {
+    pub fn linear_map_by_query(&self, query_rands: &[Vec<F>]) -> Result<(Vec<Vec<F>>, Vec<F>)> {
         let l = &self.layout;
         let (il, pl, v) = (l.input_len, l.proof_len, l.verifier_len);
-        let zero = Field::zero();
+        let zero = F::zero();
         let mut rows = vec![vec![zero; l.z_len]; l.num_rows()];
         let mut constants = vec![zero; l.num_rows()];
         let zin = vec![zero; il];
@@ -299,7 +313,7 @@ impl<T: VerifierMap> FlpPlan<T> {
             let c = self.typ.query(&zin, &zpf, qr, &[], 1)?;
             for j in 0..il {
                 let mut x = zin.clone();
-                x[j] = Field::one();
+                x[j] = F::one();
                 let col = self.typ.query(&x, &zpf, qr, &[], 1)?;
                 for r in 0..v {
                     rows[p * v + r][j] = col[r] - c[r];
@@ -307,7 +321,7 @@ impl<T: VerifierMap> FlpPlan<T> {
             }
             for j in 0..pl {
                 let mut y = zpf.clone();
-                y[j] = Field::one();
+                y[j] = F::one();
                 let col = self.typ.query(&zin, &y, qr, &[], 1)?;
                 for r in 0..v {
                     rows[p * v + r][il + p * pl + j] = col[r] - c[r];
@@ -321,21 +335,21 @@ impl<T: VerifierMap> FlpPlan<T> {
     /// Plaintext polynomial whose product with `z(X)` holds `<rows[j], z>` at
     /// coefficient `j * |z|`: row `j` reversed and shifted, with `X^-i =
     /// -X^(N-i)`. Rows of one group never alias (`rows.len() * |z| <= N`).
-    pub fn query_poly(&self, rows: &[Vec<Field>]) -> Vec<u64> {
+    pub fn query_poly(&self, rows: &[Vec<F>]) -> Vec<u64> {
         let (n, zl) = (self.layout.ring as i64, self.layout.z_len as i64);
         let mut q = vec![0u64; n as usize];
         for (j, row) in rows.iter().enumerate() {
             for (i, &c) in row.iter().enumerate() {
-                let c = to_u64(c);
+                let c = c.to_u64();
                 if c == 0 {
                     continue;
                 }
                 let pos = j as i64 * zl - i as i64;
                 if pos >= 0 {
-                    q[pos as usize] = (q[pos as usize] + c) % PLAIN_MOD;
+                    q[pos as usize] = (q[pos as usize] + c) % F::PLAIN_MOD;
                 } else {
                     let w = (n + pos) as usize;
-                    q[w] = (q[w] + PLAIN_MOD - c) % PLAIN_MOD;
+                    q[w] = (q[w] + F::PLAIN_MOD - c) % F::PLAIN_MOD;
                 }
             }
         }
@@ -344,8 +358,8 @@ impl<T: VerifierMap> FlpPlan<T> {
 }
 
 /// Everything all parties agree on for one aggregation task.
-pub struct Task<T: VerifierMap> {
-    plan: FlpPlan<T>,
+pub struct Task<T: VerifierMap<Field>> {
+    plan: FlpPlan<Field, T>,
     params: TaskParams,
     ctx: Context,
     /// Residues of fresh ciphertexts and of the sum (all towers).
@@ -355,7 +369,7 @@ pub struct Task<T: VerifierMap> {
     share_codec: ResidueCodec,
 }
 
-impl<T: VerifierMap> Task<T> {
+impl<T: VerifierMap<Field>> Task<T> {
     /// Creates the task: the FLP type, its parameters, and the depth-0 BGV
     /// context (`p = 4293918721`, 128-bit HE-standard security; OpenFHE
     /// chooses ring 8192 for it).
@@ -440,12 +454,12 @@ impl<T: VerifierMap> Task<T> {
 /// fresh random query randomness and random `(input, proof)` (an affine map
 /// that differs anywhere differs at a random point with probability at
 /// least `1 - 1/p`), three times.
-fn check_closed_form<T: VerifierMap>(typ: &T) -> Result<()> {
+fn check_closed_form<F: FheField, T: VerifierMap<F>>(typ: &T) -> Result<()> {
     let (il, pl) = (typ.input_len(), typ.proof_len());
     for _ in 0..3 {
-        let qr: Vec<Field> = Field::random_vector(typ.query_rand_len());
+        let qr: Vec<F> = F::random_vector(typ.query_rand_len());
         let Some((rows, c)) = typ.closed_form(&qr) else { return Ok(()) };
-        let z: Vec<Field> = Field::random_vector(il + pl);
+        let z: Vec<F> = F::random_vector(il + pl);
         let want = match typ.query(&z[..il], &z[il..], &qr, &[], 1) {
             Ok(v) => v,
             Err(_) => continue, // a root of unity drawn: try other randomness
@@ -466,7 +480,7 @@ fn check_closed_form<T: VerifierMap>(typ: &T) -> Result<()> {
 /// a deployment party 0 runs `keygen_first` and each next party runs
 /// `keygen_next` on the public key it receives, each on its own machine;
 /// every party keeps its share.
-pub fn key_ceremony<T: VerifierMap>(task: &Task<T>) -> Result<(PublicKey, Vec<SecretShare>)> {
+pub fn key_ceremony<T: VerifierMap<Field>>(task: &Task<T>) -> Result<(PublicKey, Vec<SecretShare>)> {
     let (mut pk, s0) = keygen_first(&task.ctx)?;
     let mut shares = vec![s0];
     for _ in 1..task.params.num_aggregators {
@@ -477,12 +491,12 @@ pub fn key_ceremony<T: VerifierMap>(task: &Task<T>) -> Result<(PublicKey, Vec<Se
     Ok((pk, shares))
 }
 
-pub struct Client<'a, T: VerifierMap> {
+pub struct Client<'a, T: VerifierMap<Field>> {
     task: &'a Task<T>,
     pk: &'a PublicKey,
 }
 
-impl<'a, T: VerifierMap> Client<'a, T> {
+impl<'a, T: VerifierMap<Field>> Client<'a, T> {
     pub fn new(task: &'a Task<T>, pk: &'a PublicKey) -> Self {
         Self { task, pk }
     }
@@ -537,7 +551,7 @@ pub struct Verdict {
     pub reason: Option<String>,
 }
 
-pub struct Aggregator<'a, T: VerifierMap> {
+pub struct Aggregator<'a, T: VerifierMap<Field>> {
     task: &'a Task<T>,
     agg_id: usize,
     share: SecretShare,
@@ -548,7 +562,7 @@ pub struct Aggregator<'a, T: VerifierMap> {
     accepted: u64,
 }
 
-impl<'a, T: VerifierMap> Aggregator<'a, T> {
+impl<'a, T: VerifierMap<Field>> Aggregator<'a, T> {
     /// `verify_key` is secret to the aggregators (generated jointly, as
     /// Prio3's); the self-test of ciphertext rebuilding runs here.
     pub fn new(task: &'a Task<T>, agg_id: usize, share: SecretShare, joint_pk: &PublicKey, verify_key: [u8; 32]) -> Result<Self> {
@@ -683,12 +697,12 @@ impl<'a, T: VerifierMap> Aggregator<'a, T> {
     }
 }
 
-pub struct Collector<'a, T: VerifierMap> {
+pub struct Collector<'a, T: VerifierMap<Field>> {
     task: &'a Task<T>,
     template: PartialDecryption,
 }
 
-impl<'a, T: VerifierMap> Collector<'a, T> {
+impl<'a, T: VerifierMap<Field>> Collector<'a, T> {
     /// The collector holds no key share. Rebuilding the aggregators'
     /// restricted partials needs only their shape (context, level, towers,
     /// encoding), which a partial made under a throwaway key provides.

@@ -13,13 +13,13 @@ fn params(n: usize, k: usize) -> TaskParams {
     }
 }
 
-struct World<'a, T: VerifierMap> {
+struct World<'a, T: VerifierMap<Field>> {
     task: &'a Task<T>,
     aggs: Vec<Aggregator<'a, T>>,
     verify_key: [u8; 32],
 }
 
-fn world<T: VerifierMap>(task: &Task<T>) -> (openfhe_tbgv_rs::PublicKey, World<'_, T>) {
+fn world<T: VerifierMap<Field>>(task: &Task<T>) -> (openfhe_tbgv_rs::PublicKey, World<'_, T>) {
     let (pk, shares) = key_ceremony(task).unwrap();
     let verify_key = [42u8; 32];
     let aggs = shares
@@ -30,7 +30,7 @@ fn world<T: VerifierMap>(task: &Task<T>) -> (openfhe_tbgv_rs::PublicKey, World<'
     (pk, World { task, aggs, verify_key })
 }
 
-impl<T: VerifierMap> World<'_, T> {
+impl<T: VerifierMap<Field>> World<'_, T> {
     /// Runs one report through every aggregator; returns every verdict.
     fn submit(&mut self, report: &[u8]) -> Vec<Verdict> {
         let mut states = Vec::new();
@@ -295,7 +295,7 @@ impl Type for WithJointRand {
         self.0.output_len()
     }
 }
-impl VerifierMap for WithJointRand {}
+impl VerifierMap<Field> for WithJointRand {}
 
 #[test]
 fn unsupported_tasks_are_refused() {

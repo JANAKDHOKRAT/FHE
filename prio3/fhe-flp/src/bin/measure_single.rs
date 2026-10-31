@@ -1,13 +1,16 @@
 //! The one-aggregator protocol end to end in one process: sizes and times.
 //!
-//!   measure_single count  [--reports R] [--proofs k]
-//!   measure_single bitvec --len L [--reports R] [--proofs k]
+//!   measure_single count  [--field prio2|65537] [--reports R] [--proofs k]
+//!   measure_single bitvec --len L [--field prio2|65537] [--reports R] [--proofs k]
 //!
-//! The default number of proofs is the fewest reaching soundness 2^-128.
+//! `--field` picks the FLP field and BGV plaintext modulus (default prio2,
+//! p = 4293918721). The default number of proofs is the fewest reaching
+//! soundness 2^-128 in that field.
 use fhe_flp::bitvec::BitVec;
+use fhe_flp::f65537::Field65537;
 use fhe_flp::single::{Evaluator, SingleClient, SingleCollector, SingleTask};
 use fhe_flp::soundness::proofs_for;
-use fhe_flp::{Field, PLAIN_MOD, VerifierMap};
+use fhe_flp::{FheField, Field, VerifierMap};
 use prio::flp::types::Count;
 use std::time::{Duration, Instant};
 
@@ -18,7 +21,7 @@ fn ms(d: Duration) -> f64 {
     d.as_secs_f64() * 1e3
 }
 
-fn run<T: VerifierMap>(
+fn run<F: FheField, T: VerifierMap<F>>(
     name: &str,
     typ: T,
     ms_of: impl Fn(usize) -> T::Measurement,
@@ -62,10 +65,11 @@ fn run<T: VerifierMap>(
     let per = |d: Duration| ms(d) / reports as f64;
     let l = task.layout();
     println!(
-        "{{\"type\":\"{name}\",\"mode\":\"one-aggregator\",\"proofs\":{k},\"reports\":{reports},\"ring\":{},\"log2_q\":{:.1},\"z_len\":{},\"groups\":{},\
+        "{{\"type\":\"{name}\",\"mode\":\"one-aggregator\",\"p\":{},\"proofs\":{k},\"reports\":{reports},\"ring\":{},\"log2_q\":{:.1},\"z_len\":{},\"groups\":{},\
 \"report_bytes\":{},\"check_request_bytes_per_report\":{},\"verdict_bytes_per_report\":{:.3},\"aggregate_request_bytes\":{},\"public_key_bytes\":{},\
 \"client_ms\":{:.2},\"evaluator_ingest_ms\":{:.2},\"evaluator_check_ms\":{:.2},\"collector_check_ms\":{:.2},\"evaluator_aggregate_ms\":{:.2},\"collector_unshard_ms\":{:.2},\
 \"task_setup_ms\":{:.1},\"collector_keygen_ms\":{:.1}}}",
+        F::PLAIN_MOD,
         l.ring,
         task.context().log2_q(),
         l.z_len,
@@ -88,13 +92,25 @@ fn run<T: VerifierMap>(
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let reports = arg(&args, "--reports", 16);
+    match args.iter().position(|a| a == "--field").map(|i| args[i + 1].as_str()) {
+        None | Some("prio2") => main_for::<Field>(&args),
+        Some("65537") => main_for::<Field65537>(&args),
+        Some(other) => {
+            eprintln!("unknown field {other}: use prio2 or 65537");
+            std::process::exit(2);
+        }
+    }
+}
+
+fn main_for<F: FheField>(args: &[String]) {
+    let reports = arg(args, "--reports", 16);
+    let p = F::PLAIN_MOD as f64;
     match args.get(1).map(String::as_str) {
         Some("count") => {
-            let k = arg(&args, "--proofs", proofs_for(&Count::<Field>::new(), PLAIN_MOD as f64, 128.0));
+            let k = arg(args, "--proofs", proofs_for(&Count::<F>::new(), p, 128.0));
             run(
                 "count",
-                Count::<Field>::new(),
+                Count::<F>::new(),
                 |i| i % 3 != 0,
                 |m| m.iter().filter(|&&b| b).count() as u32,
                 reports,
@@ -102,11 +118,11 @@ fn main() {
             );
         }
         Some("bitvec") => {
-            let len = arg(&args, "--len", 100);
-            let k = arg(&args, "--proofs", proofs_for(&BitVec::<Field>::new(len).unwrap(), PLAIN_MOD as f64, 128.0));
+            let len = arg(args, "--len", 100);
+            let k = arg(args, "--proofs", proofs_for(&BitVec::<F>::new(len).unwrap(), p, 128.0));
             run(
                 &format!("bitvec{len}"),
-                BitVec::<Field>::new(len).unwrap(),
+                BitVec::<F>::new(len).unwrap(),
                 |i| (0..len).map(|j| (i * 7 + j * 3) % 5 < 2).collect(),
                 |m| (0..len).map(|j| m.iter().filter(|v| v[j]).count() as u32).collect(),
                 reports,
@@ -114,7 +130,7 @@ fn main() {
             );
         }
         _ => {
-            eprintln!("usage: measure_single count|bitvec [--len L] [--reports R] [--proofs k]");
+            eprintln!("usage: measure_single count|bitvec [--len L] [--field prio2|65537] [--reports R] [--proofs k]");
             std::process::exit(2);
         }
     }

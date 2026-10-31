@@ -101,3 +101,47 @@ fn too_wide_a_flood_is_refused() {
     assert!(ctx.flood(&ct, 0).is_err());
     assert!(ctx.mod_reduce(&ct, 3).is_err());
 }
+
+/// The chain `fhe-flp` uses for p = 65537: [40, 40, 40] at ring 8192.
+mod p65537 {
+    use super::*;
+    const T: u64 = 65_537;
+
+    fn width(ctx: &Context, towers: usize) -> u32 {
+        let log_q: f64 = ctx.moduli().unwrap()[..towers].iter().map(|&q| (q as f64).log2()).sum();
+        log_q.floor() as u32 - (T as f64).log2().ceil() as u32 - 2
+    }
+
+    #[test]
+    fn flooding_margin_and_decryption() {
+        let ctx = Context::new_single(T, 128, 40, 40, 3).unwrap();
+        assert_eq!(ctx.ring_dim(), 8192);
+        assert!(ctx.log2_q() <= 218.0);
+        let (pk, sk) = keygen_first(&ctx).unwrap();
+        let n = ctx.ring_dim() as usize;
+        let mut seed = 5;
+        let z: Vec<u64> = (0..n).map(|_| rng(&mut seed) % T).collect();
+        let q: Vec<u64> = (0..n).map(|_| rng(&mut seed) % T).collect();
+        let ct = ctx.encrypt(&pk, &ctx.coef_plaintext(&z).unwrap()).unwrap();
+        // worst case: dense full-size plaintext product
+        let prod = ctx.mult_plain(&ct, &ctx.coef_plaintext(&q).unwrap()).unwrap();
+        let towers = prod.meta().unwrap().num_towers as usize;
+        let (_, log2_phase, _) = ctx.raw_decrypt_for_tests(&prod, &[&sk]).unwrap();
+        let w = width(&ctx, towers);
+        let lambda = w as f64 - 1.0 - (log2_phase - (T as f64).log2());
+        eprintln!("p=65537: towers = {towers}, flood width = {w}, log2 max|phase| = {log2_phase:.1}, lambda = {lambda:.1} bits");
+        assert!(lambda >= 64.0, "lambda {lambda:.1} below 64");
+        // product by 1 + X^(n-1), masked, flooded, reduced: coefficient 0 = z0 - z1 + 5
+        let mut q1 = vec![0u64; n];
+        q1[0] = 1;
+        q1[n - 1] = 1;
+        let p1 = ctx.mult_plain(&ct, &ctx.coef_plaintext(&q1).unwrap()).unwrap();
+        let mut mask: Vec<u64> = (0..n).map(|_| rng(&mut seed) % T).collect();
+        mask[0] = 5;
+        let masked = ctx.add_plain(&p1, &ctx.coef_plaintext(&mask).unwrap()).unwrap();
+        let reduced = ctx.mod_reduce(&ctx.flood(&masked, width(&ctx, towers)).unwrap(), towers as u32 - 1).unwrap();
+        assert_eq!(sk.decrypt_coeffs(&reduced, &[0]).unwrap(), vec![(z[0] + T - z[1] + 5) % T]);
+        // the rebuild self-test passes for this chain too
+        assert_eq!(verify_single_rebuild_once(&ctx).unwrap().deepest_level, 2);
+    }
+}

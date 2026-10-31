@@ -9,7 +9,7 @@ use prio::flp::{Flp, Type};
 const VK: [u8; 32] = [42u8; 32];
 
 /// Runs a batch end to end; returns (verdict bits, verifiers, aggregate or None).
-fn run<T: VerifierMap>(task: &SingleTask<T>, reports: &[Vec<u8>]) -> (Vec<bool>, Vec<Vec<Field>>, Option<T::AggregateResult>) {
+fn run<T: VerifierMap<Field>>(task: &SingleTask<Field, T>, reports: &[Vec<u8>]) -> (Vec<bool>, Vec<Vec<Field>>, Option<T::AggregateResult>) {
     let (mut collector, pk) = SingleCollector::new(task).unwrap();
     let mut ev = Evaluator::new(task, &pk, VK).unwrap();
     for r in reports {
@@ -31,18 +31,18 @@ fn run<T: VerifierMap>(task: &SingleTask<T>, reports: &[Vec<u8>]) -> (Vec<bool>,
 
 /// Clients need the collector's public key; tests make reports under a key
 /// created by the same collector the batch then uses.
-struct Batch<'a, T: VerifierMap> {
-    task: &'a SingleTask<T>,
-    collector: SingleCollector<'a, T>,
+struct Batch<'a, T: VerifierMap<Field>> {
+    task: &'a SingleTask<Field, T>,
+    collector: SingleCollector<'a, Field, T>,
     pk: openfhe_tbgv_rs::PublicKey,
 }
 
-impl<'a, T: VerifierMap> Batch<'a, T> {
-    fn new(task: &'a SingleTask<T>) -> Self {
+impl<'a, T: VerifierMap<Field>> Batch<'a, T> {
+    fn new(task: &'a SingleTask<Field, T>) -> Self {
         let (collector, pk) = SingleCollector::new(task).unwrap();
         Self { task, collector, pk }
     }
-    fn client(&self) -> SingleClient<'_, T> {
+    fn client(&self) -> SingleClient<'_, Field, T> {
         SingleClient::new(self.task, &self.pk)
     }
     fn run(&mut self, reports: &[Vec<u8>]) -> (Vec<bool>, Vec<Vec<Field>>, Option<T::AggregateResult>) {

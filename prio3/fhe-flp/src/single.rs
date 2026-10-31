@@ -27,26 +27,21 @@
 //! The collector participates once per batch (two messages), never per
 //! report, and never sees a report ciphertext.
 use crate::codec::ResidueCodec;
-use crate::protocol::{FlpPlan, Layout, MAX_BATCH, NONCE_LEN, VerifierMap, from_u64, to_u64};
-use crate::{Error, Field, PLAIN_MOD, Result};
+use crate::protocol::{FlpPlan, Layout, MAX_BATCH, NONCE_LEN, VerifierMap};
+use crate::{Error, FheField, Result};
 use openfhe_tbgv_rs::{Ciphertext, CiphertextMeta, Context, PublicKey, SecretShare, keygen_first, verify_single_rebuild_once};
-use prio::field::FieldElement;
 use prio::vdaf::xof::{IntoFieldVec, Xof, XofTurboShake128};
 use rand::RngCore;
 use rand::rngs::OsRng;
 use std::collections::HashSet;
 
-/// Modulus chain: [60, 55, 55] bits, Q = 170 bits at ring 8192 (HE standard
-/// allows 218). Two towers would leave a flooding margin of about 37 bits;
-/// with t = 2^32 OpenFHE's FIXEDMANUAL chain needs towers of at least 55 bits.
-pub const FIRST_MOD_BITS: u32 = 60;
-pub const SCALING_MOD_BITS: u32 = 55;
-pub const NUM_TOWERS: u32 = 3;
+/// The modulus chain comes from the field ([`FheField`]): measured so that
+/// the worst-case flooding margin is at least 64 bits at ring 8192.
 const DST_MASK: &[u8] = b"fhe-flp/1 single mask";
 
 /// Everything the client, the evaluator and the collector agree on.
-pub struct SingleTask<T: VerifierMap> {
-    plan: FlpPlan<T>,
+pub struct SingleTask<F: FheField, T: VerifierMap<F>> {
+    plan: FlpPlan<F, T>,
     ctx: Context,
     /// Fresh reports: all towers.
     fresh_codec: ResidueCodec,
@@ -56,10 +51,10 @@ pub struct SingleTask<T: VerifierMap> {
     reduced_meta: CiphertextMeta,
 }
 
-impl<T: VerifierMap> SingleTask<T> {
+impl<F: FheField, T: VerifierMap<F>> SingleTask<F, T> {
     pub fn new(typ: T, task_id: [u8; 32], num_proofs: usize) -> Result<Self> {
-        let ctx = Context::new_single(PLAIN_MOD, 128, FIRST_MOD_BITS, SCALING_MOD_BITS, NUM_TOWERS)?;
-        if ctx.plain_mod() != PLAIN_MOD {
+        let ctx = Context::new_single(F::PLAIN_MOD, 128, F::SINGLE_FIRST_MOD_BITS, F::SINGLE_SCALING_MOD_BITS, F::SINGLE_NUM_TOWERS)?;
+        if ctx.plain_mod() != F::PLAIN_MOD {
             return Err(Error::Protocol("context has another plaintext modulus".into()));
         }
         let plan = FlpPlan::new(typ, task_id, num_proofs, ctx.ring_dim() as usize)?;
@@ -68,8 +63,8 @@ impl<T: VerifierMap> SingleTask<T> {
         // their metadata must agree and is then fixed by the task.
         let (pk, _sk) = keygen_first(&ctx)?;
         let fresh = ctx.encrypt(&pk, &ctx.coef_plaintext(&[0])?)?;
-        let check = finish(&ctx, &ctx.mult_plain(&fresh, &ctx.coef_plaintext(&[1])?)?)?;
-        let sum = finish(&ctx, &ctx.add(&fresh, &fresh)?)?;
+        let check = finish::<F>(&ctx, &ctx.mult_plain(&fresh, &ctx.coef_plaintext(&[1])?)?)?;
+        let sum = finish::<F>(&ctx, &ctx.add(&fresh, &fresh)?)?;
         let reduced_meta = check.meta()?;
         if sum.meta()? != reduced_meta || reduced_meta.num_towers != 1 || reduced_meta.num_elements != 2 {
             return Err(Error::Fhe(format!("unexpected reduced metadata {reduced_meta:?} / {:?}", sum.meta()?)));
@@ -90,7 +85,7 @@ impl<T: VerifierMap> SingleTask<T> {
         self.plan.layout()
     }
     /// The query randomness the evaluator derives for a report.
-    pub fn query_rands(&self, verify_key: &[u8; 32], report: &[u8]) -> Result<Vec<Vec<Field>>> {
+    pub fn query_rands(&self, verify_key: &[u8; 32], report: &[u8]) -> Result<Vec<Vec<F>>> {
         self.plan.query_rands(verify_key, report)
     }
     pub fn context(&self) -> &Context {
@@ -118,14 +113,14 @@ impl<T: VerifierMap> SingleTask<T> {
     }
 
     /// Uniform field elements everywhere except `keep`, where `values` go.
-    fn mask(&self, keep: &[u32], values: &[Field]) -> Vec<u64> {
+    fn mask(&self, keep: &[u32], values: &[F]) -> Vec<u64> {
         let mut seed = [0u8; 32];
         OsRng.fill_bytes(&mut seed);
         let n = self.layout().ring;
-        let r: Vec<Field> = XofTurboShake128::seed_stream(&seed, &[DST_MASK], &[]).into_field_vec(n);
-        let mut m: Vec<u64> = r.into_iter().map(to_u64).collect();
+        let r: Vec<F> = XofTurboShake128::seed_stream(&seed, &[DST_MASK], &[]).into_field_vec(n);
+        let mut m: Vec<u64> = r.into_iter().map(F::to_u64).collect();
         for (&i, &v) in keep.iter().zip(values) {
-            m[i as usize] = to_u64(v);
+            m[i as usize] = v.to_u64();
         }
         m
     }
@@ -133,21 +128,21 @@ impl<T: VerifierMap> SingleTask<T> {
 
 /// Flood with the widest width the ciphertext's modulus allows, then switch
 /// to one tower. Flooding first: switching only post-processes it.
-fn finish(ctx: &Context, ct: &Ciphertext) -> Result<Ciphertext> {
+fn finish<F: FheField>(ctx: &Context, ct: &Ciphertext) -> Result<Ciphertext> {
     let towers = ct.meta()?.num_towers as usize;
     let log_q: f64 = ctx.moduli()?[..towers].iter().map(|&q| (q as f64).log2()).sum();
-    let width = log_q.floor() as u32 - (PLAIN_MOD as f64).log2().ceil() as u32 - 2;
+    let width = log_q.floor() as u32 - (F::PLAIN_MOD as f64).log2().ceil() as u32 - 2;
     let flooded = ctx.flood(ct, width)?;
     Ok(ctx.mod_reduce(&flooded, towers as u32 - 1)?)
 }
 
-pub struct SingleClient<'a, T: VerifierMap> {
-    task: &'a SingleTask<T>,
+pub struct SingleClient<'a, F: FheField, T: VerifierMap<F>> {
+    task: &'a SingleTask<F, T>,
     pk: &'a PublicKey,
 }
 
-impl<'a, T: VerifierMap> SingleClient<'a, T> {
-    pub fn new(task: &'a SingleTask<T>, pk: &'a PublicKey) -> Self {
+impl<'a, F: FheField, T: VerifierMap<F>> SingleClient<'a, F, T> {
+    pub fn new(task: &'a SingleTask<F, T>, pk: &'a PublicKey) -> Self {
         Self { task, pk }
     }
 
@@ -158,21 +153,21 @@ impl<'a, T: VerifierMap> SingleClient<'a, T> {
 
     /// Proves and encrypts an already-encoded input, valid or not, and
     /// returns `z` too (tests: malicious clients, comparison with prio).
-    pub fn shard_with_witness(&self, input: &[Field]) -> Result<(Vec<u8>, Vec<Field>)> {
+    pub fn shard_with_witness(&self, input: &[F]) -> Result<(Vec<u8>, Vec<F>)> {
         let z = self.task.plan.prove(input)?;
         Ok((self.report_from_coefficients(&z)?, z))
     }
 
     /// Encrypts arbitrary coefficients as a report (malicious-client tests).
-    pub fn report_from_coefficients(&self, z: &[Field]) -> Result<Vec<u8>> {
+    pub fn report_from_coefficients(&self, z: &[F]) -> Result<Vec<u8>> {
         let ctx = &self.task.ctx;
         if z.len() > self.task.layout().ring {
             return Err(Error::Protocol("too many coefficients".into()));
         }
-        let vals: Vec<u64> = z.iter().map(|&x| to_u64(x)).collect();
+        let vals: Vec<u64> = z.iter().map(|&x| x.to_u64()).collect();
         let ct = ctx.encrypt(self.pk, &ctx.coef_plaintext(&vals)?)?;
         let meta = ct.meta()?;
-        if meta.level != 0 || meta.num_elements != 2 || meta.num_towers != NUM_TOWERS {
+        if meta.level != 0 || meta.num_elements != 2 || meta.num_towers != F::SINGLE_NUM_TOWERS {
             return Err(Error::Fhe(format!("unexpected fresh ciphertext metadata {meta:?}")));
         }
         let mut out = vec![0u8; NONCE_LEN];
@@ -182,24 +177,24 @@ impl<'a, T: VerifierMap> SingleClient<'a, T> {
     }
 }
 
-struct Stored {
+struct Stored<F> {
     ct: Ciphertext,
-    query_rands: Vec<Vec<Field>>,
+    query_rands: Vec<Vec<F>>,
 }
 
 /// The single aggregator. One instance per batch.
-pub struct Evaluator<'a, T: VerifierMap> {
-    task: &'a SingleTask<T>,
+pub struct Evaluator<'a, F: FheField, T: VerifierMap<F>> {
+    task: &'a SingleTask<F, T>,
     verify_key: [u8; 32],
     reference: Ciphertext,
     seen: HashSet<[u8; NONCE_LEN]>,
-    reports: Vec<Stored>,
+    reports: Vec<Stored<F>>,
 }
 
-impl<'a, T: VerifierMap> Evaluator<'a, T> {
+impl<'a, F: FheField, T: VerifierMap<F>> Evaluator<'a, F, T> {
     /// `verify_key` is the evaluator's secret: clients must not predict the
     /// FLP query randomness. The ciphertext-rebuild self-test runs here.
-    pub fn new(task: &'a SingleTask<T>, pk: &PublicKey, verify_key: [u8; 32]) -> Result<Self> {
+    pub fn new(task: &'a SingleTask<F, T>, pk: &PublicKey, verify_key: [u8; 32]) -> Result<Self> {
         verify_single_rebuild_once(&task.ctx)?;
         let reference = task.ctx.encrypt(pk, &task.ctx.coef_plaintext(&[0])?)?;
         Ok(Self {
@@ -255,7 +250,7 @@ impl<'a, T: VerifierMap> Evaluator<'a, T> {
                 let prod = task.ctx.mult_plain(&r.ct, &q)?;
                 let idx = layout.group_coeffs(g.len());
                 let mask = task.ctx.coef_plaintext(&task.mask(&idx, &constants[g.clone()]))?;
-                out.extend(task.pack_reduced(&finish(&task.ctx, &task.ctx.add_plain(&prod, &mask)?)?)?);
+                out.extend(task.pack_reduced(&finish::<F>(&task.ctx, &task.ctx.add_plain(&prod, &mask)?)?)?);
             }
         }
         Ok(out)
@@ -281,26 +276,26 @@ impl<'a, T: VerifierMap> Evaluator<'a, T> {
         }
         let sum = sum.ok_or_else(|| Error::Protocol("no accepted reports".into()))?;
         let out_idx = task.layout().output_coeffs();
-        let zeros = vec![Field::zero(); out_idx.len()];
+        let zeros = vec![F::zero(); out_idx.len()];
         let mask = task.ctx.coef_plaintext(&task.mask(&out_idx, &zeros))?;
         let mut msg = count.to_le_bytes().to_vec();
-        msg.extend(task.pack_reduced(&finish(&task.ctx, &task.ctx.add_plain(&sum, &mask)?)?)?);
+        msg.extend(task.pack_reduced(&finish::<F>(&task.ctx, &task.ctx.add_plain(&sum, &mask)?)?)?);
         Ok(msg)
     }
 }
 
 /// The collector: holds the whole secret key.
-pub struct SingleCollector<'a, T: VerifierMap> {
-    task: &'a SingleTask<T>,
+pub struct SingleCollector<'a, F: FheField, T: VerifierMap<F>> {
+    task: &'a SingleTask<F, T>,
     sk: SecretShare,
     reference: Ciphertext,
     accepted: Option<u64>,
 }
 
-impl<'a, T: VerifierMap> SingleCollector<'a, T> {
+impl<'a, F: FheField, T: VerifierMap<F>> SingleCollector<'a, F, T> {
     /// Generates the key pair; the public key goes to clients and the
     /// evaluator.
-    pub fn new(task: &'a SingleTask<T>) -> Result<(Self, PublicKey)> {
+    pub fn new(task: &'a SingleTask<F, T>) -> Result<(Self, PublicKey)> {
         verify_single_rebuild_once(&task.ctx)?;
         let (pk, sk) = keygen_first(&task.ctx)?;
         let reference = task.ctx.encrypt(&pk, &task.ctx.coef_plaintext(&[0])?)?;
@@ -315,10 +310,10 @@ impl<'a, T: VerifierMap> SingleCollector<'a, T> {
         ))
     }
 
-    fn open(&self, bytes: &[u8], idx: &[u32]) -> Result<Vec<Field>> {
+    fn open(&self, bytes: &[u8], idx: &[u32]) -> Result<Vec<F>> {
         let res = self.task.reduced_codec.unpack(bytes, 2, self.task.layout().ring)?;
         let ct = self.task.ctx.build_ciphertext(&self.reference, &self.task.reduced_meta, &res)?;
-        Ok(self.sk.decrypt_coeffs(&ct, idx)?.into_iter().map(from_u64).collect())
+        Ok(self.sk.decrypt_coeffs(&ct, idx)?.into_iter().map(F::from_u64).collect())
     }
 
     /// Decrypts the verifier coefficients of every report, runs Prio3's
@@ -329,7 +324,7 @@ impl<'a, T: VerifierMap> SingleCollector<'a, T> {
 
     /// [`Self::check`], also returning each report's verifier message (all
     /// proofs), which the collector learns in any case.
-    pub fn check_with_verifiers(&mut self, request: &[u8]) -> Result<(Vec<u8>, Vec<Vec<Field>>)> {
+    pub fn check_with_verifiers(&mut self, request: &[u8]) -> Result<(Vec<u8>, Vec<Vec<F>>)> {
         let task = self.task;
         let layout = task.layout();
         if request.len() < 4 {

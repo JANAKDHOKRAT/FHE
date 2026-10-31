@@ -52,7 +52,8 @@ of the batch, not only the total.
 
 ## Parameters (measured)
 
-* Plaintext modulus = FLP field = prio's `FieldPrio2`, p = 4,293,918,721.
+* Plaintext modulus = FLP field = prio's `FieldPrio2`, p = 4,293,918,721 (default; for
+  p = 65537 see "Second field" below).
 * OpenFHE 1.3.1 BGV, single key, `FIXEDMANUAL`, BV key switching (no P),
   uniform ternary secret, `HEStd_128_classic`.
 * Ring 8192; towers [60, 55, 55], so Q = 170 bits (the limit at ring 8192
@@ -89,11 +90,63 @@ Comparison of report sizes:
 | `fhe-flp` threshold (`DESIGN.md`) | 419,856 B | n ≥ 2 aggregators sharing the key |
 | Prio3 | 80 B (Count), 2,480 B (SumVec100) | two non-colluding aggregators, no FHE |
 
-**Why it isn't KB.** The flooded phase grows with 2·log t + log(row
-length), and t is 32 bits because prio's smallest field is FieldPrio2. A
-17-bit field such as p = 65537 would allow ring 4096 for Count (about
-110 KB, estimated, not built), but prio does not implement it. A custom field would need its
-own audit, and vectors would need 9–16 proofs.
+## Second field: p = 65537 (`--field 65537`)
+
+The protocol is generic over the field (`FheField`). Besides FieldPrio2 it
+runs in **GF(65537)**, the prime of the original-encoding package. prio
+0.18.1 has no such field, so `src/f65537.rs` implements prio's public field
+traits for it:
+* It follows the conventions of prio's own field macro: fully reduced
+  values, canonical little-endian bytes, decoding refuses values ≥ p, and
+  random sampling masks to 17 bits and then rejects ≥ p.
+* Arithmetic doesn't branch on element values.
+* Tests:
+  * every one of the 65,536 nonzero elements times its inverse is 1;
+  * add, sub, mul, neg and pow agree with integer arithmetic;
+  * `root(l)` is the principal 2^l-th root for every l ≤ 16, and `None`
+    above;
+  * encode/decode and serde round trips, with refusal of values ≥ p;
+  * prio's `prove`/`query`/`decide` and our closed-form verifier map work
+    in the field.
+* GF(65537) has 2-power roots only up to 2^16. prio's NTT panics (measured)
+  once a gadget's wire length reaches 2^16. `FlpPlan::new` refuses such
+  circuits with an error, and a test checks both sides of the boundary.
+
+Parameters for p = 65537:
+* chain [40, 40, 40], Q = 120 bits, ring 8192;
+* worst-case flooding margin λ = 67.9 bits
+  (`openfhe-tbgv-rs/tests/single_key.rs`);
+* proofs for 2^-128: Count 9, BitVec(10/25/50/100) 12/13/14/16.
+
+**Ring 4096 is not possible at our standard.** The best chain at ring
+4096 within the 128-bit bound ([50, 55], 105 bits) gives a margin of only
+λ = 53.9 (measured), below the 64 we require. The earlier ~110 KB figure
+was an estimate that turned out wrong.
+
+Measured (`results/measure-single-fields.jsonl`; same machine; 16 reports
+for Count, 8 for BitVec):
+
+| p | Task | Proofs | Report | Evaluator per report | Collector per report | Check request per report |
+|---|---|---|---|---|---|---|
+| 4293918721 | Count | 5 | 348,176 B | 20.8 ms | 0.8 ms | 122,880 B |
+| **65537** | **Count** | 9 | **245,776 B** | 24.2 ms | 1.3 ms | 81,920 B |
+| 4293918721 | BitVec(10) | 5 | 348,176 B | 18.0 ms | 0.9 ms | 122,880 B |
+| 65537 | BitVec(10) | 12 | 245,776 B | 64.3 ms | 2.3 ms | 245,760 B |
+| 4293918721 | BitVec(100) | 6 | 348,176 B | 108.6 ms | 7.0 ms | 737,280 B |
+| 65537 | BitVec(100) | 16 | 245,776 B | 967.7 ms | 48.5 ms | 5,242,880 B |
+
+* **Count:** p = 65537 is 29% smaller at about the same cost. It is the
+  better choice.
+* **Vectors:** the report shrinks just as much, but each additional proof
+  lengthens every verifier row. For BitVec(100), 16 proofs make z
+  4,212 coefficients long, so only one row fits a product: 64 products per
+  report, about 1 s of evaluator time and 5.2 MB of check traffic per
+  report at batch end. Pick the field per task.
+
+**Why it isn't KB.** The flooded phase grows with 2·log p + log(row
+length), and the 128-bit bound caps Q at 109 bits for ring 4096. Even with
+p = 65537 the margin at ring 4096 is 54 bits, so ring 8192 (≥ 240 KB) is
+the floor at λ ≥ 64.
 
 ## Prio3 variants covered
 
@@ -120,7 +173,8 @@ own audit, and vectors would need 9–16 proofs.
 
 ```sh
 cd prio3/openfhe-tbgv-rs && cargo test --release -- --test-threads=1   # incl. tests/single_key.rs, single self-test
-cd ../fhe-flp && cargo test --release -- --test-threads=1               # incl. tests/single.rs
-cargo run --release --bin measure_single -- count
-cargo run --release --bin measure_single -- bitvec --len 100
+cd ../fhe-flp && cargo test --release -- --test-threads=1               # incl. tests/single.rs, tests/single_p65537.rs
+cargo run --release --bin measure_single -- count                      # p = 4293918721
+cargo run --release --bin measure_single -- count --field 65537
+cargo run --release --bin measure_single -- bitvec --len 100 --field 65537
 ```

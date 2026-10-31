@@ -19,7 +19,7 @@ fn ms(d: Duration) -> f64 {
     d.as_secs_f64() * 1e3
 }
 
-fn run<T: VerifierMap>(
+fn run<T: VerifierMap<Field>>(
     name: &str,
     typ: T,
     ms_of: impl Fn(usize) -> T::Measurement,

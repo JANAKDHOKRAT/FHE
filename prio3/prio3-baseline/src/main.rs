@@ -268,7 +268,7 @@ fn main() -> Result<()> {
         }
         results.push(run::<_, 32>(&format!("Histogram({length})"), &v, &(), Some(chunk), &ms, reference, &mut rng)?);
     }
-    for (len, max) in [(8usize, 255u128), (1200, 15)] {
+    for (len, max) in [(8usize, 255u128), (1200, 15), (100, 1)] {
         // SumVec's measurement length is len * bits(max)
         let bits = (128 - max.leading_zeros()) as usize;
         let chunk = optimal_chunk_length(len * bits);

@@ -165,6 +165,38 @@ TbgvContext tbgv_context_new_tuned(uint64_t plain_mod, uint32_t mult_depth, uint
     TBGV_CATCH(nullptr)
 }
 
+TbgvContext tbgv_context_new_linear(uint64_t plain_mod, uint32_t security_bits, uint32_t threshold_parties,
+                                    uint32_t digit_size) {
+    TBGV_TRY
+    if (threshold_parties < 2) { set_error("threshold_parties must be at least 2"); return nullptr; }
+    if (digit_size == 0) { set_error("digit_size must be positive"); return nullptr; }
+    CCParams<CryptoContextBGVRNS> params;
+    params.SetPlaintextModulus(plain_mod);
+    params.SetMultiplicativeDepth(0);
+    params.SetMultipartyMode(NOISE_FLOODING_MULTIPARTY);
+    params.SetScalingTechnique(FLEXIBLEAUTOEXT);
+    params.SetSecretKeyDist(UNIFORM_TERNARY);
+    // BV has no auxiliary modulus P: every RLWE sample this context can
+    // produce, key-switching keys included, lives modulo Q, which is what the
+    // security level is checked against
+    params.SetKeySwitchTechnique(BV);
+    params.SetDigitSize(digit_size);
+    params.SetThresholdNumOfParties(threshold_parties);
+    switch (security_bits) {
+        case 128: params.SetSecurityLevel(HEStd_128_classic); break;
+        case 192: params.SetSecurityLevel(HEStd_192_classic); break;
+        case 256: params.SetSecurityLevel(HEStd_256_classic); break;
+        default: set_error("security_bits must be 128, 192 or 256"); return nullptr;
+    }
+    CC cc = GenCryptoContext(params);
+    cc->Enable(PKE);
+    cc->Enable(KEYSWITCH);
+    cc->Enable(LEVELEDSHE);
+    cc->Enable(MULTIPARTY);
+    return new CC(cc);
+    TBGV_CATCH(nullptr)
+}
+
 void tbgv_context_free(TbgvContext ctx) { delete static_cast<CC*>(ctx); }
 
 uint64_t tbgv_context_plain_mod(TbgvContext ctx) {
@@ -607,6 +639,13 @@ TbgvPlaintext tbgv_plaintext_new(TbgvContext ctx, const int64_t* values, size_t 
     TBGV_TRY
     std::vector<int64_t> v(values, values + n);
     return new Plaintext(cc_of(ctx)->MakePackedPlaintext(v));
+    TBGV_CATCH(nullptr)
+}
+TbgvPlaintext tbgv_plaintext_new_coef(TbgvContext ctx, const int64_t* values, size_t n) {
+    TBGV_TRY
+    if (n > cc_of(ctx)->GetRingDimension()) { set_error("more coefficients than the ring dimension"); return nullptr; }
+    std::vector<int64_t> v(values, values + n);
+    return new Plaintext(cc_of(ctx)->MakeCoefPackedPlaintext(v));
     TBGV_CATCH(nullptr)
 }
 void tbgv_plaintext_free(TbgvPlaintext pt) { delete static_cast<Plaintext*>(pt); }
@@ -1314,6 +1353,123 @@ size_t tbgv_fuse(TbgvContext ctx, const TbgvCiphertext* partials, size_t n, int6
     for (size_t i = 0; i < m; ++i) out[i] = v[i];
     return m;
     TBGV_CATCH(0)
+}
+
+static bool coeff_mask(uint32_t n, const uint32_t* idx, size_t n_idx, std::vector<bool>& keep) {
+    if (idx == nullptr || n_idx == 0) { set_error("no coefficients requested"); return false; }
+    keep.assign(n, false);
+    for (size_t i = 0; i < n_idx; ++i) {
+        if (idx[i] >= n) { set_error("coefficient index out of range"); return false; }
+        if (i > 0 && idx[i] <= idx[i - 1]) { set_error("coefficient indices must be strictly increasing"); return false; }
+        keep[idx[i]] = true;
+    }
+    return true;
+}
+
+TbgvCiphertext tbgv_partial_decrypt_coeffs(TbgvContext ctx, TbgvCiphertext ct, TbgvSecretKey sk, int is_lead,
+                                           const uint32_t* idx, size_t n_idx) {
+    TBGV_TRY
+    if (ct_of(ct)->GetEncodingType() != COEF_PACKED_ENCODING) { set_error("expects a coefficient-encoded ciphertext"); return nullptr; }
+    std::vector<bool> keep;
+    if (!coeff_mask(cc_of(ctx)->GetRingDimension(), idx, n_idx, keep)) return nullptr;
+    std::vector<CT> in{ct_of(ct)};
+    std::vector<CT> out = is_lead ? cc_of(ctx)->MultipartyDecryptLead(in, sk_of(sk))
+                                  : cc_of(ctx)->MultipartyDecryptMain(in, sk_of(sk));
+    if (out.size() != 1 || !out[0] || out[0]->GetElements().size() != 1) { set_error("partial decryption returned nothing"); return nullptr; }
+    // Zero every coefficient that was not requested, in every tower (a CRT
+    // representation of zero), before the partial leaves this function.
+    DCRTPoly x = out[0]->GetElements()[0];
+    const Format fmt = x.GetFormat();
+    x.SetFormat(Format::COEFFICIENT);
+    for (size_t t = 0; t < x.GetNumOfElements(); ++t) {
+        NativePoly tower = x.GetElementAtIndex(t);
+        NativeVector vals = tower.GetValues();
+        for (uint32_t c = 0; c < vals.GetLength(); ++c)
+            if (!keep[c]) vals[c] = NativeInteger(0);
+        tower.SetValues(std::move(vals), Format::COEFFICIENT);
+        x.SetElementAtIndex(t, std::move(tower));
+    }
+    x.SetFormat(fmt);
+    out[0]->SetElements({std::move(x)});
+    return new CT(out[0]);
+    TBGV_CATCH(nullptr)
+}
+
+int tbgv_fuse_coeffs(TbgvContext ctx, const TbgvCiphertext* partials, size_t n, const uint32_t* idx, size_t n_idx,
+                     int64_t* out) {
+    TBGV_TRY
+    if (partials == nullptr || n == 0 || out == nullptr) { set_error("bad arguments"); return 0; }
+    const uint32_t ring = cc_of(ctx)->GetRingDimension();
+    std::vector<bool> keep;
+    if (!coeff_mask(ring, idx, n_idx, keep)) return 0;
+    std::vector<CT> parts;
+    parts.reserve(n);
+    for (size_t i = 0; i < n; ++i) {
+        if (ct_of(partials[i])->GetEncodingType() != COEF_PACKED_ENCODING) { set_error("expects coefficient-encoded partials"); return 0; }
+        parts.push_back(ct_of(partials[i]));
+    }
+    Plaintext result;
+    DecryptResult r = cc_of(ctx)->MultipartyDecryptFusion(parts, &result);
+    if (!r.isValid) { set_error("MultipartyDecryptFusion reported invalid result"); return 0; }
+    const std::vector<int64_t>& v = result->GetCoefPackedValue();
+    if (v.size() > ring) { set_error("decoded more coefficients than the ring dimension"); return 0; }
+    for (size_t c = 0; c < v.size(); ++c)
+        if (!keep[c] && v[c] != 0) { set_error("a coefficient outside the requested set is non-zero"); return 0; }
+    for (size_t i = 0; i < n_idx; ++i) out[i] = idx[i] < v.size() ? v[idx[i]] : 0;
+    return 1;
+    TBGV_CATCH(0)
+}
+
+int tbgv_partial_export_coeffs(TbgvCiphertext partial, const uint32_t* idx, size_t n_idx, uint64_t* out, size_t out_len) {
+    TBGV_TRY
+    const CT& pd = ct_of(partial);
+    if (pd->GetElements().size() != 1) { set_error("not a partial decryption"); return 0; }
+    DCRTPoly x = pd->GetElements()[0];
+    const uint32_t ring = x.GetRingDimension();
+    std::vector<bool> keep;
+    if (!coeff_mask(ring, idx, n_idx, keep)) return 0;
+    const size_t towers = x.GetNumOfElements();
+    if (out == nullptr || out_len != towers * n_idx) { set_error("out_len must be num_towers * n_idx"); return 0; }
+    x.SetFormat(Format::COEFFICIENT);
+    for (size_t t = 0; t < towers; ++t) {
+        const NativeVector& v = x.GetElementAtIndex(t).GetValues();
+        for (size_t k = 0; k < n_idx; ++k) out[t * n_idx + k] = v[idx[k]].ConvertToInt<uint64_t>();
+    }
+    return 1;
+    TBGV_CATCH(0)
+}
+
+TbgvCiphertext tbgv_partial_from_coeffs(TbgvContext ctx, TbgvCiphertext template_partial, const uint32_t* idx, size_t n_idx,
+                                        const uint64_t* values, size_t len) {
+    TBGV_TRY
+    const CT& tmpl = ct_of(template_partial);
+    if (tmpl->GetElements().size() != 1) { set_error("template is not a partial decryption"); return nullptr; }
+    if (tmpl->GetCryptoContext().get() != cc_of(ctx).get()) { set_error("template belongs to another context"); return nullptr; }
+    DCRTPoly x = tmpl->GetElements()[0];
+    const uint32_t ring = x.GetRingDimension();
+    std::vector<bool> keep;
+    if (!coeff_mask(ring, idx, n_idx, keep)) return nullptr;
+    const size_t towers = x.GetNumOfElements();
+    if (values == nullptr || len != towers * n_idx) { set_error("len must be num_towers * n_idx"); return nullptr; }
+    const Format fmt = x.GetFormat();
+    x.SetFormat(Format::COEFFICIENT);
+    for (size_t t = 0; t < towers; ++t) {
+        NativePoly tower = x.GetElementAtIndex(t);
+        const NativeInteger q = tower.GetModulus();
+        NativeVector v(ring, q);
+        for (size_t k = 0; k < n_idx; ++k) {
+            const uint64_t r = values[t * n_idx + k];
+            if (NativeInteger(r) >= q) { set_error("residue not below its tower modulus"); return nullptr; }
+            v[idx[k]] = NativeInteger(r);
+        }
+        tower.SetValues(std::move(v), Format::COEFFICIENT);
+        x.SetElementAtIndex(t, std::move(tower));
+    }
+    x.SetFormat(fmt);
+    CT out = tmpl->Clone();
+    out->SetElements({std::move(x)});
+    return new CT(out);
+    TBGV_CATCH(nullptr)
 }
 
 size_t tbgv_decrypt_single(TbgvContext ctx, TbgvSecretKey sk, TbgvCiphertext ct, int64_t* out, size_t out_len) {

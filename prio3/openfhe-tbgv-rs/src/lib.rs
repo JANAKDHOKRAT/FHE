@@ -15,7 +15,7 @@
 mod ffi;
 mod selftest;
 
-pub use selftest::{RebuildReport, rebuild_verified, verify_rebuild_once};
+pub use selftest::{RebuildReport, rebuild_verified, verify_linear_rebuild_once, verify_rebuild_once};
 
 use std::ffi::{CStr, CString};
 use std::fmt;
@@ -168,6 +168,60 @@ impl Context {
         Ok(Self {
             inner: Arc::new(ContextInner(p)),
         })
+    }
+
+    /// Creates a depth-0 context for linear-only evaluation (additions and
+    /// plaintext multiplications) with BV key switching, which has no
+    /// auxiliary modulus `P`: every RLWE sample the context can produce lives
+    /// modulo `Q`, which is what the security level is checked against.
+    /// `digit_size` feeds OpenFHE's noise estimate for key switching, which a
+    /// linear-only protocol never performs; `threshold_parties` (at least 2)
+    /// sets the secret-key bound in that estimate.
+    pub fn new_linear(plain_mod: u64, security_bits: u32, threshold_parties: u32, digit_size: u32) -> Result<Self> {
+        check_loaded_openfhe()?;
+        let p = unsafe { ffi::tbgv_context_new_linear(plain_mod, security_bits, threshold_parties, digit_size) };
+        if p.is_null() {
+            return Err(last_error());
+        }
+        Ok(Self {
+            inner: Arc::new(ContextInner(p)),
+        })
+    }
+
+    /// Coefficient-encoded plaintext: `values[i]` (in `[0, p)`) is the
+    /// coefficient of `X^i`; higher coefficients are zero.
+    pub fn coef_plaintext(&self, values: &[u64]) -> Result<Plaintext> {
+        if values.len() > self.ring_dim() as usize {
+            return Err(Error("more coefficients than the ring dimension".into()));
+        }
+        let centered: Result<Vec<i64>> = values.iter().map(|&v| self.center(v)).collect();
+        let centered = centered?;
+        let p = unsafe { ffi::tbgv_plaintext_new_coef(self.raw(), centered.as_ptr(), centered.len()) };
+        if p.is_null() {
+            return Err(last_error());
+        }
+        Ok(Plaintext { ptr: p, ctx: self.clone() })
+    }
+
+    /// Fuses partial decryptions made by
+    /// [`SecretShare::partial_decrypt_coeffs`] with the same `idx`, and
+    /// returns the plaintext coefficients at `idx` as field elements. Fails
+    /// if any other coefficient decrypts to a non-zero value.
+    pub fn fuse_coeffs(&self, partials: &[&PartialDecryption], idx: &[u32]) -> Result<Vec<u64>> {
+        if partials.is_empty() {
+            return Err(Error("no partial decryptions".into()));
+        }
+        let leads = partials.iter().filter(|p| p.lead).count();
+        if leads != 1 {
+            return Err(Error(format!("expected exactly one lead partial decryption, got {leads}")));
+        }
+        let ptrs: Vec<ffi::TbgvCiphertext> = partials.iter().map(|p| p.ct.ptr).collect();
+        let mut out = vec![0i64; idx.len()];
+        let ok = unsafe { ffi::tbgv_fuse_coeffs(self.raw(), ptrs.as_ptr(), ptrs.len(), idx.as_ptr(), idx.len(), out.as_mut_ptr()) };
+        if ok == 0 {
+            return Err(last_error());
+        }
+        Ok(out.iter().map(|&v| self.uncenter(v)).collect())
     }
 
     fn raw(&self) -> ffi::TbgvContext {
@@ -696,6 +750,22 @@ impl SecretShare {
         })
     }
 
+    /// Partial decryption of a coefficient-encoded ciphertext restricted to
+    /// the coefficients `idx` (strictly increasing, each below the ring
+    /// dimension): every other coefficient is zeroed inside the shim before
+    /// the partial is returned, so a fusion of such partials reveals only
+    /// those coefficients.
+    pub fn partial_decrypt_coeffs(&self, ct: &Ciphertext, lead: bool, idx: &[u32]) -> Result<PartialDecryption> {
+        let p = unsafe { ffi::tbgv_partial_decrypt_coeffs(self.ctx.raw(), ct.ptr, self.ptr, lead as i32, idx.as_ptr(), idx.len()) };
+        if p.is_null() {
+            return Err(last_error());
+        }
+        Ok(PartialDecryption {
+            ct: Ciphertext { ptr: p, ctx: self.ctx.clone() },
+            lead,
+        })
+    }
+
     /// Single-share decryption. With more than one party this returns
     /// garbage by construction; it exists so tests can demonstrate that.
     pub fn decrypt_alone_for_tests(&self, ct: &Ciphertext, num_slots: usize) -> Result<Vec<u64>> {
@@ -1001,6 +1071,26 @@ impl PartialDecryption {
     /// The partial decryption as a (one-element) ciphertext, for transport.
     pub fn ciphertext(&self) -> &Ciphertext {
         &self.ct
+    }
+    /// Residues of the coefficients `idx` of a restricted partial
+    /// ([`SecretShare::partial_decrypt_coeffs`]), tower-major:
+    /// `out[t * idx.len() + k]` is tower `t` of coefficient `idx[k]`.
+    pub fn export_coeffs(&self, idx: &[u32]) -> Result<Vec<u64>> {
+        let towers = self.ct.meta()?.num_towers as usize;
+        let mut out = vec![0u64; towers * idx.len()];
+        let ok = unsafe { ffi::tbgv_partial_export_coeffs(self.ct.ptr, idx.as_ptr(), idx.len(), out.as_mut_ptr(), out.len()) };
+        if ok == 0 {
+            return Err(last_error());
+        }
+        Ok(out)
+    }
+    /// Rebuilds another party's restricted partial of the same ciphertext
+    /// from [`Self::export_coeffs`] residues, with `template` (the
+    /// receiver's own partial of that ciphertext) supplying the metadata.
+    /// Residues are validated against their tower moduli.
+    pub fn from_coeffs(ctx: &Context, template: &PartialDecryption, idx: &[u32], values: &[u64], lead: bool) -> Result<Self> {
+        let p = unsafe { ffi::tbgv_partial_from_coeffs(ctx.raw(), template.ct.ptr, idx.as_ptr(), idx.len(), values.as_ptr(), values.len()) };
+        Ok(Self { ct: ctx.wrap_ct(p)?, lead })
     }
     /// Wraps a rebuilt one-element ciphertext as a partial decryption.
     pub fn from_ciphertext(ct: Ciphertext, lead: bool) -> Self {

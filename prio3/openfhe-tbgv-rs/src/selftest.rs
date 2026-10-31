@@ -108,6 +108,91 @@ pub fn verify_rebuild_once(ctx: &Context, depth: u32) -> Result<RebuildReport> {
     outcome.map_err(Error)
 }
 
+/// The self-test for linear-only protocols on a [`Context::new_linear`]
+/// context, whose only received objects are fresh coefficient-encoded
+/// encryptions (level 0). It checks, on the loaded library, that such an
+/// encryption rebuilt against a coefficient-encoded reference has identical
+/// metadata and residues, re-serializes byte for byte, decrypts (through
+/// [`SecretShare::partial_decrypt_coeffs`]) to the encrypted coefficients,
+/// and works as an operand of a plaintext product. On success it is recorded
+/// at depth 0, so [`Context::build_ciphertext`] then accepts level-0 objects
+/// for these parameters. Cached per parameter set and process like
+/// [`verify_rebuild_once`].
+pub fn verify_linear_rebuild_once(ctx: &Context) -> Result<RebuildReport> {
+    check_loaded_openfhe()?;
+    let params = params_key(ctx)?;
+    let mut cache = cache().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(r) = cache.get(&(params.clone(), 0)) {
+        return r.clone().map_err(Error);
+    }
+    let outcome = run_linear(ctx, &|c, r, m, v| c.build_ciphertext_unverified(r, m, v)).map_err(|e| {
+        format!(
+            "linear ciphertext rebuild self-test failed on OpenFHE {OPENFHE_VERSION} as loaded ({}): {}. \
+             Received ciphertexts cannot be rebuilt exactly with this library; refusing to run.",
+            loaded_openfhe_libraries().map(|l| l.join(", ")).unwrap_or_else(|e| e.0),
+            e.0
+        )
+    });
+    cache.insert((params, 0), outcome.clone());
+    outcome.map_err(Error)
+}
+
+fn run_linear(ctx: &Context, rebuild: Rebuild<'_>) -> Result<RebuildReport> {
+    let start = Instant::now();
+    let p = ctx.plain_mod();
+    let n = ctx.ring_dim() as usize;
+    let l = ctx.num_towers();
+    let (pk0, s0) = keygen_first(ctx)?;
+    let (pk, s1) = keygen_next(ctx, &pk0)?;
+    let _clear = ClearTag(pk.tag()?);
+    let reference = ctx.encrypt(&pk, &ctx.coef_plaintext(&[0])?)?;
+
+    // every coefficient set, with values spread over the whole field
+    let z: Vec<u64> = (0..n as u64).map(|i| (i.wrapping_mul(0x9E37_79B9) ^ (i << 7)) % p).collect();
+    let ct = ctx.encrypt(&pk, &ctx.coef_plaintext(&z)?)?;
+    let meta = ct.meta()?;
+    if meta.num_towers != l || meta.level != 0 || meta.num_elements != 2 {
+        return fail(format!("a fresh encryption has unexpected metadata {meta:?} for a chain of {l} towers"));
+    }
+    let res = ct.export_residues()?;
+    let back = rebuild(ctx, &reference, &meta, &res)?;
+    if back.meta()? != meta || back.export_residues()? != res {
+        return fail("rebuilt fresh coefficient encryption differs in metadata or residues".into());
+    }
+    if back.serialize()? != ct.serialize()? {
+        return fail("rebuilt fresh coefficient encryption does not re-serialize identically".into());
+    }
+    let decrypt = |c: &Ciphertext, idx: &[u32]| -> Result<Vec<u64>> {
+        let a = s0.partial_decrypt_coeffs(c, true, idx)?;
+        let b = s1.partial_decrypt_coeffs(c, false, idx)?;
+        ctx.fuse_coeffs(&[&a, &b], idx)
+    };
+    let idx: Vec<u32> = (0..n as u32).step_by(97).chain([n as u32 - 1]).collect();
+    let want: Vec<u64> = idx.iter().map(|&i| z[i as usize]).collect();
+    if decrypt(&back, &idx)? != want {
+        return fail("rebuilt fresh coefficient encryption decrypts wrongly".into());
+    }
+    if decrypt(&ctx.sub(&ct, &back)?, &idx)?.iter().any(|&v| v != 0) {
+        return fail("original minus rebuilt does not decrypt to zero".into());
+    }
+    // a rebuilt ciphertext is a working operand: (z * X^-1)[0] = -z[1] ... use
+    // the plaintext 1 + X^(n-1), whose product's coefficient 0 is z0 - z1
+    let mut q = vec![0u64; n];
+    q[0] = 1;
+    q[n - 1] = 1;
+    let got = decrypt(&ctx.mult_plain(&back, &ctx.coef_plaintext(&q)?)?, &[0])?;
+    if got != vec![(z[0] + p - z[1]) % p] {
+        return fail("plaintext product of a rebuilt operand decrypts wrongly".into());
+    }
+    Ok(RebuildReport {
+        openfhe_version: OPENFHE_VERSION.to_string(),
+        libraries: loaded_openfhe_libraries()?,
+        objects_checked: 4,
+        deepest_level: 0,
+        elapsed: start.elapsed(),
+    })
+}
+
 /// The deepest level at which the self-test has passed for `ctx`'s
 /// parameters in this process, if any. [`Context::build_ciphertext`]
 /// refuses objects deeper than this.
@@ -351,6 +436,23 @@ mod tests {
         let other_ref = ctx.encrypt(&other_pk, &ctx.plaintext(&[0]).unwrap()).unwrap();
         let e = run(&ctx, 3, &|c, _r, m, v| c.build_ciphertext_unverified(&other_ref, m, v)).unwrap_err();
         println!("SELFTEST other key: {e}");
+    }
+
+    #[test]
+    fn linear_selftest_passes_and_detects_an_altered_residue() {
+        let ctx = Context::new_linear(P, 128, 2, 1).unwrap();
+        let q0 = ctx.moduli().unwrap()[0];
+        let e = run_linear(&ctx, &|c, r, m, v| {
+            let mut w = v.to_vec();
+            w[5] = (w[5] + 1) % q0;
+            c.build_ciphertext_unverified(r, m, &w)
+        })
+        .unwrap_err();
+        println!("SELFTEST linear residue: {e}");
+        assert_eq!(rebuild_verified(&ctx).unwrap(), None);
+        let r = verify_linear_rebuild_once(&ctx).unwrap();
+        assert_eq!(r.deepest_level, 0);
+        assert_eq!(rebuild_verified(&ctx).unwrap(), Some(0));
     }
 
     #[test]

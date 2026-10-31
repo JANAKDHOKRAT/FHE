@@ -43,6 +43,15 @@ double tbgv_context_log2_q(TbgvContext ctx);
 int tbgv_context_serialize(TbgvContext ctx, uint8_t** out, size_t* out_len);
 TbgvContext tbgv_context_deserialize(const uint8_t* buf, size_t len);
 
+/* Depth-0 context for linear-only evaluation (ciphertext additions and
+ * plaintext multiplications). BV key switching has no auxiliary modulus P,
+ * so every RLWE sample the context can produce lives modulo Q, which is what
+ * the security level is checked against. `digit_size` feeds OpenFHE's noise
+ * estimate for key switching, which a linear-only protocol never performs;
+ * `threshold_parties` sets the key-bound term of that estimate. */
+TbgvContext tbgv_context_new_linear(uint64_t plain_mod, uint32_t security_bits, uint32_t threshold_parties,
+                                    uint32_t digit_size);
+
 /* ---- n-of-n key generation (sequential) ------------------------------- */
 int tbgv_keygen_first(TbgvContext ctx, TbgvPublicKey* out_pk, TbgvSecretKey* out_sk);
 int tbgv_keygen_next(TbgvContext ctx, TbgvPublicKey prev_joint_pk, TbgvPublicKey* out_joint_pk, TbgvSecretKey* out_sk);
@@ -173,6 +182,9 @@ int tbgv_fuse_magnitude(TbgvContext ctx, const TbgvCiphertext* partials, size_t 
 /* ---- plaintext / ciphertext ------------------------------------------- */
 /* values must be centered: -(p-1)/2 <= v <= (p-1)/2 */
 TbgvPlaintext tbgv_plaintext_new(TbgvContext ctx, const int64_t* values, size_t n);
+/* Coefficient encoding: values[i] is the coefficient of X^i (centered, as
+ * above); n <= ring dimension. */
+TbgvPlaintext tbgv_plaintext_new_coef(TbgvContext ctx, const int64_t* values, size_t n);
 void tbgv_plaintext_free(TbgvPlaintext pt);
 TbgvCiphertext tbgv_encrypt(TbgvContext ctx, TbgvPublicKey pk, TbgvPlaintext pt);
 TbgvCiphertext tbgv_ciphertext_clone(TbgvCiphertext ct);
@@ -223,6 +235,31 @@ TbgvCiphertext tbgv_partial_decrypt(TbgvContext ctx, TbgvCiphertext ct, TbgvSecr
 /* Fuse partial decryptions (exactly one produced with is_lead=1). Writes up to
  * out_len centered values; returns number written, or 0 on error. */
 size_t tbgv_fuse(TbgvContext ctx, const TbgvCiphertext* partials, size_t n, int64_t* out, size_t out_len);
+
+/* Partial decryption (with OpenFHE's flooding) of a coefficient-encoded
+ * ciphertext, restricted to the coefficients listed in `idx` (each below the
+ * ring dimension, strictly increasing): every other coefficient of the
+ * partial is set to zero before it leaves this function, so fusing such
+ * partials reveals only the listed coefficients of the plaintext. */
+TbgvCiphertext tbgv_partial_decrypt_coeffs(TbgvContext ctx, TbgvCiphertext ct, TbgvSecretKey sk, int is_lead,
+                                           const uint32_t* idx, size_t n_idx);
+/* Fuses restricted partials of a coefficient-encoded ciphertext and writes
+ * the centered plaintext coefficients at `idx` to `out` (length n_idx).
+ * Fails if any coefficient outside `idx` is non-zero (a partial was not
+ * restricted to the same set). */
+int tbgv_fuse_coeffs(TbgvContext ctx, const TbgvCiphertext* partials, size_t n, const uint32_t* idx, size_t n_idx,
+                     int64_t* out);
+
+/* Transport of restricted partials: only the residues of the coefficients
+ * at `idx` (tower-major: out[t * n_idx + k] is tower t of coefficient
+ * idx[k]); out_len must be num_towers * n_idx. */
+int tbgv_partial_export_coeffs(TbgvCiphertext partial, const uint32_t* idx, size_t n_idx, uint64_t* out, size_t out_len);
+/* Rebuilds a restricted partial of the same ciphertext from such residues,
+ * taking metadata from `template_partial` (the receiver's own partial of
+ * that ciphertext): zero everywhere except at `idx`. Every residue must be
+ * below its tower's modulus. */
+TbgvCiphertext tbgv_partial_from_coeffs(TbgvContext ctx, TbgvCiphertext template_partial, const uint32_t* idx, size_t n_idx,
+                                        const uint64_t* values, size_t len);
 
 /* Single-key decryption; used only by tests to demonstrate that one share
  * alone does not decrypt. */

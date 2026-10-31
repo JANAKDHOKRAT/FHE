@@ -18,6 +18,7 @@ unsafe extern "C" {
 
     pub fn tbgv_context_new(plain_mod: u64, mult_depth: u32, security_bits: u32) -> TbgvContext;
     pub fn tbgv_context_new_tuned(plain_mod: u64, mult_depth: u32, security_bits: u32, num_large_digits: u32, scaling_mod_size: u32) -> TbgvContext;
+    pub fn tbgv_context_new_linear(plain_mod: u64, security_bits: u32, threshold_parties: u32, digit_size: u32) -> TbgvContext;
     pub fn tbgv_context_free(ctx: TbgvContext);
     pub fn tbgv_context_plain_mod(ctx: TbgvContext) -> u64;
     pub fn tbgv_context_ring_dim(ctx: TbgvContext) -> u32;
@@ -119,6 +120,7 @@ unsafe extern "C" {
     pub fn tbgv_fuse_magnitude(ctx: TbgvContext, partials: *const TbgvCiphertext, n: usize, max_abs: *mut u64, q0: *mut u64) -> c_int;
 
     pub fn tbgv_plaintext_new(ctx: TbgvContext, values: *const i64, n: usize) -> TbgvPlaintext;
+    pub fn tbgv_plaintext_new_coef(ctx: TbgvContext, values: *const i64, n: usize) -> TbgvPlaintext;
     pub fn tbgv_plaintext_free(pt: TbgvPlaintext);
     pub fn tbgv_encrypt(ctx: TbgvContext, pk: TbgvPublicKey, pt: TbgvPlaintext) -> TbgvCiphertext;
     pub fn tbgv_ciphertext_clone(ct: TbgvCiphertext) -> TbgvCiphertext;
@@ -184,6 +186,24 @@ unsafe extern "C" {
 
     pub fn tbgv_partial_decrypt(ctx: TbgvContext, ct: TbgvCiphertext, sk: TbgvSecretKey, is_lead: c_int) -> TbgvCiphertext;
     pub fn tbgv_fuse(ctx: TbgvContext, partials: *const TbgvCiphertext, n: usize, out: *mut i64, out_len: usize) -> usize;
+    pub fn tbgv_partial_decrypt_coeffs(
+        ctx: TbgvContext,
+        ct: TbgvCiphertext,
+        sk: TbgvSecretKey,
+        is_lead: c_int,
+        idx: *const u32,
+        n_idx: usize,
+    ) -> TbgvCiphertext;
+    pub fn tbgv_fuse_coeffs(ctx: TbgvContext, partials: *const TbgvCiphertext, n: usize, idx: *const u32, n_idx: usize, out: *mut i64) -> c_int;
+    pub fn tbgv_partial_export_coeffs(partial: TbgvCiphertext, idx: *const u32, n_idx: usize, out: *mut u64, out_len: usize) -> c_int;
+    pub fn tbgv_partial_from_coeffs(
+        ctx: TbgvContext,
+        template_partial: TbgvCiphertext,
+        idx: *const u32,
+        n_idx: usize,
+        values: *const u64,
+        len: usize,
+    ) -> TbgvCiphertext;
     pub fn tbgv_decrypt_single(ctx: TbgvContext, sk: TbgvSecretKey, ct: TbgvCiphertext, out: *mut i64, out_len: usize) -> usize;
     pub fn tbgv_loaded_openfhe_libraries() -> *mut c_char;
 }

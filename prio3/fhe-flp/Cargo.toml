@@ -1,0 +1,22 @@
+[package]
+name = "fhe-flp"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "Prio3's fully linear proofs (FLP) checked under threshold BGV: one coefficient-encoded ciphertext per report, linear queries evaluated homomorphically, only the verifier message and the aggregate decrypted"
+
+# standalone: not part of the parent workspace (like fhe-prio3)
+[workspace]
+
+[dependencies]
+prio = "=0.18.1"
+openfhe-tbgv-rs = { path = "../openfhe-tbgv-rs" }
+sha2 = "0.10"
+rand = "0.8"
+
+[profile.release]
+debug = false
+
+[profile.test]
+opt-level = 3

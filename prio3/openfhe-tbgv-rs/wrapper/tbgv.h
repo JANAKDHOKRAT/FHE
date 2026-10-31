@@ -52,6 +52,14 @@ TbgvContext tbgv_context_deserialize(const uint8_t* buf, size_t len);
 TbgvContext tbgv_context_new_linear(uint64_t plain_mod, uint32_t security_bits, uint32_t threshold_parties,
                                     uint32_t digit_size);
 
+/* Single-key context for the one-aggregator protocol: the collector holds
+ * the whole secret key (tbgv_keygen_first). FIXEDMANUAL scaling, BV key
+ * switching (no auxiliary modulus P: Q is the whole modulus the security
+ * level is checked against), `num_towers` towers: the first of
+ * `first_mod_bits`, the others of `scaling_mod_bits`. */
+TbgvContext tbgv_context_new_single(uint64_t plain_mod, uint32_t security_bits, uint32_t first_mod_bits,
+                                    uint32_t scaling_mod_bits, uint32_t num_towers);
+
 /* ---- n-of-n key generation (sequential) ------------------------------- */
 int tbgv_keygen_first(TbgvContext ctx, TbgvPublicKey* out_pk, TbgvSecretKey* out_sk);
 int tbgv_keygen_next(TbgvContext ctx, TbgvPublicKey prev_joint_pk, TbgvPublicKey* out_joint_pk, TbgvSecretKey* out_sk);
@@ -260,6 +268,22 @@ int tbgv_partial_export_coeffs(TbgvCiphertext partial, const uint32_t* idx, size
  * below its tower's modulus. */
 TbgvCiphertext tbgv_partial_from_coeffs(TbgvContext ctx, TbgvCiphertext template_partial, const uint32_t* idx, size_t n_idx,
                                         const uint64_t* values, size_t len);
+
+/* Noise flooding by the party that evaluated `ct`, before it is handed to a
+ * key holder: adds t * E to element 0, E uniform in [-2^(width-1), 2^(width-1))
+ * per coefficient (OpenFHE's discrete uniform generator). The plaintext is
+ * unchanged; any noise of magnitude below t 2^(width-1-lambda) is hidden up to
+ * statistical distance 2^-lambda per coefficient. Refused unless
+ * width + ceil(log2 t) + 2 <= floor(log2 Q) of `ct`'s towers. */
+TbgvCiphertext tbgv_ciphertext_flood(TbgvContext ctx, TbgvCiphertext ct, uint32_t width_bits);
+/* BGV modulus switching (ModReduce) `levels` times, dropping one tower each
+ * and dividing the noise accordingly (FIXEDMANUAL contexts only). The result
+ * is labelled noise-scale degree 1, the plaintext scale being unchanged. */
+TbgvCiphertext tbgv_ciphertext_mod_reduce(TbgvContext ctx, TbgvCiphertext ct, uint32_t levels);
+/* Full-key decryption of a coefficient-encoded ciphertext; writes the centered
+ * coefficients at `idx` (strictly increasing, below the ring dimension). */
+int tbgv_decrypt_coeffs(TbgvContext ctx, TbgvSecretKey sk, TbgvCiphertext ct, const uint32_t* idx, size_t n_idx,
+                        int64_t* out);
 
 /* Single-key decryption; used only by tests to demonstrate that one share
  * alone does not decrypt. */

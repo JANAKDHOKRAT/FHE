@@ -59,10 +59,10 @@ pub const FLOODING_SLACK_BITS: u32 = 20;
 /// margin of 75 bits instead of 52 with digit size 1, for 4% larger reports.
 pub const DIGIT_SIZE: u32 = 30;
 
-fn to_u64(x: Field) -> u64 {
+pub(crate) fn to_u64(x: Field) -> u64 {
     u64::from(u32::from(x))
 }
-fn from_u64(v: u64) -> Field {
+pub(crate) fn from_u64(v: u64) -> Field {
     Field::from(u32::try_from(v).expect("value below p < 2^32"))
 }
 
@@ -143,34 +143,25 @@ impl Layout {
     }
 }
 
-/// Everything all parties agree on for one aggregation task.
-pub struct Task<T: VerifierMap> {
+/// The FLP side of a task, shared by the threshold [`Task`] and the
+/// one-aggregator [`crate::single::SingleTask`]: the type, the proofs, where
+/// everything sits in the plaintext polynomial, and the verifier.
+pub struct FlpPlan<T: VerifierMap> {
     typ: T,
-    params: TaskParams,
-    ctx: Context,
+    task_id: [u8; 32],
+    num_proofs: usize,
     layout: Layout,
-    /// Residues of fresh ciphertexts and of the sum (all towers).
-    codec: ResidueCodec,
-    /// Residues of verifier shares: partials of a plaintext product, which
-    /// sits lower in the chain.
-    share_codec: ResidueCodec,
 }
 
-impl<T: VerifierMap> Task<T> {
-    /// Creates the task: the FLP type, its parameters, and the depth-0 BGV
-    /// context (`p = 4293918721`, 128-bit HE-standard security; OpenFHE
-    /// chooses ring 8192 for it).
-    ///
-    /// Refused: fewer than two or more than 255 aggregators; zero or more
-    /// than `MAX_PROOFS` proofs; types that need joint randomness (input and
-    /// proof share one ciphertext, so there is no input commitment to derive
-    /// it from; see `bitvec` for a circuit without it); types whose
-    /// aggregate is not the input itself (`truncate` must be the identity).
-    pub fn new(typ: T, params: TaskParams) -> Result<Self> {
-        if !(2..=255).contains(&params.num_aggregators) {
-            return Err(Error::Protocol("between 2 and 255 aggregators are supported".into()));
-        }
-        if !(1..=MAX_PROOFS).contains(&params.num_proofs) {
+impl<T: VerifierMap> FlpPlan<T> {
+    /// Refused: zero or more than `MAX_PROOFS` proofs; types that need joint
+    /// randomness (input and proof share one ciphertext, so there is no
+    /// input commitment to derive it from; see `bitvec` for a circuit without
+    /// it); types whose aggregate is not the input itself (`truncate` must be
+    /// the identity); a closed-form verifier map that disagrees with
+    /// `Flp::query`; input and proofs that do not fit `ring` coefficients.
+    pub(crate) fn new(typ: T, task_id: [u8; 32], num_proofs: usize, ring: usize) -> Result<Self> {
+        if !(1..=MAX_PROOFS).contains(&num_proofs) {
             return Err(Error::Protocol(format!("between 1 and {MAX_PROOFS} proofs are supported")));
         }
         if typ.joint_rand_len() != 0 {
@@ -188,58 +179,50 @@ impl<T: VerifierMap> Task<T> {
         if u64::from(Field::modulus()) != PLAIN_MOD {
             return Err(Error::Protocol("field and plaintext modulus differ".into()));
         }
-        let ctx = Context::new_linear(PLAIN_MOD, 128, params.num_aggregators as u32, DIGIT_SIZE)?;
-        if ctx.plain_mod() != PLAIN_MOD {
-            return Err(Error::Protocol("context has another plaintext modulus".into()));
-        }
-        let layout = Layout::new(&typ, params.num_proofs, ctx.ring_dim() as usize)?;
-        let moduli = ctx.moduli()?;
-        // The tower counts of the two kinds of partials, read off real objects
-        // under a throwaway key rather than assumed.
-        let (pk, sk) = keygen_first(&ctx)?;
-        let fresh = ctx.encrypt(&pk, &ctx.coef_plaintext(&[0])?)?;
-        let prod = ctx.mult_plain(&fresh, &ctx.coef_plaintext(&[1])?)?;
-        let towers = |c: &Ciphertext| -> Result<usize> { Ok(sk.partial_decrypt_coeffs(c, true, &[0])?.ciphertext().meta()?.num_towers as usize) };
-        let (sum_towers, share_towers) = (towers(&fresh)?, towers(&prod)?);
-        if sum_towers != moduli.len() || share_towers == 0 || share_towers > sum_towers {
-            return Err(Error::Fhe(format!(
-                "unexpected partial tower counts {sum_towers}, {share_towers} of {}",
-                moduli.len()
-            )));
-        }
+        let layout = Layout::new(&typ, num_proofs, ring)?;
         check_closed_form(&typ)?;
-        let codec = ResidueCodec::new(&moduli)?;
-        let share_codec = ResidueCodec::new(&moduli[..share_towers])?;
         Ok(Self {
             typ,
-            params,
-            ctx,
+            task_id,
+            num_proofs,
             layout,
-            codec,
-            share_codec,
         })
     }
 
     pub fn typ(&self) -> &T {
         &self.typ
     }
-    pub fn params(&self) -> &TaskParams {
-        &self.params
-    }
-    pub fn context(&self) -> &Context {
-        &self.ctx
-    }
     pub fn layout(&self) -> &Layout {
         &self.layout
     }
-    pub fn report_len(&self) -> usize {
-        NONCE_LEN + self.codec.len(2, self.layout.ring)
+
+    /// `z = input || proof_1 || .. || proof_k`, each proof from prio's
+    /// unchanged `Flp::prove` with fresh randomness.
+    pub(crate) fn prove(&self, input: &[Field]) -> Result<Vec<Field>> {
+        let typ = &self.typ;
+        let k = self.num_proofs;
+        let mut seed = [0u8; 32];
+        OsRng.fill_bytes(&mut seed);
+        let prove_rands: Vec<Field> = XofTurboShake128::seed_stream(&seed, &[DST_PROVE, &self.task_id], &[&[k as u8]]).into_field_vec(typ.prove_rand_len() * k);
+        let mut z = input.to_vec();
+        for p in 0..k {
+            let pr = &prove_rands[p * typ.prove_rand_len()..(p + 1) * typ.prove_rand_len()];
+            z.extend(typ.prove(input, pr, &[])?);
+        }
+        Ok(z)
     }
-    pub fn verifier_share_len(&self) -> usize {
-        1 + self.layout.groups().iter().map(|g| self.share_codec.len(1, g.len())).sum::<usize>()
-    }
-    pub fn aggregate_share_len(&self) -> usize {
-        1 + 8 + self.codec.len(1, self.layout.input_len)
+
+    /// Prio3's `decide` on every proof's verifier.
+    pub(crate) fn decide(&self, verifier: &[Field]) -> Result<bool> {
+        let v = self.layout.verifier_len;
+        if verifier.len() != self.layout.num_rows() {
+            return Err(Error::Protocol("verifier has the wrong length".into()));
+        }
+        let mut ok = true;
+        for p in 0..self.num_proofs {
+            ok &= self.typ.decide(&verifier[p * v..(p + 1) * v])?;
+        }
+        Ok(ok)
     }
 
     /// Query randomness for every proof of one report (see the module docs).
@@ -248,14 +231,14 @@ impl<T: VerifierMap> Task<T> {
             return Err(Error::Codec("report shorter than its nonce".into()));
         }
         let digest = Sha256::digest(report);
-        let k = self.params.num_proofs;
+        let k = self.num_proofs;
         let qlen = self.typ.query_rand_len();
         let compress = if self.typ.eval_output_len() > 1 { self.typ.eval_output_len() } else { 0 };
         let wire_orders: Vec<u32> = self.typ.gadget().iter().map(|g| (1 + g.calls()).next_power_of_two() as u32).collect();
         // Each gadget point is rejected with probability below 2^-11 for
         // calls < 2^20, so 64 spare elements per proof make running out
         // impossible in practice; it is still an error, not a panic.
-        let pool: Vec<Field> = XofTurboShake128::seed_stream(verify_key, &[DST_QUERY, &self.params.task_id], &[&[k as u8], &report[..NONCE_LEN], &digest])
+        let pool: Vec<Field> = XofTurboShake128::seed_stream(verify_key, &[DST_QUERY, &self.task_id], &[&[k as u8], &report[..NONCE_LEN], &digest])
             .into_field_vec(k * (qlen + 64));
         let mut it = pool.into_iter();
         let mut out = Vec::with_capacity(k);
@@ -360,6 +343,99 @@ impl<T: VerifierMap> Task<T> {
     }
 }
 
+/// Everything all parties agree on for one aggregation task.
+pub struct Task<T: VerifierMap> {
+    plan: FlpPlan<T>,
+    params: TaskParams,
+    ctx: Context,
+    /// Residues of fresh ciphertexts and of the sum (all towers).
+    codec: ResidueCodec,
+    /// Residues of verifier shares: partials of a plaintext product, which
+    /// sits lower in the chain.
+    share_codec: ResidueCodec,
+}
+
+impl<T: VerifierMap> Task<T> {
+    /// Creates the task: the FLP type, its parameters, and the depth-0 BGV
+    /// context (`p = 4293918721`, 128-bit HE-standard security; OpenFHE
+    /// chooses ring 8192 for it).
+    ///
+    /// Refused: fewer than two or more than 255 aggregators, and everything
+    /// [`FlpPlan::new`] refuses.
+    pub fn new(typ: T, params: TaskParams) -> Result<Self> {
+        if !(2..=255).contains(&params.num_aggregators) {
+            return Err(Error::Protocol("between 2 and 255 aggregators are supported".into()));
+        }
+        let ctx = Context::new_linear(PLAIN_MOD, 128, params.num_aggregators as u32, DIGIT_SIZE)?;
+        if ctx.plain_mod() != PLAIN_MOD {
+            return Err(Error::Protocol("context has another plaintext modulus".into()));
+        }
+        let plan = FlpPlan::new(typ, params.task_id, params.num_proofs, ctx.ring_dim() as usize)?;
+        let moduli = ctx.moduli()?;
+        // The tower counts of the two kinds of partials, read off real objects
+        // under a throwaway key rather than assumed.
+        let (pk, sk) = keygen_first(&ctx)?;
+        let fresh = ctx.encrypt(&pk, &ctx.coef_plaintext(&[0])?)?;
+        let prod = ctx.mult_plain(&fresh, &ctx.coef_plaintext(&[1])?)?;
+        let towers = |c: &Ciphertext| -> Result<usize> { Ok(sk.partial_decrypt_coeffs(c, true, &[0])?.ciphertext().meta()?.num_towers as usize) };
+        let (sum_towers, share_towers) = (towers(&fresh)?, towers(&prod)?);
+        if sum_towers != moduli.len() || share_towers == 0 || share_towers > sum_towers {
+            return Err(Error::Fhe(format!(
+                "unexpected partial tower counts {sum_towers}, {share_towers} of {}",
+                moduli.len()
+            )));
+        }
+        let codec = ResidueCodec::new(&moduli)?;
+        let share_codec = ResidueCodec::new(&moduli[..share_towers])?;
+        Ok(Self {
+            plan,
+            params,
+            ctx,
+            codec,
+            share_codec,
+        })
+    }
+
+    pub fn typ(&self) -> &T {
+        self.plan.typ()
+    }
+    pub fn params(&self) -> &TaskParams {
+        &self.params
+    }
+    pub fn context(&self) -> &Context {
+        &self.ctx
+    }
+    pub fn layout(&self) -> &Layout {
+        self.plan.layout()
+    }
+    pub fn report_len(&self) -> usize {
+        NONCE_LEN + self.codec.len(2, self.layout().ring)
+    }
+    pub fn verifier_share_len(&self) -> usize {
+        1 + self.layout().groups().iter().map(|g| self.share_codec.len(1, g.len())).sum::<usize>()
+    }
+    pub fn aggregate_share_len(&self) -> usize {
+        1 + 8 + self.codec.len(1, self.layout().input_len)
+    }
+
+    /// Query randomness for every proof of one report.
+    pub fn query_rands(&self, verify_key: &[u8; 32], report: &[u8]) -> Result<Vec<Vec<Field>>> {
+        self.plan.query_rands(verify_key, report)
+    }
+    /// See [`FlpPlan::linear_map`].
+    pub fn linear_map(&self, query_rands: &[Vec<Field>]) -> Result<(Vec<Vec<Field>>, Vec<Field>)> {
+        self.plan.linear_map(query_rands)
+    }
+    /// See [`FlpPlan::linear_map_by_query`].
+    pub fn linear_map_by_query(&self, query_rands: &[Vec<Field>]) -> Result<(Vec<Vec<Field>>, Vec<Field>)> {
+        self.plan.linear_map_by_query(query_rands)
+    }
+    /// See [`FlpPlan::query_poly`].
+    pub fn query_poly(&self, rows: &[Vec<Field>]) -> Vec<u64> {
+        self.plan.query_poly(rows)
+    }
+}
+
 /// A closed-form verifier map must agree with `Flp::query`: checked at
 /// fresh random query randomness and random `(input, proof)` (an affine map
 /// that differs anywhere differs at a random point with probability at
@@ -412,7 +488,7 @@ impl<'a, T: VerifierMap> Client<'a, T> {
     }
 
     pub fn shard(&self, measurement: &T::Measurement) -> Result<Vec<u8>> {
-        let input = self.task.typ.encode_measurement(measurement)?;
+        let input = self.task.typ().encode_measurement(measurement)?;
         Ok(self.shard_with_witness(&input)?.0)
     }
 
@@ -421,24 +497,14 @@ impl<'a, T: VerifierMap> Client<'a, T> {
     /// clients call [`Self::shard`]; tests use this to act as a malicious
     /// client and to compare with prio's plaintext FLP.
     pub fn shard_with_witness(&self, input: &[Field]) -> Result<(Vec<u8>, Vec<Field>)> {
-        let typ = &self.task.typ;
-        let k = self.task.params.num_proofs;
-        let mut seed = [0u8; 32];
-        OsRng.fill_bytes(&mut seed);
-        let prove_rands: Vec<Field> =
-            XofTurboShake128::seed_stream(&seed, &[DST_PROVE, &self.task.params.task_id], &[&[k as u8]]).into_field_vec(typ.prove_rand_len() * k);
-        let mut z = input.to_vec();
-        for p in 0..k {
-            let pr = &prove_rands[p * typ.prove_rand_len()..(p + 1) * typ.prove_rand_len()];
-            z.extend(typ.prove(input, pr, &[])?);
-        }
+        let z = self.task.plan.prove(input)?;
         Ok((self.report_from_coefficients(&z)?, z))
     }
 
     /// Encrypts arbitrary coefficients as a report (malicious-client tests).
     pub fn report_from_coefficients(&self, z: &[Field]) -> Result<Vec<u8>> {
         let ctx = &self.task.ctx;
-        if z.len() > self.task.layout.ring {
+        if z.len() > self.task.layout().ring {
             return Err(Error::Protocol("too many coefficients".into()));
         }
         let vals: Vec<u64> = z.iter().map(|&x| to_u64(x)).collect();
@@ -450,7 +516,7 @@ impl<'a, T: VerifierMap> Client<'a, T> {
         let mut nonce = [0u8; NONCE_LEN];
         OsRng.fill_bytes(&mut nonce);
         let mut out = nonce.to_vec();
-        out.extend(self.task.codec.pack(&ct.export_residues()?, 2, self.task.layout.ring)?);
+        out.extend(self.task.codec.pack(&ct.export_residues()?, 2, self.task.layout().ring)?);
         Ok(out)
     }
 }
@@ -512,7 +578,7 @@ impl<'a, T: VerifierMap> Aggregator<'a, T> {
             return Err(Error::Codec(format!("report has {} bytes, expected {}", report.len(), self.task.report_len())));
         }
         let nonce: [u8; NONCE_LEN] = report[..NONCE_LEN].try_into().expect("length checked");
-        let residues = self.task.codec.unpack(&report[NONCE_LEN..], 2, self.task.layout.ring)?;
+        let residues = self.task.codec.unpack(&report[NONCE_LEN..], 2, self.task.layout().ring)?;
         let ct = self.task.ctx.build_ciphertext(&self.reference, &self.reference.meta()?, &residues)?;
         Ok((nonce, ct))
     }
@@ -529,10 +595,10 @@ impl<'a, T: VerifierMap> Aggregator<'a, T> {
         let (rows, constants) = task.linear_map(&qrs)?;
         let mut partials = Vec::new();
         let mut msg = vec![self.agg_id as u8];
-        for g in task.layout.groups() {
+        for g in task.layout().groups() {
             let q = task.ctx.coef_plaintext(&task.query_poly(&rows[g.clone()]))?;
             let prod = task.ctx.mult_plain(&ct, &q)?;
-            let idx = task.layout.group_coeffs(g.len());
+            let idx = task.layout().group_coeffs(g.len());
             let pd = self.share.partial_decrypt_coeffs(&prod, self.agg_id == 0, &idx)?;
             msg.extend(task.share_codec.pack(&pd.export_coeffs(&idx)?, 1, idx.len())?);
             partials.push(pd);
@@ -558,10 +624,10 @@ impl<'a, T: VerifierMap> Aggregator<'a, T> {
                 return Err(Error::Protocol("verifier shares must come from distinct aggregators".into()));
             }
         }
-        let mut fused = Vec::with_capacity(task.layout.num_rows());
+        let mut fused = Vec::with_capacity(task.layout().num_rows());
         let mut off = 0;
-        for (gi, g) in task.layout.groups().iter().enumerate() {
-            let idx = task.layout.group_coeffs(g.len());
+        for (gi, g) in task.layout().groups().iter().enumerate() {
+            let idx = task.layout().group_coeffs(g.len());
             let len = task.share_codec.len(1, g.len());
             let own = &state.partials[gi];
             let mut parts = Vec::with_capacity(n);
@@ -586,13 +652,7 @@ impl<'a, T: VerifierMap> Aggregator<'a, T> {
             fused.extend(task.ctx.fuse_coeffs(&refs, &idx)?.into_iter().map(from_u64));
         }
         let verifier: Vec<Field> = fused.iter().zip(&state.constants).map(|(&a, &c)| a + c).collect();
-        let v = task.layout.verifier_len;
-        let mut accepted = true;
-        for p in 0..task.params.num_proofs {
-            if !task.typ.decide(&verifier[p * v..(p + 1) * v])? {
-                accepted = false;
-            }
-        }
+        let accepted = task.plan.decide(&verifier)?;
         if accepted {
             if self.accepted >= MAX_BATCH {
                 return Err(Error::Protocol("batch is full".into()));
@@ -614,7 +674,7 @@ impl<'a, T: VerifierMap> Aggregator<'a, T> {
     /// decryption of the sum, restricted to the output coefficients.
     pub fn aggregate_share(&self) -> Result<Vec<u8>> {
         let sum = self.sum.as_ref().ok_or_else(|| Error::Protocol("no accepted reports".into()))?;
-        let idx = self.task.layout.output_coeffs();
+        let idx = self.task.layout().output_coeffs();
         let pd = self.share.partial_decrypt_coeffs(sum, self.agg_id == 0, &idx)?;
         let mut msg = vec![self.agg_id as u8];
         msg.extend(self.accepted.to_le_bytes());
@@ -635,7 +695,7 @@ impl<'a, T: VerifierMap> Collector<'a, T> {
     pub fn new(task: &'a Task<T>) -> Result<Self> {
         let (pk, sk) = keygen_first(&task.ctx)?;
         let ct = task.ctx.encrypt(&pk, &task.ctx.coef_plaintext(&[0])?)?;
-        let template = sk.partial_decrypt_coeffs(&ct, true, &task.layout.output_coeffs())?;
+        let template = sk.partial_decrypt_coeffs(&ct, true, &task.layout().output_coeffs())?;
         Ok(Self { task, template })
     }
 
@@ -645,7 +705,7 @@ impl<'a, T: VerifierMap> Collector<'a, T> {
         if shares.len() != n {
             return Err(Error::Protocol(format!("expected {n} aggregate shares, got {}", shares.len())));
         }
-        let idx = task.layout.output_coeffs();
+        let idx = task.layout().output_coeffs();
         let mut seen = vec![false; n];
         let mut count = None;
         let mut parts = Vec::with_capacity(n);
@@ -670,6 +730,6 @@ impl<'a, T: VerifierMap> Collector<'a, T> {
             return Err(Error::Protocol(format!("aggregate outside the flooding range (ratio {ratio:.3})")));
         }
         let data: Vec<Field> = task.ctx.fuse_coeffs(&refs, &idx)?.into_iter().map(from_u64).collect();
-        Ok(task.typ.decode_result(&data, count.unwrap_or(0) as usize)?)
+        Ok(task.typ().decode_result(&data, count.unwrap_or(0) as usize)?)
     }
 }

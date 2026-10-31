@@ -15,7 +15,7 @@
 mod ffi;
 mod selftest;
 
-pub use selftest::{RebuildReport, rebuild_verified, verify_linear_rebuild_once, verify_rebuild_once};
+pub use selftest::{RebuildReport, rebuild_verified, verify_linear_rebuild_once, verify_rebuild_once, verify_single_rebuild_once};
 
 use std::ffi::{CStr, CString};
 use std::fmt;
@@ -186,6 +186,36 @@ impl Context {
         Ok(Self {
             inner: Arc::new(ContextInner(p)),
         })
+    }
+
+    /// Single-key context for a protocol in which one party (the collector)
+    /// holds the whole secret key ([`keygen_first`] alone): `FIXEDMANUAL`
+    /// scaling, BV key switching (no `P`), `num_towers` towers of
+    /// `first_mod_bits`, then `scaling_mod_bits` each.
+    pub fn new_single(plain_mod: u64, security_bits: u32, first_mod_bits: u32, scaling_mod_bits: u32, num_towers: u32) -> Result<Self> {
+        check_loaded_openfhe()?;
+        let p = unsafe { ffi::tbgv_context_new_single(plain_mod, security_bits, first_mod_bits, scaling_mod_bits, num_towers) };
+        if p.is_null() {
+            return Err(last_error());
+        }
+        Ok(Self {
+            inner: Arc::new(ContextInner(p)),
+        })
+    }
+
+    /// Adds `t * E`, `E` uniform in `[-2^(width-1), 2^(width-1))` per
+    /// coefficient, to `ct` (noise flooding by the evaluator before a key
+    /// holder decrypts). Refused unless `width + ceil(log2 t) + 2 <=
+    /// floor(log2 Q)` over `ct`'s towers.
+    pub fn flood(&self, ct: &Ciphertext, width_bits: u32) -> Result<Ciphertext> {
+        self.wrap_ct(unsafe { ffi::tbgv_ciphertext_flood(self.raw(), ct.ptr, width_bits) })
+    }
+
+    /// BGV modulus switching that drops `levels` towers and divides the
+    /// noise accordingly (single-key `FIXEDMANUAL` contexts); the result is a
+    /// degree-1 ciphertext at the lower level.
+    pub fn mod_reduce(&self, ct: &Ciphertext, levels: u32) -> Result<Ciphertext> {
+        self.wrap_ct(unsafe { ffi::tbgv_ciphertext_mod_reduce(self.raw(), ct.ptr, levels) })
     }
 
     /// Coefficient-encoded plaintext: `values[i]` (in `[0, p)`) is the
@@ -764,6 +794,17 @@ impl SecretShare {
             ct: Ciphertext { ptr: p, ctx: self.ctx.clone() },
             lead,
         })
+    }
+
+    /// Decryption with the whole key (single-key contexts): the plaintext
+    /// coefficients of a coefficient-encoded `ct` at `idx`, as field elements.
+    pub fn decrypt_coeffs(&self, ct: &Ciphertext, idx: &[u32]) -> Result<Vec<u64>> {
+        let mut out = vec![0i64; idx.len()];
+        let ok = unsafe { ffi::tbgv_decrypt_coeffs(self.ctx.raw(), self.ptr, ct.ptr, idx.as_ptr(), idx.len(), out.as_mut_ptr()) };
+        if ok == 0 {
+            return Err(last_error());
+        }
+        Ok(out.iter().map(|&v| self.ctx.uncenter(v)).collect())
     }
 
     /// Single-share decryption. With more than one party this returns

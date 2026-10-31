@@ -16,6 +16,7 @@
 pub mod bitvec;
 pub mod codec;
 pub mod protocol;
+pub mod single;
 pub mod soundness;
 
 pub use protocol::*;

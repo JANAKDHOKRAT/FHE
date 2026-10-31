@@ -19,6 +19,7 @@ unsafe extern "C" {
     pub fn tbgv_context_new(plain_mod: u64, mult_depth: u32, security_bits: u32) -> TbgvContext;
     pub fn tbgv_context_new_tuned(plain_mod: u64, mult_depth: u32, security_bits: u32, num_large_digits: u32, scaling_mod_size: u32) -> TbgvContext;
     pub fn tbgv_context_new_linear(plain_mod: u64, security_bits: u32, threshold_parties: u32, digit_size: u32) -> TbgvContext;
+    pub fn tbgv_context_new_single(plain_mod: u64, security_bits: u32, first_mod_bits: u32, scaling_mod_bits: u32, num_towers: u32) -> TbgvContext;
     pub fn tbgv_context_free(ctx: TbgvContext);
     pub fn tbgv_context_plain_mod(ctx: TbgvContext) -> u64;
     pub fn tbgv_context_ring_dim(ctx: TbgvContext) -> u32;
@@ -195,6 +196,9 @@ unsafe extern "C" {
         n_idx: usize,
     ) -> TbgvCiphertext;
     pub fn tbgv_fuse_coeffs(ctx: TbgvContext, partials: *const TbgvCiphertext, n: usize, idx: *const u32, n_idx: usize, out: *mut i64) -> c_int;
+    pub fn tbgv_ciphertext_flood(ctx: TbgvContext, ct: TbgvCiphertext, width_bits: u32) -> TbgvCiphertext;
+    pub fn tbgv_ciphertext_mod_reduce(ctx: TbgvContext, ct: TbgvCiphertext, levels: u32) -> TbgvCiphertext;
+    pub fn tbgv_decrypt_coeffs(ctx: TbgvContext, sk: TbgvSecretKey, ct: TbgvCiphertext, idx: *const u32, n_idx: usize, out: *mut i64) -> c_int;
     pub fn tbgv_partial_export_coeffs(partial: TbgvCiphertext, idx: *const u32, n_idx: usize, out: *mut u64, out_len: usize) -> c_int;
     pub fn tbgv_partial_from_coeffs(
         ctx: TbgvContext,

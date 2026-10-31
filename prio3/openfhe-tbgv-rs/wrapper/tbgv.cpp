@@ -197,6 +197,34 @@ TbgvContext tbgv_context_new_linear(uint64_t plain_mod, uint32_t security_bits, 
     TBGV_CATCH(nullptr)
 }
 
+TbgvContext tbgv_context_new_single(uint64_t plain_mod, uint32_t security_bits, uint32_t first_mod_bits,
+                                    uint32_t scaling_mod_bits, uint32_t num_towers) {
+    TBGV_TRY
+    if (num_towers < 1) { set_error("num_towers must be at least 1"); return nullptr; }
+    CCParams<CryptoContextBGVRNS> params;
+    params.SetPlaintextModulus(plain_mod);
+    params.SetMultiplicativeDepth(num_towers - 1);
+    params.SetScalingTechnique(FIXEDMANUAL);
+    params.SetFirstModSize(first_mod_bits);
+    params.SetScalingModSize(scaling_mod_bits);
+    params.SetSecretKeyDist(UNIFORM_TERNARY);
+    params.SetKeySwitchTechnique(BV);
+    switch (security_bits) {
+        case 128: params.SetSecurityLevel(HEStd_128_classic); break;
+        case 192: params.SetSecurityLevel(HEStd_192_classic); break;
+        case 256: params.SetSecurityLevel(HEStd_256_classic); break;
+        default: set_error("security_bits must be 128, 192 or 256"); return nullptr;
+    }
+    CC cc = GenCryptoContext(params);
+    cc->Enable(PKE);
+    cc->Enable(LEVELEDSHE);
+    if (cc->GetCryptoParameters()->GetElementParams()->GetParams().size() != num_towers) {
+        set_error("OpenFHE built a chain of another length"); return nullptr;
+    }
+    return new CC(cc);
+    TBGV_CATCH(nullptr)
+}
+
 void tbgv_context_free(TbgvContext ctx) { delete static_cast<CC*>(ctx); }
 
 uint64_t tbgv_context_plain_mod(TbgvContext ctx) {
@@ -1470,6 +1498,80 @@ TbgvCiphertext tbgv_partial_from_coeffs(TbgvContext ctx, TbgvCiphertext template
     out->SetElements({std::move(x)});
     return new CT(out);
     TBGV_CATCH(nullptr)
+}
+
+TbgvCiphertext tbgv_ciphertext_flood(TbgvContext ctx, TbgvCiphertext h, uint32_t width_bits) {
+    TBGV_TRY
+    const CT& ct = ct_of(h);
+    if (ct->GetElements().size() != 2) { set_error("expects a two-element ciphertext"); return nullptr; }
+    DCRTPoly c0 = ct->GetElements()[0];
+    const size_t towers = c0.GetNumOfElements();
+    const uint32_t n = c0.GetRingDimension();
+    const uint64_t t = cc_of(ctx)->GetCryptoParameters()->GetPlaintextModulus();
+    double log_q = 0;
+    for (size_t i = 0; i < towers; ++i) log_q += std::log2(c0.GetElementAtIndex(i).GetModulus().ConvertToDouble());
+    const double log_t = std::ceil(std::log2(static_cast<double>(t)));
+    if (width_bits < 1 || width_bits + log_t + 2 > std::floor(log_q)) { set_error("flooding width too large for this ciphertext's modulus"); return nullptr; }
+    const BigInteger width = BigInteger(1) << width_bits;
+    const BigInteger half = BigInteger(1) << (width_bits - 1);
+    DiscreteUniformGeneratorImpl<BigVector> dug;
+    const BigVector e = dug.GenerateVector(n, width);  // uniform in [0, 2^width)
+    const Format fmt = c0.GetFormat();
+    c0.SetFormat(Format::COEFFICIENT);
+    for (size_t i = 0; i < towers; ++i) {
+        NativePoly tower = c0.GetElementAtIndex(i);
+        const NativeInteger q = tower.GetModulus();
+        const BigInteger qb(q.ConvertToInt<uint64_t>());
+        const NativeInteger tq = NativeInteger(t).Mod(q);
+        const NativeInteger hq = NativeInteger((half.Mod(qb)).ConvertToInt<uint64_t>());
+        NativeVector v = tower.GetValues();
+        for (uint32_t j = 0; j < n; ++j) {
+            // t * (e_j - 2^(width-1)) mod q, added to c0
+            const NativeInteger ej = NativeInteger((e[j].Mod(qb)).ConvertToInt<uint64_t>());
+            const NativeInteger centered = ej.ModSub(hq, q);
+            v[j] = v[j].ModAdd(centered.ModMul(tq, q), q);
+        }
+        tower.SetValues(std::move(v), Format::COEFFICIENT);
+        c0.SetElementAtIndex(i, std::move(tower));
+    }
+    c0.SetFormat(fmt);
+    CT out = ct->Clone();
+    out->SetElements({std::move(c0), ct->GetElements()[1]});
+    return new CT(out);
+    TBGV_CATCH(nullptr)
+}
+
+TbgvCiphertext tbgv_ciphertext_mod_reduce(TbgvContext ctx, TbgvCiphertext h, uint32_t levels) {
+    TBGV_TRY
+    CT out = ct_of(h)->Clone();
+    if (levels >= out->GetElements()[0].GetNumOfElements()) { set_error("cannot drop every tower"); return nullptr; }
+    const auto rns = std::dynamic_pointer_cast<CryptoParametersRNS>(out->GetCryptoParameters());
+    if (!rns || rns->GetScalingTechnique() != FIXEDMANUAL) { set_error("modulus reduction is for FIXEDMANUAL contexts"); return nullptr; }
+    for (uint32_t i = 0; i < levels; ++i) cc_of(ctx)->ModReduceInPlace(out);
+    // BGV modulus switching with moduli = 1 (mod t) leaves the plaintext's
+    // scale unchanged; OpenFHE decrements the noise-scale degree on every
+    // ModReduce (wrapping below zero), so the switched ciphertext is labelled
+    // as what it is: degree 1 at the lower level.
+    out->SetNoiseScaleDeg(1);
+    return new CT(out);
+    TBGV_CATCH(nullptr)
+}
+
+int tbgv_decrypt_coeffs(TbgvContext ctx, TbgvSecretKey sk, TbgvCiphertext ct, const uint32_t* idx, size_t n_idx,
+                        int64_t* out) {
+    TBGV_TRY
+    if (out == nullptr) { set_error("bad arguments"); return 0; }
+    if (ct_of(ct)->GetEncodingType() != COEF_PACKED_ENCODING) { set_error("expects a coefficient-encoded ciphertext"); return 0; }
+    const uint32_t ring = cc_of(ctx)->GetRingDimension();
+    std::vector<bool> keep;
+    if (!coeff_mask(ring, idx, n_idx, keep)) return 0;
+    Plaintext result;
+    DecryptResult r = cc_of(ctx)->Decrypt(sk_of(sk), ct_of(ct), &result);
+    if (!r.isValid) { set_error("Decrypt reported invalid result"); return 0; }
+    const std::vector<int64_t>& v = result->GetCoefPackedValue();
+    for (size_t i = 0; i < n_idx; ++i) out[i] = idx[i] < v.size() ? v[idx[i]] : 0;
+    return 1;
+    TBGV_CATCH(0)
 }
 
 size_t tbgv_decrypt_single(TbgvContext ctx, TbgvSecretKey sk, TbgvCiphertext ct, int64_t* out, size_t out_len) {

@@ -4,6 +4,10 @@
 certified.** "What is missing for production" below lists what a deployment
 still needs.
 
+This file describes the threshold version (n ≥ 2 aggregators share the
+key). For one aggregator with a collector that holds the whole key, see
+[ONE-AGGREGATOR.md](ONE-AGGREGATOR.md).
+
 ## Idea
 
 Prio3 validates a client's input with a *fully linear proof* (FLP;

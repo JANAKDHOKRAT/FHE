@@ -193,6 +193,93 @@ fn run_linear(ctx: &Context, rebuild: Rebuild<'_>) -> Result<RebuildReport> {
     })
 }
 
+/// The self-test for the one-aggregator protocol on a
+/// [`Context::new_single`] context. The objects it exchanges are fresh
+/// coefficient-encoded encryptions (level 0) and ciphertexts that were
+/// multiplied by a plaintext or summed, masked, flooded and reduced to one
+/// tower (the deepest level). It checks that each, rebuilt against a fresh
+/// coefficient-encoded reference, has identical metadata and residues and
+/// decrypts to the same coefficients, and records the deepest level so
+/// [`Context::build_ciphertext`] accepts both kinds.
+pub fn verify_single_rebuild_once(ctx: &Context) -> Result<RebuildReport> {
+    check_loaded_openfhe()?;
+    let params = params_key(ctx)?;
+    let depth = ctx.num_towers().saturating_sub(1);
+    let mut cache = cache().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(r) = cache.get(&(params.clone(), depth)) {
+        return r.clone().map_err(Error);
+    }
+    let outcome = run_single(ctx, &|c, r, m, v| c.build_ciphertext_unverified(r, m, v)).map_err(|e| {
+        format!(
+            "single-key ciphertext rebuild self-test failed on OpenFHE {OPENFHE_VERSION} as loaded ({}): {}. \
+             Received ciphertexts cannot be rebuilt exactly with this library; refusing to run.",
+            loaded_openfhe_libraries().map(|l| l.join(", ")).unwrap_or_else(|e| e.0),
+            e.0
+        )
+    });
+    cache.insert((params, depth), outcome.clone());
+    outcome.map_err(Error)
+}
+
+fn run_single(ctx: &Context, rebuild: Rebuild<'_>) -> Result<RebuildReport> {
+    let start = Instant::now();
+    let p = ctx.plain_mod();
+    let n = ctx.ring_dim() as usize;
+    let l = ctx.num_towers();
+    if l < 2 {
+        return fail("the single-key self-test needs at least two towers".into());
+    }
+    let (pk, sk) = keygen_first(ctx)?;
+    let _clear = ClearTag(pk.tag()?);
+    let reference = ctx.encrypt(&pk, &ctx.coef_plaintext(&[0])?)?;
+    let z: Vec<u64> = (0..n as u64).map(|i| (i.wrapping_mul(0x9E37_79B9) ^ (i << 7)) % p).collect();
+    let idx: Vec<u32> = (0..n as u32).step_by(97).chain([n as u32 - 1]).collect();
+    let mut checked = 0usize;
+    let mut check = |name: &str, ct: &Ciphertext, want: &[u64], fresh: bool| -> Result<()> {
+        let meta = ct.meta()?;
+        let res = ct.export_residues()?;
+        let back = rebuild(ctx, &reference, &meta, &res)?;
+        if back.meta()? != meta || back.export_residues()? != res {
+            return fail(format!("{name}: rebuilt metadata or residues differ"));
+        }
+        if fresh && back.serialize()? != ct.serialize()? {
+            return fail(format!("{name}: rebuilt fresh encryption does not re-serialize identically"));
+        }
+        if sk.decrypt_coeffs(&back, &idx)? != want {
+            return fail(format!("{name}: rebuilt object decrypts wrongly"));
+        }
+        checked += 1;
+        Ok(())
+    };
+    let ct = ctx.encrypt(&pk, &ctx.coef_plaintext(&z)?)?;
+    let at = |v: &[u64]| -> Vec<u64> { idx.iter().map(|&i| v[i as usize]).collect() };
+    check("fresh", &ct, &at(&z), true)?;
+    let log_t = (p as f64).log2().ceil() as u32;
+    let width = |c: &Ciphertext| -> Result<u32> {
+        let towers = c.meta()?.num_towers as usize;
+        let log_q: f64 = ctx.moduli()?[..towers].iter().map(|&q| (q as f64).log2()).sum();
+        Ok(log_q.floor() as u32 - log_t - 2)
+    };
+    // plaintext product (by 1, so the coefficients stay z), masked by 0, flooded, reduced
+    let prod = ctx.mult_plain(&ct, &ctx.coef_plaintext(&[1])?)?;
+    let masked = ctx.add_plain(&prod, &ctx.coef_plaintext(&[0])?)?;
+    let flooded = ctx.flood(&masked, width(&masked)?)?;
+    let towers = flooded.meta()?.num_towers;
+    check("reduced product", &ctx.mod_reduce(&flooded, towers - 1)?, &at(&z), false)?;
+    // sum of two fresh encryptions, flooded, reduced
+    let sum = ctx.add(&ct, &ct)?;
+    let twice: Vec<u64> = z.iter().map(|&v| (2 * v) % p).collect();
+    let flooded = ctx.flood(&sum, width(&sum)?)?;
+    check("reduced sum", &ctx.mod_reduce(&flooded, l - 1)?, &at(&twice), false)?;
+    Ok(RebuildReport {
+        openfhe_version: OPENFHE_VERSION.to_string(),
+        libraries: loaded_openfhe_libraries()?,
+        objects_checked: checked,
+        deepest_level: l - 1,
+        elapsed: start.elapsed(),
+    })
+}
+
 /// The deepest level at which the self-test has passed for `ctx`'s
 /// parameters in this process, if any. [`Context::build_ciphertext`]
 /// refuses objects deeper than this.
@@ -453,6 +540,23 @@ mod tests {
         let r = verify_linear_rebuild_once(&ctx).unwrap();
         assert_eq!(r.deepest_level, 0);
         assert_eq!(rebuild_verified(&ctx).unwrap(), Some(0));
+    }
+
+    #[test]
+    fn single_selftest_passes_and_detects_an_altered_residue() {
+        let ctx = Context::new_single(P, 128, 60, 55, 3).unwrap();
+        let q0 = ctx.moduli().unwrap()[0];
+        let e = run_single(&ctx, &|c, r, m, v| {
+            let mut w = v.to_vec();
+            w[5] = (w[5] + 1) % q0;
+            c.build_ciphertext_unverified(r, m, &w)
+        })
+        .unwrap_err();
+        println!("SELFTEST single residue: {e}");
+        assert_eq!(rebuild_verified(&ctx).unwrap(), None);
+        let r = verify_single_rebuild_once(&ctx).unwrap();
+        assert_eq!((r.deepest_level, r.objects_checked), (2, 3));
+        assert_eq!(rebuild_verified(&ctx).unwrap(), Some(2));
     }
 
     #[test]

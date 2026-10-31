@@ -42,9 +42,10 @@ const DST_PROVE: &[u8] = b"fhe-flp/1 prove randomness";
 const DST_QUERY: &[u8] = b"fhe-flp/1 query randomness";
 pub const NONCE_LEN: usize = 16;
 pub const MAX_PROOFS: usize = 16;
-/// Largest number of reports added into one aggregate. Counts are exact
-/// below `p` (no wrap-around for `MAX_BATCH < p`), and the sum's noise grows
-/// linearly in the batch size, far inside the flooding margin.
+/// Upper bound on the number of reports added into one aggregate: the sum's
+/// noise grows linearly in the batch size, far inside the flooding margin.
+/// The batch limit of a task is also bounded by its field so that sums
+/// never wrap modulo `p`: see [`FlpPlan::max_batch`].
 pub const MAX_BATCH: u64 = 1 << 24;
 /// Allowance for honest noise in the flooding-range check, as in
 /// `fhe_prio3::vdec::FLOODING_SLACK_BITS`. Honest noise after the densest
@@ -70,6 +71,11 @@ pub(crate) fn from_u64(v: u64) -> Field {
 /// `Task::new`); otherwise `Task::linear_map` reads it off `Flp::query`
 /// column by column, which costs `|input| + |proof| + 1` queries per proof.
 pub trait VerifierMap<F: FheField>: Type<Field = F> + Sync {
+    /// The largest value any coordinate of a *valid* encoded measurement can
+    /// take (1 for bits). With `p` the field size, a batch of at most
+    /// `(p - 1) / max_output_value()` reports sums exactly, without wrapping.
+    fn max_output_value(&self) -> u64;
+
     /// Rows over `input || proof` and constants, for one proof's query
     /// randomness.
     fn closed_form(&self, _query_rand: &[F]) -> Option<(Vec<Vec<F>>, Vec<F>)> {
@@ -78,12 +84,18 @@ pub trait VerifierMap<F: FheField>: Type<Field = F> + Sync {
 }
 
 impl<F: FheField> VerifierMap<F> for Count<F> {
+    fn max_output_value(&self) -> u64 {
+        1
+    }
     fn closed_form(&self, query_rand: &[F]) -> Option<(Vec<Vec<F>>, Vec<F>)> {
         Some(mul_bits_map(1, false, query_rand))
     }
 }
 
 impl<F: FheField> VerifierMap<F> for BitVec<F> {
+    fn max_output_value(&self) -> u64 {
+        1
+    }
     fn closed_form(&self, query_rand: &[F]) -> Option<(Vec<Vec<F>>, Vec<F>)> {
         Some(mul_bits_map(self.calls(), self.calls() > 1, query_rand))
     }
@@ -208,6 +220,14 @@ impl<F: FheField, T: VerifierMap<F>> FlpPlan<F, T> {
     }
     pub fn layout(&self) -> &Layout {
         &self.layout
+    }
+
+    /// The most reports one aggregate may hold: every coordinate of the sum
+    /// stays below `p` (no wrap-around), and at most [`MAX_BATCH`]. For
+    /// p = 65537 and bit-valued types this is 65536; for FieldPrio2, 2^24.
+    pub fn max_batch(&self) -> u64 {
+        let m = self.typ.max_output_value().max(1);
+        ((F::PLAIN_MOD - 1) / m).min(MAX_BATCH)
     }
 
     /// `z = input || proof_1 || .. || proof_k`, each proof from prio's
@@ -668,7 +688,7 @@ impl<'a, T: VerifierMap<Field>> Aggregator<'a, T> {
         let verifier: Vec<Field> = fused.iter().zip(&state.constants).map(|(&a, &c)| a + c).collect();
         let accepted = task.plan.decide(&verifier)?;
         if accepted {
-            if self.accepted >= MAX_BATCH {
+            if self.accepted >= task.plan.max_batch() {
                 return Err(Error::Protocol("batch is full".into()));
             }
             self.sum = Some(match self.sum.take() {

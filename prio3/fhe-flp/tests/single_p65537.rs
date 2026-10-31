@@ -6,7 +6,7 @@ use fhe_flp::f65537::Field65537 as F;
 use fhe_flp::single::{Evaluator, SingleClient, SingleCollector, SingleTask};
 use fhe_flp::soundness::{log2_error, proofs_for};
 use fhe_flp::{Error, VerifierMap};
-use prio::field::FieldElement;
+use prio::field::{FieldElement, FieldElementWithInteger, NttFriendlyFieldElement};
 use prio::flp::types::Count;
 use prio::flp::{Flp, Type};
 
@@ -45,6 +45,17 @@ fn proofs_for_2_to_the_minus_128() {
     assert_eq!(k_for(&count), 9);
     assert!(log2_error(&count, F::PLAIN_MOD as f64, 9) <= -128.0);
     assert_eq!(k_for(&BitVec::<F>::new(100).unwrap()), 16);
+    // the padded-degree bound used here is never below the draft script's
+    for len in [1usize, 10, 25, 50, 100] {
+        let t = BitVec::<F>::new(len).unwrap();
+        let p = F::PLAIN_MOD as f64;
+        assert!(fhe_flp::soundness::log2_per_proof(&t, p) >= fhe_flp::soundness::log2_per_proof_draft(&t, p));
+    }
+    // and it is the one that decides: BitVec(50) needs 15 proofs, not 14
+    let bv50 = BitVec::<F>::new(50).unwrap();
+    assert_eq!(k_for(&bv50), 15);
+    assert!(log2_error(&bv50, F::PLAIN_MOD as f64, 14) > -128.0);
+    assert!(log2_error(&bv50, F::PLAIN_MOD as f64, 15) <= -128.0);
 }
 
 #[test]
@@ -139,5 +150,47 @@ fn circuits_beyond_the_fields_roots_are_refused_not_panicking() {
         Err(Error::Protocol(m)) => assert!(m.contains("coefficients"), "{m}"),
         Err(e) => panic!("unexpected error {e}"),
         Ok(_) => panic!("accepted input and proofs larger than the ring"),
+    }
+}
+
+#[test]
+fn batches_are_capped_so_sums_never_wrap_modulo_p() {
+    let count = SingleTask::new(Count::<F>::new(), [5u8; 32], 9).unwrap();
+    assert_eq!(count.max_batch(), 65_536);
+    let bv = SingleTask::new(BitVec::<F>::new(10).unwrap(), [5u8; 32], 12).unwrap();
+    assert_eq!(bv.max_batch(), 65_536);
+    let prio2 = SingleTask::new(Count::<fhe_flp::Field>::new(), [5u8; 32], 5).unwrap();
+    assert_eq!(prio2.max_batch(), 1 << 24);
+}
+
+/// In a 17-bit field the gadget query point lands on a 2W-th root of unity
+/// with probability 2W/p (not negligible): the closed form must still equal
+/// prio's query there, and W-th roots must never be drawn.
+#[test]
+fn closed_form_at_roots_of_unity_in_gf65537() {
+    use fhe_flp::bitvec::mul_bits_map;
+    for len in [1usize, 10, 100] {
+        let typ = BitVec::<F>::new(len).unwrap();
+        let w = (len + 1).next_power_of_two();
+        let r = F::root((2 * w).trailing_zeros() as usize).unwrap().pow(3); // r^W = -1
+        assert_eq!(r.pow(w as u32), -F::one());
+        let mut qr: Vec<F> = (0..typ.query_rand_len() as u32 - 1).map(|i| F::from(17 + i)).collect();
+        qr.push(r);
+        let z = F::random_vector(typ.input_len() + typ.proof_len());
+        let want = typ.query(&z[..len], &z[len..], &qr, &[], 1).unwrap();
+        let (rows, c) = mul_bits_map(len, len > 1, &qr);
+        for (k, row) in rows.iter().enumerate() {
+            assert_eq!(row.iter().zip(&z).fold(c[k], |a, (&x, &y)| a + x * y), want[k], "len {len} row {k}");
+        }
+    }
+    // the evaluator's query randomness never contains a W-th root of unity
+    let typ = BitVec::<F>::new(100).unwrap();
+    let task = SingleTask::new(typ, [6u8; 32], 16).unwrap();
+    for i in 0..200u32 {
+        let mut report = vec![0u8; 64];
+        report[..4].copy_from_slice(&i.to_le_bytes());
+        for qr in task.query_rands(&VK, &report).unwrap() {
+            assert_ne!(qr.last().unwrap().pow(128), F::one());
+        }
     }
 }

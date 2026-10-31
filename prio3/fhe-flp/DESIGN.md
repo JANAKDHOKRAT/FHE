@@ -104,10 +104,12 @@ Details that matter:
 
 **Robustness against malicious clients (honest aggregators).** If the
 ciphertext decrypts consistently (see the next paragraph), acceptance of an
-invalid input is bounded by the draft's formula (`src/soundness.rs`,
-`results/soundness.md`). Per proof that is Σ calls·degree/(p − calls), plus
-1/p for compressed outputs, raised to the power `PROOFS`. Count with 5
-proofs gives 2⁻¹⁵⁵ and BitVec(100) with 6 gives 2⁻¹⁴⁶. The query
+invalid input is bounded by Schwartz–Zippel on prio's padded construction
+(`src/soundness.rs`, `results/soundness.md`). Per proof that is
+Σ degree·(W − 1)/(p − W) with W the padded wire length, plus 1/p for
+compressed outputs, raised to the power `PROOFS`; this is never below the
+draft script's Σ calls·degree/(p − calls). Count with 5 proofs gives 2⁻¹⁵⁵
+and BitVec(100) with 6 gives 2⁻¹⁴⁴. The query
 randomness comes from a key clients never see and there is no joint
 randomness, so there is no offline search; the bound is per submitted
 report.

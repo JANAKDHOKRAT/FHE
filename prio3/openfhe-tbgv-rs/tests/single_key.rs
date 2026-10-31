@@ -144,4 +144,29 @@ mod p65537 {
         // the rebuild self-test passes for this chain too
         assert_eq!(verify_single_rebuild_once(&ctx).unwrap().deepest_level, 2);
     }
+
+    /// The largest batch fhe-flp allows for bit-valued types at p = 65537 is
+    /// p - 1 = 65536: such a sum decrypts exactly after flooding and
+    /// switching; one more report would wrap to 0, which is why the batch is
+    /// capped.
+    #[test]
+    fn a_sum_of_65536_reports_decrypts_exactly() {
+        let ctx = Context::new_single(T, 128, 40, 40, 3).unwrap();
+        let (pk, sk) = keygen_first(&ctx).unwrap();
+        let one = ctx.encrypt(&pk, &ctx.coef_plaintext(&[1]).unwrap()).unwrap();
+        let mut sum = one.try_clone().unwrap();
+        for _ in 1..65_536 {
+            sum = ctx.add(&sum, &one).unwrap();
+        }
+        let (_, log2_phase, _) = ctx.raw_decrypt_for_tests(&sum, &[&sk]).unwrap();
+        let towers = sum.meta().unwrap().num_towers as usize;
+        let w = width(&ctx, towers);
+        let lambda = w as f64 - 1.0 - (log2_phase - (T as f64).log2());
+        eprintln!("sum of 65536: log2 max|phase| = {log2_phase:.1}, flooding lambda = {lambda:.1}");
+        assert!(lambda >= 64.0);
+        let out = ctx.mod_reduce(&ctx.flood(&sum, w).unwrap(), towers as u32 - 1).unwrap();
+        assert_eq!(sk.decrypt_coeffs(&out, &[0]).unwrap(), vec![65_536]);
+        let wrapped = ctx.add(&sum, &one).unwrap();
+        assert_eq!(sk.decrypt_coeffs(&wrapped, &[0]).unwrap(), vec![0]);
+    }
 }

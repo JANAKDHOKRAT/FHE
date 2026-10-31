@@ -13,9 +13,9 @@
 //! the report does not grow while `len + proofs * proof_len` fits the ring.
 //!
 //! Gadget: one `Mul` called `len` times (degree 2, arity 2), as in
-//! Prio3Count with `len` calls. Base soundness per proof (BBCGGI19 Thm 4.3,
-//! as the draft's `plot_prio3_multiproof_robustness.py` computes it):
-//! `2 len / (p - len)`, plus `1/p` for the random linear compression.
+//! Prio3Count with `len` calls. Soundness per proof: `2 (W - 1) / (p - W)`
+//! with `W = (len + 1).next_power_of_two()` (prio's padded wire length),
+//! plus `1/p` for the random linear compression (`crate::soundness`).
 use prio::field::{FieldElementWithInteger, NttFriendlyFieldElement};
 use prio::flp::gadgets::Mul;
 use prio::flp::{Flp, FlpError, Gadget, Type};

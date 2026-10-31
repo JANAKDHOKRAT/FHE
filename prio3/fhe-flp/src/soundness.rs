@@ -2,8 +2,14 @@
 //! use (draft-irtf-cfrg-vdaf repository, `poc/plot_prio3_multiproof_robustness.py`,
 //! commit e1d1e1c, and the draft's "Multiple Proofs" security section):
 //!
-//! * base soundness of one proof (BBCGGI19, Theorem 4.3):
-//!   `sum over gadgets of calls * degree / (p - calls)`;
+//! * base soundness of one proof: the draft's script uses BBCGGI19 Thm 4.3,
+//!   `calls * degree / (p - calls)`. prio 0.18.1 pads every wire polynomial
+//!   to `W = (calls + 1).next_power_of_two()` points, so the gadget identity
+//!   tested at the query point has degree up to `degree * (W - 1)`, and the
+//!   query point avoids the `W` roots of unity (prio refuses them; this crate
+//!   resamples them). By Schwartz-Zippel one proof errs with probability at
+//!   most `degree * (W - 1) / (p - W)` per gadget, which is never below the
+//!   script's value. This module uses that bound;
 //! * a circuit with several outputs compressed by a random linear
 //!   combination of the verifier's query randomness adds `1/p` (a non-zero
 //!   vector is orthogonal to a uniform vector with probability `1/p`);
@@ -25,8 +31,8 @@ where
 {
     let mut eps = 0.0;
     for g in typ.gadget() {
-        let calls = g.calls() as f64;
-        eps += calls * g.degree() as f64 / (p - calls);
+        let w = (1 + g.calls()).next_power_of_two() as f64;
+        eps += g.degree() as f64 * (w - 1.0) / (p - w);
     }
     if typ.eval_output_len() > 1 {
         eps += 1.0 / p;
@@ -49,4 +55,21 @@ where
 {
     let per = -log2_per_proof(typ, p);
     (target_bits / per).ceil().max(1.0) as usize
+}
+
+/// The draft script's per-proof value `calls * degree / (p - calls)`, kept
+/// to show that [`log2_per_proof`] is never smaller (tests).
+pub fn log2_per_proof_draft<T: Flp>(typ: &T, p: f64) -> f64
+where
+    T::Field: NttFriendlyFieldElement,
+{
+    let mut eps = 0.0;
+    for g in typ.gadget() {
+        let calls = g.calls() as f64;
+        eps += calls * g.degree() as f64 / (p - calls);
+    }
+    if typ.eval_output_len() > 1 {
+        eps += 1.0 / p;
+    }
+    eps.log2()
 }

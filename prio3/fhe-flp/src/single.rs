@@ -27,7 +27,7 @@
 //! The collector participates once per batch (two messages), never per
 //! report, and never sees a report ciphertext.
 use crate::codec::ResidueCodec;
-use crate::protocol::{FlpPlan, Layout, MAX_BATCH, NONCE_LEN, VerifierMap};
+use crate::protocol::{FlpPlan, Layout, NONCE_LEN, VerifierMap};
 use crate::{Error, FheField, Result};
 use openfhe_tbgv_rs::{Ciphertext, CiphertextMeta, Context, PublicKey, SecretShare, keygen_first, verify_single_rebuild_once};
 use prio::vdaf::xof::{IntoFieldVec, Xof, XofTurboShake128};
@@ -83,6 +83,10 @@ impl<F: FheField, T: VerifierMap<F>> SingleTask<F, T> {
     }
     pub fn layout(&self) -> &Layout {
         self.plan.layout()
+    }
+    /// See [`FlpPlan::max_batch`].
+    pub fn max_batch(&self) -> u64 {
+        self.plan.max_batch()
     }
     /// The query randomness the evaluator derives for a report.
     pub fn query_rands(&self, verify_key: &[u8; 32], report: &[u8]) -> Result<Vec<Vec<F>>> {
@@ -220,7 +224,7 @@ impl<'a, F: FheField, T: VerifierMap<F>> Evaluator<'a, F, T> {
         if report.len() != task.report_len() {
             return Err(Error::Codec(format!("report has {} bytes, expected {}", report.len(), task.report_len())));
         }
-        if self.reports.len() as u64 >= MAX_BATCH {
+        if self.reports.len() as u64 >= task.plan.max_batch() {
             return Err(Error::Protocol("batch is full".into()));
         }
         let nonce: [u8; NONCE_LEN] = report[..NONCE_LEN].try_into().expect("length checked");
@@ -331,7 +335,7 @@ impl<'a, F: FheField, T: VerifierMap<F>> SingleCollector<'a, F, T> {
             return Err(Error::Codec("check request too short".into()));
         }
         let n = u32::from_le_bytes(request[..4].try_into().expect("length checked")) as usize;
-        if n as u64 > MAX_BATCH || request.len() != task.check_request_len(n) {
+        if n as u64 > task.plan.max_batch() || request.len() != task.check_request_len(n) {
             return Err(Error::Codec("check request has the wrong length".into()));
         }
         let len = task.reduced_len();

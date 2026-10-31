@@ -295,7 +295,11 @@ impl Type for WithJointRand {
         self.0.output_len()
     }
 }
-impl VerifierMap<Field> for WithJointRand {}
+impl VerifierMap<Field> for WithJointRand {
+    fn max_output_value(&self) -> u64 {
+        1
+    }
+}
 
 #[test]
 fn unsupported_tasks_are_refused() {

@@ -116,7 +116,9 @@ Parameters for p = 65537:
 * chain [40, 40, 40], Q = 120 bits, ring 8192;
 * worst-case flooding margin λ = 67.9 bits
   (`openfhe-tbgv-rs/tests/single_key.rs`);
-* proofs for 2^-128: Count 9, BitVec(10/25/50/100) 12/13/14/16.
+* proofs for 2^-128: Count 9, BitVec(10/25/50/100) 12/13/15/16 (padded-degree
+  bound, `src/soundness.rs`; the draft script's formula would allow 14 for
+  BitVec(50), which the padded construction does not support).
 
 **Ring 4096 is not possible at our standard.** The best chain at ring
 4096 within the 128-bit bound ([50, 55], 105 bits) gives a margin of only

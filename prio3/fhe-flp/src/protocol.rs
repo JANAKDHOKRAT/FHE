@@ -29,7 +29,8 @@ use crate::bitvec::{BitVec, mul_bits_map};
 use crate::codec::ResidueCodec;
 use crate::{Error, FheField, Field, PLAIN_MOD, Result};
 use openfhe_tbgv_rs::{Ciphertext, Context, PartialDecryption, PublicKey, SecretShare, keygen_first, keygen_next, verify_linear_rebuild_once};
-use prio::flp::types::Count;
+use prio::flp::gadgets::{Mul, ParallelSum};
+use prio::flp::types::{Count, Histogram, MultihotCountVec, Sum, SumVec};
 use prio::flp::{Flp, Type};
 use prio::vdaf::xof::{IntoFieldVec, Xof, XofTurboShake128};
 use rand::RngCore;
@@ -40,6 +41,14 @@ use std::ops::Range;
 
 const DST_PROVE: &[u8] = b"fhe-flp/1 prove randomness";
 const DST_QUERY: &[u8] = b"fhe-flp/1 query randomness";
+const DST_JOINT_RAND_SEED: &[u8] = b"fhe-flp/1 joint randomness seed";
+const DST_JOINT_RAND: &[u8] = b"fhe-flp/1 joint randomness";
+const DST_SUPPORT: &[u8] = b"fhe-flp/1 support check";
+
+/// Threshold protocol: random checks that a report's plaintext is 0 above
+/// `z`. Each misses a nonzero coefficient there with probability `1/p`;
+/// five give `p^-5 < 2^-159` for p = 4293918721 (four would be `2^-127.99`).
+pub const SUPPORT_CHECKS: usize = 5;
 pub const NONCE_LEN: usize = 16;
 pub const MAX_PROOFS: usize = 16;
 /// Upper bound on the number of reports added into one aggregate: the sum's
@@ -72,9 +81,21 @@ pub(crate) fn from_u64(v: u64) -> Field {
 /// column by column, which costs `|input| + |proof| + 1` queries per proof.
 pub trait VerifierMap<F: FheField>: Type<Field = F> + Sync {
     /// The largest value any coordinate of a *valid* encoded measurement can
-    /// take (1 for bits). With `p` the field size, a batch of at most
-    /// `(p - 1) / max_output_value()` reports sums exactly, without wrapping.
-    fn max_output_value(&self) -> u64;
+    /// take: 1 for every Prio3 encoding (bits, one-hot, range-checked
+    /// integers). Bounds the aggregate so that sums never wrap modulo `p`
+    /// ([`FlpPlan::max_batch`]).
+    fn max_input_value(&self) -> u64;
+
+    /// For circuits that use joint randomness: the degree of the circuit
+    /// output in each joint-randomness element. prio's
+    /// `parallel_sum_range_checks` (SumVec, Histogram, MultihotCountVec)
+    /// weighs chunk `j` by `r_j, r_j^2, .., r_j^chunk_length`, so it is
+    /// `chunk_length`: an invalid input passes the joint-randomness
+    /// compression with probability at most `chunk_length / p` (Schwartz-Zippel;
+    /// the draft's `chunk_length / MODULUS`). 0 without joint randomness.
+    fn joint_rand_degree(&self) -> usize {
+        0
+    }
 
     /// Rows over `input || proof` and constants, for one proof's query
     /// randomness.
@@ -84,7 +105,7 @@ pub trait VerifierMap<F: FheField>: Type<Field = F> + Sync {
 }
 
 impl<F: FheField> VerifierMap<F> for Count<F> {
-    fn max_output_value(&self) -> u64 {
+    fn max_input_value(&self) -> u64 {
         1
     }
     fn closed_form(&self, query_rand: &[F]) -> Option<(Vec<Vec<F>>, Vec<F>)> {
@@ -93,12 +114,68 @@ impl<F: FheField> VerifierMap<F> for Count<F> {
 }
 
 impl<F: FheField> VerifierMap<F> for BitVec<F> {
-    fn max_output_value(&self) -> u64 {
+    fn max_input_value(&self) -> u64 {
         1
     }
     fn closed_form(&self, query_rand: &[F]) -> Option<(Vec<Vec<F>>, Vec<F>)> {
         Some(mul_bits_map(self.calls(), self.calls() > 1, query_rand))
     }
+}
+
+/// The `ParallelSum<Mul>` gadget of prio's SumVec, Histogram and
+/// MultihotCountVec has arity `2 * chunk_length`.
+fn chunk_length_of<F: FheField, T: Flp<Field = F>>(typ: &T) -> usize {
+    typ.gadget()[0].arity() / 2
+}
+
+/// Prio3Sum's type and circuit, unchanged: range-checked integer bits, no
+/// joint randomness.
+impl<F: FheField> VerifierMap<F> for Sum<F> {
+    fn max_input_value(&self) -> u64 {
+        1
+    }
+}
+
+/// Prio3SumVec's type and circuit, unchanged (joint randomness).
+impl<F: FheField> VerifierMap<F> for SumVec<F, ParallelSum<F, Mul>> {
+    fn max_input_value(&self) -> u64 {
+        1
+    }
+    fn joint_rand_degree(&self) -> usize {
+        chunk_length_of(self)
+    }
+}
+
+/// Prio3Histogram's type and circuit, unchanged (joint randomness).
+impl<F: FheField> VerifierMap<F> for Histogram<F, ParallelSum<F, Mul>> {
+    fn max_input_value(&self) -> u64 {
+        1
+    }
+    fn joint_rand_degree(&self) -> usize {
+        chunk_length_of(self)
+    }
+}
+
+/// Prio3MultihotCountVec's type and circuit, unchanged (joint randomness).
+impl<F: FheField> VerifierMap<F> for MultihotCountVec<F, ParallelSum<F, Mul>> {
+    fn max_input_value(&self) -> u64 {
+        1
+    }
+    fn joint_rand_degree(&self) -> usize {
+        chunk_length_of(self)
+    }
+}
+
+/// How the aggregate is read off the summed encoded inputs: prio's
+/// `truncate`, which is linear for every Prio3 type.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OutputMap<F> {
+    /// Output `j` is input coordinate `idx[j]` (Count, BitVec, Histogram,
+    /// MultihotCountVec): those coefficients are decrypted directly.
+    Select(Vec<u32>),
+    /// Output `j` is `<rows[j], input>` (Sum, SumVec: weighted bits),
+    /// evaluated homomorphically so that only the outputs are decrypted.
+    Linear(Vec<Vec<F>>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -163,29 +240,25 @@ pub struct FlpPlan<F: FheField, T: VerifierMap<F>> {
     task_id: [u8; 32],
     num_proofs: usize,
     layout: Layout,
+    output: OutputMap<F>,
+    /// Largest value of any aggregate coordinate contributed by one valid
+    /// report.
+    max_output: u64,
 }
 
 impl<F: FheField, T: VerifierMap<F>> FlpPlan<F, T> {
-    /// Refused: zero or more than `MAX_PROOFS` proofs; types that need joint
-    /// randomness (input and proof share one ciphertext, so there is no
-    /// input commitment to derive it from; see `bitvec` for a circuit without
-    /// it); types whose aggregate is not the input itself (`truncate` must be
-    /// the identity); a closed-form verifier map that disagrees with
-    /// `Flp::query`; input and proofs that do not fit `ring` coefficients.
+    /// Refused: zero or more than `MAX_PROOFS` proofs; a `truncate` that is
+    /// not linear; a closed-form verifier map that disagrees with
+    /// `Flp::query`; circuits needing roots of unity the field lacks; input
+    /// and proofs that do not fit `ring` coefficients. Types with joint
+    /// randomness are accepted here; the one-aggregator protocol sends their
+    /// input and proofs as two ciphertexts, and the threshold [`Task`]
+    /// refuses them.
     pub(crate) fn new(typ: T, task_id: [u8; 32], num_proofs: usize, ring: usize) -> Result<Self> {
         if !(1..=MAX_PROOFS).contains(&num_proofs) {
             return Err(Error::Protocol(format!("between 1 and {MAX_PROOFS} proofs are supported")));
         }
-        if typ.joint_rand_len() != 0 {
-            return Err(Error::Protocol("types that use joint randomness are not supported".into()));
-        }
-        if typ.output_len() != typ.input_len() {
-            return Err(Error::Protocol("the aggregate must be the encoded input (output_len == input_len)".into()));
-        }
-        let probe: Vec<F> = (0..typ.input_len() as u64).map(|i| F::from_u64(i * 2_654_435_761 % F::PLAIN_MOD)).collect();
-        if typ.truncate(probe.clone())? != probe {
-            return Err(Error::Protocol("truncate must be the identity".into()));
-        }
+        let (output, max_output) = output_map(&typ)?;
         if u64::from(F::modulus()) != F::PLAIN_MOD {
             return Err(Error::Protocol("field and plaintext modulus differ".into()));
         }
@@ -212,6 +285,8 @@ impl<F: FheField, T: VerifierMap<F>> FlpPlan<F, T> {
             task_id,
             num_proofs,
             layout,
+            output,
+            max_output,
         })
     }
 
@@ -222,26 +297,62 @@ impl<F: FheField, T: VerifierMap<F>> FlpPlan<F, T> {
         &self.layout
     }
 
-    /// The most reports one aggregate may hold: every coordinate of the sum
-    /// stays below `p` (no wrap-around), and at most [`MAX_BATCH`]. For
-    /// p = 65537 and bit-valued types this is 65536; for FieldPrio2, 2^24.
+    /// The most reports one aggregate may hold: every coordinate of the
+    /// aggregate stays below `p` (no wrap-around), and at most [`MAX_BATCH`].
+    /// For p = 65537: 65536 for bit-valued outputs, 655 for Sum(100).
     pub fn max_batch(&self) -> u64 {
-        let m = self.typ.max_output_value().max(1);
-        ((F::PLAIN_MOD - 1) / m).min(MAX_BATCH)
+        ((F::PLAIN_MOD - 1) / self.max_output.max(1)).min(MAX_BATCH)
+    }
+
+    /// How the aggregate is read off the summed inputs.
+    pub fn output_map(&self) -> &OutputMap<F> {
+        &self.output
+    }
+
+    pub fn num_proofs(&self) -> usize {
+        self.num_proofs
+    }
+
+    /// `log2` of the probability that one invalid report is accepted with
+    /// this task's proofs (`crate::soundness`, joint randomness included).
+    pub fn log2_soundness(&self) -> f64 {
+        crate::soundness::log2_error_with_joint_rand(&self.typ, F::PLAIN_MOD as f64, self.num_proofs, self.typ.joint_rand_degree())
+    }
+
+    /// Joint randomness of every proof (empty without joint randomness),
+    /// derived as Prio3 derives it from a commitment to the input: here the
+    /// bytes of the ciphertext that encrypts the input, which fixes the input
+    /// (decryption is a function of the ciphertext) before any proof exists.
+    pub fn joint_rands(&self, nonce: &[u8], input_ciphertext: &[u8]) -> Vec<Vec<F>> {
+        let k = self.num_proofs;
+        let jlen = self.typ.joint_rand_len();
+        if jlen == 0 {
+            return vec![Vec::new(); k];
+        }
+        let mut xof = XofTurboShake128::init(&[0u8; 32], &[DST_JOINT_RAND_SEED, &self.task_id]);
+        xof.update(nonce);
+        xof.update(&Sha256::digest(input_ciphertext));
+        let seed = xof.into_seed();
+        let all: Vec<F> = XofTurboShake128::seed_stream(seed.as_ref(), &[DST_JOINT_RAND, &self.task_id], &[&[k as u8]]).into_field_vec(jlen * k);
+        all.chunks(jlen).map(|c| c.to_vec()).collect()
     }
 
     /// `z = input || proof_1 || .. || proof_k`, each proof from prio's
-    /// unchanged `Flp::prove` with fresh randomness.
-    pub(crate) fn prove(&self, input: &[F]) -> Result<Vec<F>> {
+    /// unchanged `Flp::prove` with fresh randomness and the proof's joint
+    /// randomness.
+    pub(crate) fn prove(&self, input: &[F], joint_rands: &[Vec<F>]) -> Result<Vec<F>> {
         let typ = &self.typ;
         let k = self.num_proofs;
+        if joint_rands.len() != k {
+            return Err(Error::Protocol("one joint randomness per proof".into()));
+        }
         let mut seed = [0u8; 32];
         OsRng.fill_bytes(&mut seed);
         let prove_rands: Vec<F> = XofTurboShake128::seed_stream(&seed, &[DST_PROVE, &self.task_id], &[&[k as u8]]).into_field_vec(typ.prove_rand_len() * k);
         let mut z = input.to_vec();
-        for p in 0..k {
+        for (p, jr) in joint_rands.iter().enumerate() {
             let pr = &prove_rands[p * typ.prove_rand_len()..(p + 1) * typ.prove_rand_len()];
-            z.extend(typ.prove(input, pr, &[])?);
+            z.extend(typ.prove(input, pr, jr)?);
         }
         Ok(z)
     }
@@ -298,17 +409,17 @@ impl<F: FheField, T: VerifierMap<F>> FlpPlan<F, T> {
     /// read off `Flp::query` column by column. `query` is affine in
     /// `(input, proof)` for fixed randomness and `num_shares`
     /// (`tests/protocol.rs` checks both paths on random points).
-    pub fn linear_map(&self, query_rands: &[Vec<F>]) -> Result<(Vec<Vec<F>>, Vec<F>)> {
+    pub fn linear_map(&self, query_rands: &[Vec<F>], joint_rands: &[Vec<F>]) -> Result<(Vec<Vec<F>>, Vec<F>)> {
         let l = &self.layout;
         let (il, pl, v) = (l.input_len, l.proof_len, l.verifier_len);
-        if query_rands.len() != l.num_proofs {
-            return Err(Error::Protocol("one query randomness per proof".into()));
+        if query_rands.len() != l.num_proofs || joint_rands.len() != l.num_proofs {
+            return Err(Error::Protocol("one query and one joint randomness per proof".into()));
         }
         let mut rows = vec![vec![F::zero(); l.z_len]; l.num_rows()];
         let mut constants = vec![F::zero(); l.num_rows()];
         for (p, qr) in query_rands.iter().enumerate() {
             let Some((local, c)) = self.typ.closed_form(qr) else {
-                return self.linear_map_by_query(query_rands);
+                return self.linear_map_by_query(query_rands, joint_rands);
             };
             for r in 0..v {
                 rows[p * v + r][..il].copy_from_slice(&local[r][..il]);
@@ -321,20 +432,23 @@ impl<F: FheField, T: VerifierMap<F>> FlpPlan<F, T> {
 
     /// [`Self::linear_map`] read off `Flp::query` column by column, for
     /// types without a closed form (and to test closed forms).
-    pub fn linear_map_by_query(&self, query_rands: &[Vec<F>]) -> Result<(Vec<Vec<F>>, Vec<F>)> {
+    pub fn linear_map_by_query(&self, query_rands: &[Vec<F>], joint_rands: &[Vec<F>]) -> Result<(Vec<Vec<F>>, Vec<F>)> {
         let l = &self.layout;
+        if query_rands.len() != l.num_proofs || joint_rands.len() != l.num_proofs {
+            return Err(Error::Protocol("one query and one joint randomness per proof".into()));
+        }
         let (il, pl, v) = (l.input_len, l.proof_len, l.verifier_len);
         let zero = F::zero();
         let mut rows = vec![vec![zero; l.z_len]; l.num_rows()];
         let mut constants = vec![zero; l.num_rows()];
         let zin = vec![zero; il];
         let zpf = vec![zero; pl];
-        for (p, qr) in query_rands.iter().enumerate() {
-            let c = self.typ.query(&zin, &zpf, qr, &[], 1)?;
+        for (p, (qr, jr)) in query_rands.iter().zip(joint_rands).enumerate() {
+            let c = self.typ.query(&zin, &zpf, qr, jr, 1)?;
             for j in 0..il {
                 let mut x = zin.clone();
                 x[j] = F::one();
-                let col = self.typ.query(&x, &zpf, qr, &[], 1)?;
+                let col = self.typ.query(&x, &zpf, qr, jr, 1)?;
                 for r in 0..v {
                     rows[p * v + r][j] = col[r] - c[r];
                 }
@@ -342,7 +456,7 @@ impl<F: FheField, T: VerifierMap<F>> FlpPlan<F, T> {
             for j in 0..pl {
                 let mut y = zpf.clone();
                 y[j] = F::one();
-                let col = self.typ.query(&zin, &y, qr, &[], 1)?;
+                let col = self.typ.query(&zin, &y, qr, jr, 1)?;
                 for r in 0..v {
                     rows[p * v + r][il + p * pl + j] = col[r] - c[r];
                 }
@@ -404,7 +518,18 @@ impl<T: VerifierMap<Field>> Task<T> {
         if ctx.plain_mod() != PLAIN_MOD {
             return Err(Error::Protocol("context has another plaintext modulus".into()));
         }
+        // The threshold protocol sends input and proofs in one ciphertext and
+        // decrypts the summed input directly: it supports neither joint
+        // randomness nor an aggregate other than the input itself.
+        if typ.joint_rand_len() != 0 {
+            return Err(Error::Protocol("types that use joint randomness are not supported".into()));
+        }
         let plan = FlpPlan::new(typ, params.task_id, params.num_proofs, ctx.ring_dim() as usize)?;
+        if plan.output_map() != &OutputMap::Select((0..plan.layout().input_len as u32).collect()) {
+            return Err(Error::Protocol(
+                "the aggregate must be the encoded input (truncate must be the identity)".into(),
+            ));
+        }
         let moduli = ctx.moduli()?;
         // The tower counts of the two kinds of partials, read off real objects
         // under a throwaway key rather than assumed.
@@ -446,7 +571,29 @@ impl<T: VerifierMap<Field>> Task<T> {
         NONCE_LEN + self.codec.len(2, self.layout().ring)
     }
     pub fn verifier_share_len(&self) -> usize {
-        1 + self.layout().groups().iter().map(|g| self.share_codec.len(1, g.len())).sum::<usize>()
+        1 + self.layout().groups().iter().map(|g| self.share_codec.len(1, g.len())).sum::<usize>() + SUPPORT_CHECKS * self.share_codec.len(1, 1)
+    }
+
+    /// The support checks of one report. A client controls its whole
+    /// plaintext, not only `z`; a coefficient above `z` would meet, in a
+    /// product that packs several verifier rows, the rows packed below the
+    /// one read, and shift the verifier (`tests/junk_coefficients.rs` builds
+    /// such a report for Count = 2 that prio's `decide` accepts). Polynomial
+    /// `R` is uniform on `[0, N - |z|)` and 0 above, so coefficient `N - 1`
+    /// of `ct x R` is `sum_{i >= |z|} z_i R_{N-1-i}`: a uniform combination
+    /// of the coefficients above `z` only, 0 for an honest report.
+    pub fn support_polys(&self, verify_key: &[u8; 32], report: &[u8]) -> Vec<Vec<u64>> {
+        let (n, zl) = (self.layout().ring, self.layout().z_len);
+        let digest = Sha256::digest(report);
+        let r: Vec<Field> = XofTurboShake128::seed_stream(verify_key, &[DST_SUPPORT, &self.params.task_id], &[&report[..NONCE_LEN], &digest])
+            .into_field_vec(SUPPORT_CHECKS * (n - zl));
+        r.chunks(n - zl)
+            .map(|c| {
+                let mut poly: Vec<u64> = c.iter().map(|&x| to_u64(x)).collect();
+                poly.resize(n, 0);
+                poly
+            })
+            .collect()
     }
     pub fn aggregate_share_len(&self) -> usize {
         1 + 8 + self.codec.len(1, self.layout().input_len)
@@ -458,16 +605,74 @@ impl<T: VerifierMap<Field>> Task<T> {
     }
     /// See [`FlpPlan::linear_map`].
     pub fn linear_map(&self, query_rands: &[Vec<Field>]) -> Result<(Vec<Vec<Field>>, Vec<Field>)> {
-        self.plan.linear_map(query_rands)
+        self.plan.linear_map(query_rands, &vec![Vec::new(); query_rands.len()])
     }
     /// See [`FlpPlan::linear_map_by_query`].
     pub fn linear_map_by_query(&self, query_rands: &[Vec<Field>]) -> Result<(Vec<Vec<Field>>, Vec<Field>)> {
-        self.plan.linear_map_by_query(query_rands)
+        self.plan.linear_map_by_query(query_rands, &vec![Vec::new(); query_rands.len()])
     }
     /// See [`FlpPlan::query_poly`].
     pub fn query_poly(&self, rows: &[Vec<Field>]) -> Vec<u64> {
         self.plan.query_poly(rows)
     }
+}
+
+/// prio's `truncate` as a matrix, read column by column off unit vectors and
+/// checked to be linear (zero maps to zero; three random vectors map as the
+/// matrix says). Also the largest aggregate value one valid report can add
+/// to any output: the row sums of the (non-negative) weights times the
+/// largest valid input coordinate.
+pub(crate) fn output_map<F: FheField, T: VerifierMap<F>>(typ: &T) -> Result<(OutputMap<F>, u64)> {
+    let (il, ol) = (typ.input_len(), typ.output_len());
+    if typ.truncate(vec![F::zero(); il])? != vec![F::zero(); ol] {
+        return Err(Error::Protocol("truncate is not linear".into()));
+    }
+    let mut rows = vec![vec![F::zero(); il]; ol];
+    for j in 0..il {
+        let mut e = vec![F::zero(); il];
+        e[j] = F::one();
+        let col = typ.truncate(e)?;
+        if col.len() != ol {
+            return Err(Error::Protocol("truncate has the wrong output length".into()));
+        }
+        for (o, &c) in col.iter().enumerate() {
+            rows[o][j] = c;
+        }
+    }
+    for _ in 0..3 {
+        let x = F::random_vector(il);
+        let want = typ.truncate(x.clone())?;
+        for (o, row) in rows.iter().enumerate() {
+            if row.iter().zip(&x).fold(F::zero(), |a, (&r, &v)| a + r * v) != want[o] {
+                return Err(Error::Protocol("truncate is not linear".into()));
+            }
+        }
+    }
+    let half = (F::PLAIN_MOD - 1) / 2;
+    let mut max_output = 0u64;
+    for row in &rows {
+        let mut sum = 0u64;
+        for &w in row {
+            let w = w.to_u64();
+            if w > half {
+                return Err(Error::Protocol("negative output weights are not supported".into()));
+            }
+            sum = sum.saturating_add(w.saturating_mul(typ.max_input_value()));
+        }
+        max_output = max_output.max(sum);
+    }
+    let select: Option<Vec<u32>> = rows
+        .iter()
+        .map(|row| {
+            let ones: Vec<usize> = row.iter().enumerate().filter(|(_, w)| **w != F::zero()).map(|(i, _)| i).collect();
+            (ones.len() == 1 && row[ones[0]] == F::one()).then(|| ones[0] as u32)
+        })
+        .collect();
+    let output = match select {
+        Some(idx) if idx.windows(2).all(|w| w[0] < w[1]) => OutputMap::Select(idx),
+        _ => OutputMap::Linear(rows),
+    };
+    Ok((output, max_output))
 }
 
 /// A closed-form verifier map must agree with `Flp::query`: checked at
@@ -531,7 +736,7 @@ impl<'a, T: VerifierMap<Field>> Client<'a, T> {
     /// clients call [`Self::shard`]; tests use this to act as a malicious
     /// client and to compare with prio's plaintext FLP.
     pub fn shard_with_witness(&self, input: &[Field]) -> Result<(Vec<u8>, Vec<Field>)> {
-        let z = self.task.plan.prove(input)?;
+        let z = self.task.plan.prove(input, &vec![Vec::new(); self.task.params.num_proofs])?;
         Ok((self.report_from_coefficients(&z)?, z))
     }
 
@@ -637,6 +842,13 @@ impl<'a, T: VerifierMap<Field>> Aggregator<'a, T> {
             msg.extend(task.share_codec.pack(&pd.export_coeffs(&idx)?, 1, idx.len())?);
             partials.push(pd);
         }
+        let top = [task.layout().ring as u32 - 1];
+        for r in task.support_polys(&self.verify_key, report) {
+            let prod = task.ctx.mult_plain(&ct, &task.ctx.coef_plaintext(&r)?)?;
+            let pd = self.share.partial_decrypt_coeffs(&prod, self.agg_id == 0, &top)?;
+            msg.extend(task.share_codec.pack(&pd.export_coeffs(&top)?, 1, 1)?);
+            partials.push(pd);
+        }
         Ok((PrepState { ct, partials, constants }, msg))
     }
 
@@ -658,19 +870,27 @@ impl<'a, T: VerifierMap<Field>> Aggregator<'a, T> {
                 return Err(Error::Protocol("verifier shares must come from distinct aggregators".into()));
             }
         }
-        let mut fused = Vec::with_capacity(task.layout().num_rows());
+        let mut fused = Vec::with_capacity(task.layout().num_rows() + SUPPORT_CHECKS);
         let mut off = 0;
-        for (gi, g) in task.layout().groups().iter().enumerate() {
-            let idx = task.layout().group_coeffs(g.len());
-            let len = task.share_codec.len(1, g.len());
+        // The verifier groups, then the support checks (one coefficient each).
+        let top = vec![task.layout().ring as u32 - 1];
+        let reads: Vec<Vec<u32>> = task
+            .layout()
+            .groups()
+            .iter()
+            .map(|g| task.layout().group_coeffs(g.len()))
+            .chain(std::iter::repeat_n(top, SUPPORT_CHECKS))
+            .collect();
+        for (gi, idx) in reads.iter().enumerate() {
+            let len = task.share_codec.len(1, idx.len());
             let own = &state.partials[gi];
             let mut parts = Vec::with_capacity(n);
             for (id, body) in by_id.iter().enumerate() {
                 if id == self.agg_id {
                     continue;
                 }
-                let vals = task.share_codec.unpack(&body.expect("all present")[off..off + len], 1, g.len())?;
-                parts.push(PartialDecryption::from_coeffs(&task.ctx, own, &idx, &vals, id == 0)?);
+                let vals = task.share_codec.unpack(&body.expect("all present")[off..off + len], 1, idx.len())?;
+                parts.push(PartialDecryption::from_coeffs(&task.ctx, own, idx, &vals, id == 0)?);
             }
             off += len;
             let mut refs: Vec<&PartialDecryption> = parts.iter().collect();
@@ -683,9 +903,17 @@ impl<'a, T: VerifierMap<Field>> Aggregator<'a, T> {
                     reason: Some(format!("fused value outside the flooding range (ratio {ratio:.3})")),
                 });
             }
-            fused.extend(task.ctx.fuse_coeffs(&refs, &idx)?.into_iter().map(from_u64));
+            fused.extend(task.ctx.fuse_coeffs(&refs, idx)?.into_iter().map(from_u64));
         }
+        let support = fused.split_off(task.layout().num_rows());
         let verifier: Vec<Field> = fused.iter().zip(&state.constants).map(|(&a, &c)| a + c).collect();
+        if support.iter().any(|&x| x != <Field as prio::field::FieldElement>::zero()) {
+            return Ok(Verdict {
+                accepted: false,
+                verifier,
+                reason: Some("plaintext is not 0 above z".into()),
+            });
+        }
         let accepted = task.plan.decide(&verifier)?;
         if accepted {
             if self.accepted >= task.plan.max_batch() {

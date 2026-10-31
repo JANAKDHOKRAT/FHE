@@ -296,7 +296,7 @@ impl Type for WithJointRand {
     }
 }
 impl VerifierMap<Field> for WithJointRand {
-    fn max_output_value(&self) -> u64 {
+    fn max_input_value(&self) -> u64 {
         1
     }
 }

@@ -34,8 +34,8 @@ ring 32768.
 |---|---|---|
 | setup | aggregators | n-of-n threshold key (`keygen_first` / `keygen_next`), secret 32-byte `verify_key` |
 | shard | client | `encode_measurement` → k × `Flp::prove` (randomness from a fresh seed via TurboSHAKE128) → encrypt `z` as a coefficient plaintext → report = `nonce ‖ packed residues` |
-| prepare_init | each aggregator | rebuild the ciphertext (validated, self-tested); query randomness = TurboSHAKE128(`verify_key`; nonce, SHA-256(report)), one per proof; verifier map `z ↦ v` per proof; per group of rows one product `ct × Q̃`, where coefficient `j·|z|` of the product is `⟨row_j, z⟩`; flooded partial decryption **restricted to those coefficients** = verifier share |
-| prepare_finish | each aggregator | rebuild the other parties' restricted partials, check they lie in the flooding range, fuse → verifier message, add constants, `Flp::decide` per proof; accept ⇒ add the ciphertext to the running sum |
+| prepare_init | each aggregator | rebuild the ciphertext (validated, self-tested); query randomness = TurboSHAKE128(`verify_key`; nonce, SHA-256(report)), one per proof; verifier map `z ↦ v` per proof; per group of rows one product `ct × Q̃`, where coefficient `j·|z|` of the product is `⟨row_j, z⟩`; flooded partial decryption **restricted to those coefficients** = verifier share; plus 5 support checks: `ct × R_t` with `R_t` secret (from `verify_key`), uniform on `[0, N − |z|)` and 0 above, partially decrypted at coefficient `N − 1` only |
+| prepare_finish | each aggregator | rebuild the other parties' restricted partials, check they lie in the flooding range, fuse → verifier message, add constants; reject unless all 5 support checks fuse to 0; `Flp::decide` per proof; accept ⇒ add the ciphertext to the running sum |
 | aggregate_share | each aggregator | flooded partial decryption of the sum restricted to the output coefficients |
 | unshard | collector | fuse → `decode_result` |
 
@@ -114,6 +114,19 @@ randomness comes from a key clients never see and there is no joint
 randomness, so there is no offline search; the bound is per submitted
 report.
 
+**Plaintext support (fixed).** The bound above holds for the verifier of
+`z`. A client controls its whole plaintext; in a product that packs several
+verifier rows, a coefficient above `z` meets the rows packed below the one
+read and shifts the verifier. `tests/junk_coefficients.rs` builds a Count
+report for the invalid input 2 that prio's `decide` accepts this way; the
+protocol accepted it before this fix. Each aggregator now also computes
+`ct × R_t` for 5 secret polynomials `R_t`, uniform on `[0, N − |z|)` and 0
+above: coefficient `N − 1` of the product is `Σ_{i ≥ |z|} z_i R_t[N−1−i]`,
+a uniform combination of the coefficients above `z` only (0 for honest
+reports, so nothing is revealed). A nonzero coefficient above `z` passes all
+five with probability `p⁻⁵ < 2⁻¹⁵⁹`, adding to the error above. The
+aggregate is read off coefficients `[0, |input|)` and is not affected.
+
 **Not proven: arbitrary (malformed) ciphertexts.** A client may submit a
 ciphertext whose noise is far from honest. If the product's phase wraps
 modulo Q, the decrypted verifier need not match the plaintext that the sum
@@ -134,20 +147,24 @@ the median over 30. All three were run in this session (`results/`).
 |---|---|---|---|
 | Count report | 80 B | 2.73 MiB | **419,856 B (410 KiB)** |
 | SumVec(100, max 1) / BitVec(100) report | 2,480 B | 2.73 MiB | **419,856 B** |
-| Count aggregator time | 0.004 ms | 598 ms | **15.0 ms** |
-| SumVec(100) aggregator time | 0.04 ms | 919 ms | **66.8 ms** |
-| aggregator↔aggregator per report | verifier share 32 B (Count), 288 B + 32 B message (SumVec(100)) | 2.73 MiB mask + 0.87 MiB verifier | **421 B (Count), 505 B (BitVec(100))** |
+| Count aggregator time | 0.004 ms | 598 ms | **90.4 ms** |
+| SumVec(100) aggregator time | 0.04 ms | 919 ms | **137.9 ms** (BitVec(100)) |
+| aggregator↔aggregator per report | verifier share 32 B (Count), 288 B + 32 B message (SumVec(100)) | 2.73 MiB mask + 0.87 MiB verifier | **526 B (Count), 610 B (BitVec(100))** |
 | evaluation keys | none | 44 MiB (Count), 121 MiB (SumVec(100)) | **none** |
 | public key | none | 5.5 MiB | 0.50 MiB |
 | client time | 0.004–0.07 ms | 60–68 ms | 8.3–8.4 ms |
 
-* Against `fhe-prio3`: reports 6.8× smaller; aggregators 40× (Count) and
-  14× (SumVec(100)) faster; inter-aggregator traffic per report
-  7,500–9,000× smaller; no evaluation keys.
+* Against `fhe-prio3`: reports 6.8× smaller; aggregators 6.6× (Count) and
+  6.7× (SumVec(100)) faster; inter-aggregator traffic per report
+  6,200–7,200× smaller; no evaluation keys.
+* The 5 support checks (above) cost about 55 ms of `prepare_init` and
+  14 ms of `prepare_finish` per report and 105 B of share; before them the
+  aggregator times were 15.0 ms (Count) and 66.8 ms (BitVec(100)), but
+  that version accepted the invalid report of `tests/junk_coefficients.rs`.
 * Against the original-encoding package's binary SumVec(100) (7,405,695 B,
   single-key evaluator, a different trust model): 17.6× smaller report.
 * Against Prio3: still 169× (SumVec(100)) to 5,250× (Count) larger reports
-  and 1,700–3,800× slower aggregators. One RLWE ciphertext (2·N·log Q bits)
+  and 3,400–22,600× slower aggregators. One RLWE ciphertext (2·N·log Q bits)
   is the floor for single-ciphertext public-key encryption. Prio3 avoids it
   because its shares are plain field elements split across non-colluding
   aggregators.
@@ -179,8 +196,8 @@ Not used, though measured or computed:
 
 ```sh
 # OpenFHE 1.3.1 (as fhe-prio3/README.md), then:
-cd prio3/openfhe-tbgv-rs && cargo test --release -- --test-threads=1   # 29 tests incl. linear_coeffs, self-tests
-cd ../fhe-flp && cargo test --release -- --test-threads=1               # 14 tests
+cd prio3/openfhe-tbgv-rs && cargo test --release -- --test-threads=1   # incl. linear_coeffs, self-tests
+cd ../fhe-flp && cargo test --release -- --test-threads=1               # incl. tests/protocol.rs, tests/junk_coefficients.rs
 cargo run --release --bin soundness                                     # results/soundness.md
 cargo run --release --bin measure -- count --reports 16
 cargo run --release --bin measure -- bitvec --len 100 --reports 16

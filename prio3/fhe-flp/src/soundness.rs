@@ -16,10 +16,12 @@
 //! * `PROOFS` independent proofs, each checked with independent query
 //!   randomness: `(circuit + flp)^PROOFS`.
 //!
-//! No joint randomness is used (`Task::new` refuses types that need it), so
-//! there is no offline search over joint randomness: the query randomness
-//! comes from a key the client never sees, and the bound is per submitted
-//! report (multiply by the number of reports an attacker submits).
+//! The query randomness comes from a key the client never sees, so these
+//! bounds are per submitted report (multiply by the number of reports an
+//! attacker submits). Types with joint randomness (one-aggregator protocol
+//! only; the threshold `Task` refuses them) add `chunk_length / p` per proof
+//! ([`log2_error_with_joint_rand`]); their joint randomness can also be
+//! searched offline, see [`log2_joint_rand_per_attempt`].
 use prio::field::NttFriendlyFieldElement;
 use prio::flp::Flp;
 
@@ -72,4 +74,38 @@ where
         eps += 1.0 / p;
     }
     eps.log2()
+}
+
+/// [`log2_error`] for circuits with joint randomness: each proof also fails
+/// to catch an invalid input through the joint-randomness compression with
+/// probability at most `joint_rand_degree / p` (`VerifierMap::joint_rand_degree`;
+/// the draft's `(circuit_soundness + flp_soundness)^PROOFS`).
+pub fn log2_error_with_joint_rand<T: Flp>(typ: &T, p: f64, proofs: usize, joint_rand_degree: usize) -> f64
+where
+    T::Field: NttFriendlyFieldElement,
+{
+    let eps = log2_per_proof(typ, p).exp2() + joint_rand_degree as f64 / p;
+    eps.log2() * proofs as f64
+}
+
+/// The fewest proofs whose error, joint randomness included, is at most
+/// `2^-target_bits`.
+pub fn proofs_for_with_joint_rand<T: Flp>(typ: &T, p: f64, target_bits: f64, joint_rand_degree: usize) -> usize
+where
+    T::Field: NttFriendlyFieldElement,
+{
+    let per = -log2_error_with_joint_rand(typ, p, 1, joint_rand_degree);
+    (target_bits / per).ceil().max(1.0) as usize
+}
+
+/// The joint randomness of a report comes from a hash of its input
+/// ciphertext, which the client can recompute offline as often as it likes
+/// (a fresh encryption each time), as in Prio3. Each attempt yields joint
+/// randomness under which all `proofs` range-check compressions miss an
+/// invalid input with probability at most `(joint_rand_degree / p)^proofs`;
+/// an attacker making `2^q` attempts succeeds with probability at most
+/// `2^(q + this)` on top of [`log2_error_with_joint_rand`]. `-inf` without
+/// joint randomness.
+pub fn log2_joint_rand_per_attempt(p: f64, proofs: usize, joint_rand_degree: usize) -> f64 {
+    (joint_rand_degree as f64 / p).log2() * proofs as f64
 }

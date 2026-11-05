@@ -1,0 +1,132 @@
+    Blocking waiting for file lock on artifact directory
+   Compiling openfhe-tbgv-rs v0.1.0 (/workspace/fhe-flp-hardening/prio3/openfhe-tbgv-rs)
+   Compiling fhe-flp v0.1.0 (/workspace/fhe-flp-hardening/prio3/fhe-flp)
+    Finished `release` profile [optimized] target(s) in 31.38s
+     Running unittests src/lib.rs (/workspace/fhe-build/paper-core/release/deps/fhe_flp-79a2dca0477c3145)
+
+running 27 tests
+test bitvec::tests::closed_form_equals_prio_query ... ok
+test bitvec::tests::closed_form_on_a_gadget_point_that_is_a_2w_th_root ... ok
+test codec::tests::out_of_range_residue_in_bytes_is_refused ... ok
+test codec::tests::roundtrip_and_canonical ... ok
+test f65537::tests::arithmetic_matches_integer_reference ... ok
+test f65537::tests::encodings_are_canonical ... ok
+test f65537::tests::every_nonzero_element_has_its_inverse ... ok
+test f65537::tests::prio_flp_proves_and_decides_in_this_field ... ok
+test f65537::tests::random_vectors_are_in_range_and_spread ... ok
+test f65537::tests::roots_of_unity_and_generator ... ok
+test single::oblivious::tests::all_variants_prio_field ... ok
+test single::oblivious::tests::all_variants_small_field ... ok
+test single::oblivious::tests::count_invalid_and_all_rejected_have_same_reply_size_and_one_release ... ok
+test single::oblivious::tests::crafted_query_returns_encrypted_verdicts_for_100_reports ... ok
+test single::oblivious::tests::histogram_crosses_two_block_boundaries_without_spill ... ok
+test single::oblivious::tests::packing_rounds_at_whole_report_boundaries ... ok
+test single::oblivious::tests::poisoned_report_cannot_contaminate_neighbours ... ok
+test single::oblivious::tests::reflected_verdict_ciphertext_has_no_plaintext_verdict_reply ... ok
+test single::oblivious::tests::replay_survives_collector_restart_and_rerandomized_checks ... ok
+test single::oblivious::tests::weighted_sum_uses_output_domain_masks ... ok
+test single::oblivious::tests::wrong_task_truncated_suffix_and_wrong_final_batch_are_refused ... ok
+test single::tests::aggregate_maps_of_prio3_types ... ok
+test single::tests::crafted_query_learns_input_bit_through_collector_verdict ... ok
+test single::tests::known_fake_reports_reveal_the_remaining_input_in_released_total ... ok
+test single::tests::shifted_count_ciphertext_with_unmodified_proof_is_rejected ... ok
+test single::tests::substituted_aggregate_with_same_count_is_accepted ... ok
+test single::tests::weights_that_are_not_one_shifted_pattern_are_refused ... ok
+
+test result: ok. 27 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 96.62s
+
+     Running unittests src/bin/measure.rs (/workspace/fhe-build/paper-core/release/deps/measure-48c24eb8819f8555)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/measure_oblivious.rs (/workspace/fhe-build/paper-core/release/deps/measure_oblivious-06d686d90fd4379e)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/measure_single.rs (/workspace/fhe-build/paper-core/release/deps/measure_single-e91063869ae9c296)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/soundness.rs (/workspace/fhe-build/paper-core/release/deps/soundness-5dd815398e74eaee)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/junk_coefficients.rs (/workspace/fhe-build/paper-core/release/deps/junk_coefficients-adae591ff75b5c5c)
+
+running 3 tests
+test a_single_coefficient_above_z_is_rejected ... ok
+test coefficients_above_z_cannot_make_an_invalid_count_pass ... ok
+test threshold_coefficients_above_z_cannot_make_an_invalid_count_pass ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.23s
+
+     Running tests/protocol.rs (/workspace/fhe-build/paper-core/release/deps/protocol-575ff25f72be4c33)
+
+running 10 tests
+test a_flipped_ciphertext_bit_is_not_accepted ... ok
+test bitvec_end_to_end_and_rejects_a_single_non_bit ... ok
+test count_end_to_end_two_and_three_aggregators ... ok
+test decrypted_verifier_is_exactly_prio_query_and_prio3_combined_verifier ... ok
+test invalid_inputs_with_honestly_computed_proofs_are_rejected ... ok
+test linear_map_reproduces_query_on_random_points ... ok
+test malformed_and_replayed_reports_are_refused ... ok
+test shares_from_the_wrong_parties_are_refused ... ok
+test tampered_proofs_are_rejected ... ok
+test unsupported_tasks_are_refused ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.79s
+
+     Running tests/single.rs (/workspace/fhe-build/paper-core/release/deps/single-51500261091c8ae0)
+
+running 8 tests
+test a_report_under_another_key_is_rejected ... ok
+test bitvec100_end_to_end_and_rejects_a_single_non_bit ... ok
+test check_requests_are_freshly_masked_and_flooded ... ok
+test collector_refuses_inconsistent_requests ... ok
+test count_end_to_end ... ok
+test decrypted_verifier_is_exactly_prio_query ... ok
+test invalid_inputs_and_tampered_proofs_are_rejected_and_not_counted ... ok
+test malformed_replayed_and_flipped_reports ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.47s
+
+     Running tests/single_p65537.rs (/workspace/fhe-build/paper-core/release/deps/single_p65537-7d856828225328d1)
+
+running 7 tests
+test batches_are_capped_so_sums_never_wrap_modulo_p ... ok
+test bitvec_end_to_end_and_rejects_a_non_bit ... ok
+test circuits_beyond_the_fields_roots_are_refused_not_panicking ... ok
+test closed_form_at_roots_of_unity_in_gf65537 ... ok
+test count_end_to_end_with_exact_prio_verifiers ... ok
+test invalid_and_tampered_reports_are_rejected ... ok
+test proofs_for_2_to_the_minus_128 ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 43.82s
+
+     Running tests/single_variants.rs (/workspace/fhe-build/paper-core/release/deps/single_variants-e0fe1e3428fad896)
+
+running 7 tests
+test batches_are_capped_by_the_largest_output ... ok
+test encodings_are_prio3s ... ok
+test histogram_end_to_end_rejects_two_hot_and_zero_vectors ... ok
+test multihot_end_to_end_in_field_prio2_rejects_overweight ... ok
+test sum_end_to_end_one_ciphertext ... ok
+test sumvec_end_to_end_two_ciphertexts_with_joint_randomness ... ok
+test the_proofs_cannot_change_the_input_that_fixed_the_joint_randomness ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.56s
+
+   Doc-tests fhe_flp
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

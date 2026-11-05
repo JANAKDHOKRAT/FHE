@@ -1,0 +1,5 @@
+# Shared by every crate under prio3/ (rustfmt reads the nearest config up
+# the directory tree). 160 columns keeps the one-expression-per-line style
+# the crates were written in while making `cargo fmt --check` enforceable.
+max_width = 160
+edition = "2024"

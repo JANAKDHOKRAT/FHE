@@ -1,0 +1,11 @@
+   Compiling openfhe-tbgv-rs v0.1.0 (/workspace/fhe-flp-hardening/prio3/openfhe-tbgv-rs)
+    Finished `release` profile [optimized] target(s) in 0.29s
+     Running tests/phase_norm.rs (/workspace/fhe-build/paper-core/release/deps/phase_norm-a4f4a58175cb79ba)
+
+running 3 tests
+test doubling_can_return_below_a_threshold_after_exceeding_it ... ok
+test exact_phase_matches_the_existing_independent_crt_diagnostic ... ok
+test zero_phase_does_not_prove_a_ciphertext_is_an_authorized_aggregate ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+

@@ -1,0 +1,10 @@
+   Compiling fhe-flp v0.1.0 (/workspace/fhe-flp-hardening/prio3/fhe-flp)
+    Finished `release` profile [optimized] target(s) in 1.13s
+     Running tests/oblivious_restart.rs (/workspace/fhe-build/paper-core/release/deps/oblivious_restart-c2c4436f2f01de5e)
+
+running 2 tests
+test replay_is_refused_in_a_new_process_after_exit_with_pending_batch ... ok
+test restart_worker ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.31s
+

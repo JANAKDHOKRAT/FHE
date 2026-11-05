@@ -1,0 +1,105 @@
+   Compiling openfhe-tbgv-rs v0.1.0 (/workspace/fhe-flp-hardening/prio3/openfhe-tbgv-rs)
+    Finished `release` profile [optimized] target(s) in 43.28s
+     Running unittests src/lib.rs (/workspace/fhe-build/paper-core/release/deps/openfhe_tbgv_rs-429fdc0c028bbb18)
+
+running 8 tests
+test selftest::tests::detects_a_rebuild_at_the_wrong_level ... ok
+test selftest::tests::detects_a_rebuild_from_a_reference_under_another_key ... ok
+test selftest::tests::detects_a_rebuild_that_alters_one_residue ... ok
+test selftest::tests::detects_a_rebuild_that_ignores_the_noise_degree ... ok
+test selftest::tests::detects_a_rebuild_that_ignores_the_scaling_factor ... ok
+test selftest::tests::linear_selftest_passes_and_detects_an_altered_residue ... ok
+test selftest::tests::passes_on_the_loaded_library_and_gates_build_ciphertext ... ok
+test selftest::tests::single_selftest_passes_and_detects_an_altered_residue ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.27s
+
+     Running tests/crs_ceremony.rs (/workspace/fhe-build/paper-core/release/deps/crs_ceremony-447483db4e9e0eb3)
+
+running 2 tests
+test contributions_are_checked_before_they_enter ... ok
+test three_parties_build_joint_keys_from_residues ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.03s
+
+     Running tests/encryption_with.rs (/workspace/fhe-build/paper-core/release/deps/encryption_with-c8cf2be470370884)
+
+running 1 test
+test encryption_with_chosen_randomness ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.51s
+
+     Running tests/key_noise_gap.rs (/workspace/fhe-build/paper-core/release/deps/key_noise_gap-24ce534087eaec61)
+
+running 2 tests
+test key_noise_gap_silent_bottom ... ok
+test key_noise_gap_verdict_parameters ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 19.63s
+
+     Running tests/linear_coeffs.rs (/workspace/fhe-build/paper-core/release/deps/linear_coeffs-8cbe11251fd74284)
+
+running 6 tests
+test bad_index_sets_are_refused ... ok
+test flooding_margin_after_dense_plaintext_product ... ok
+test linear_context_is_ring_8192_with_q_inside_the_128_bit_bound ... ok
+test mismatched_restrictions_are_refused ... ok
+test restricted_inner_products_are_exact_and_nothing_else_decrypts ... ok
+test restricted_partials_travel_as_their_kept_residues ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.35s
+
+     Running tests/openfhe_loader_facts.rs (/workspace/fhe-build/paper-core/release/deps/openfhe_loader_facts-a0e04885adb629d4)
+
+running 1 test
+test loader_accepts_a_residue_at_or_above_its_modulus ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.21s
+
+     Running tests/raw_residues.rs (/workspace/fhe-build/paper-core/release/deps/raw_residues-6409ac78a36789bf)
+
+running 3 tests
+test rebuild_is_exact_for_every_protocol_object_kind ... ok
+test rebuild_is_refused_before_the_self_test ... ok
+test rebuild_refuses_every_malformed_argument ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.23s
+
+     Running tests/single_key.rs (/workspace/fhe-build/paper-core/release/deps/single_key-63d90f197227f588)
+
+running 7 tests
+test flood_mask_and_reduce_keep_the_selected_coefficients ... ok
+test flooding_margin_after_dense_plaintext_product ... ok
+test flooding_randomizes_the_ciphertext_not_the_plaintext ... ok
+test p65537::a_sum_of_65536_reports_decrypts_exactly ... ok
+test p65537::flooding_margin_and_decryption ... ok
+test single_context_is_ring_8192_with_q_inside_the_128_bit_bound ... ok
+test too_wide_a_flood_is_refused ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.70s
+
+     Running tests/threshold.rs (/workspace/fhe-build/paper-core/release/deps/threshold-86cf95c340f55aa9)
+
+running 6 tests
+test context_and_key_serialization_roundtrip ... ok
+test fuse_requires_exactly_one_lead ... ok
+test injected_noise_keeps_plaintext_until_it_overflows ... ok
+test plaintext_rejects_unreduced_values ... ok
+test three_party_arithmetic_and_threshold_decryption ... ok
+test two_party_arithmetic_and_threshold_decryption ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.62s
+
+     Running tests/vdec_primitives.rs (/workspace/fhe-build/paper-core/release/deps/vdec_primitives-4a32746c1231a1fe)
+
+running 1 test
+test primitives_at_the_top_and_bottom_of_the_chain ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 12.12s
+
+   Doc-tests openfhe_tbgv_rs
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

@@ -1,0 +1,2 @@
+{"p":65537,"ring":8192,"moduli":[1095233372161, 1085569548289, 1032955396097],"error_support_bound":39,"flood_width":100,"observed_max_phase":37041439275,"bottom_modulus":1095233372161,"selected_outputs_correct":true}
+{"p":4293918721,"ring":8192,"moduli":[1149474209503952897, 33205938361335809, 32572774282412033],"error_support_bound":39,"flood_width":135,"observed_max_phase":86421230095429090,"bottom_modulus":1149474209503952897,"selected_outputs_correct":true}

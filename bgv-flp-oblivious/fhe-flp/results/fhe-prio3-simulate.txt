@@ -1,0 +1,28 @@
+type=Count mode=Verdict auth=Open aggregators=2 repetitions=4 reports=4 groups=1
+plain_mod=4293918721 mult_depth=3 soundness=2^-128.0 per report max_batch_size=1048576
+ceremony: 1830 ms  | context 0.00 MiB, public key 5.50 MiB, eval-mult key 11.00 MiB, rotation keys 33.01 MiB (3 indices)
+aggregator setup: 2274 ms total for 2 aggregators
+layout: Blocked input_len=1 block=1 chunks=1 groups=1 row=16384 ring_dim=32768
+per report:
+  client shard                60.5 ms   report 2.73 MiB (1 chunk(s))
+  aggregator prepare_init    459.0 ms   mask message 2.73 MiB
+  aggregator prepare_masks   108.2 ms   verifier message 0.87 MiB
+  aggregator prepare_finish   31.1 ms
+  aggregator total           598.2 ms per report per aggregator
+batch: aggregate_share 42.2 ms per aggregator (4.10 MiB each incl. accumulators), verified release: challenge 187.6 ms (5 checks, 13.67 MiB), commit 320.9 ms and reveal 380.7 ms per aggregator (reveal 6.84 MiB), finish 725.6 ms, 4 reports
+aggregate = Count(2) (valid reports: 4)
+aggregate matches plaintext reference: OK
+type=SumVec { length: 100, max_measurement: 1 } mode=Verdict auth=Open aggregators=2 repetitions=4 reports=4 groups=1
+plain_mod=4293918721 mult_depth=3 soundness=2^-128.0 per report max_batch_size=1048576
+ceremony: 3624 ms  | context 0.00 MiB, public key 5.50 MiB, eval-mult key 11.00 MiB, rotation keys 110.03 MiB (10 indices)
+aggregator setup: 2753 ms total for 2 aggregators
+layout: Blocked input_len=100 block=128 chunks=1 groups=1 row=16384 ring_dim=32768
+per report:
+  client shard                68.2 ms   report 2.73 MiB (1 chunk(s))
+  aggregator prepare_init    771.8 ms   mask message 2.73 MiB
+  aggregator prepare_masks   114.0 ms   verifier message 0.87 MiB
+  aggregator prepare_finish   33.3 ms
+  aggregator total           919.2 ms per report per aggregator
+batch: aggregate_share 58.3 ms per aggregator (4.10 MiB each incl. accumulators), verified release: challenge 202.8 ms (5 checks, 13.67 MiB), commit 328.8 ms and reveal 346.9 ms per aggregator (reveal 6.84 MiB), finish 556.0 ms, 4 reports
+aggregate = SumVec([2, 4, 1, 2, 3, 2, 0, 3, 2, 1, 2, 4, 1, 2, 3, 2, 0, 3, 2, 1, 2, 4, 1, 2, 3, 2, 0, 3, 2, 1, 2, 4, 1, 2, 3, 2, 0, 3, 2, 1, 2, 4, 1, 2, 3, 2, 0, 3, 2, 1, 2, 4, 1, 2, 3, 2, 0, 3, 2, 1, 2, 4, 1, 2, 3, 2, 0, 3, 2, 1, 2, 4, 1, 2, 3, 2, 0, 3, 2, 1, 2, 4, 1, 2, 3, 2, 0, 3, 2, 1, 2, 4, 1, 2, 3, 2, 0, 3, 2, 1]) (valid reports: 4)
+aggregate matches plaintext reference: OK

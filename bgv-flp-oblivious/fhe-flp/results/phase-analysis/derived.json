@@ -1,0 +1,116 @@
+[
+  {
+    "p": 65537,
+    "ring": 8192,
+    "products": 1,
+    "fresh_phase_bound": 41879191591,
+    "pre_flood_bound": 22483719783282966528,
+    "flood_width": 100,
+    "post_reduce_bounds": [
+      40213748677371061746109,
+      37312389720
+    ],
+    "honest_phase_bound": 37312389720,
+    "observed_phase": 37041439275,
+    "observed_below_bound": true,
+    "phase_only_single_coefficient_bits": 50.71450747105812,
+    "phase_only_vector_bits": 37.71450747105812,
+    "meets_64_vector_bound": false,
+    "full_ciphertext_security_proved": false
+  },
+  {
+    "p": 65537,
+    "ring": 8192,
+    "products": 2,
+    "fresh_phase_bound": 41879191591,
+    "pre_flood_bound": 44967439566565867520,
+    "flood_width": 100,
+    "post_reduce_bounds": [
+      40213748677371083512508,
+      37312389720
+    ],
+    "honest_phase_bound": 37312389720,
+    "observed_phase": 37041439275,
+    "observed_below_bound": true,
+    "phase_only_single_coefficient_bits": 49.71450747105812,
+    "phase_only_vector_bits": 36.71450747105812,
+    "meets_64_vector_bound": false,
+    "full_ciphertext_security_proved": false
+  },
+  {
+    "p": 65537,
+    "ring": 8192,
+    "products": 13,
+    "fresh_phase_bound": 41879191591,
+    "pre_flood_bound": 292288357182677778432,
+    "flood_width": 100,
+    "post_reduce_bounds": [
+      40213748677371322942902,
+      37312389720
+    ],
+    "honest_phase_bound": 37312389720,
+    "observed_phase": 37041439275,
+    "observed_below_bound": true,
+    "phase_only_single_coefficient_bits": 47.01406775291703,
+    "phase_only_vector_bits": 34.01406775291703,
+    "meets_64_vector_bound": false,
+    "full_ciphertext_security_proved": false
+  },
+  {
+    "p": 4293918721,
+    "ring": 8192,
+    "products": 1,
+    "fresh_phase_bound": 2743882765418535,
+    "pre_flood_bound": 96518222413136003661818757120,
+    "flood_width": 135,
+    "post_reduce_bounds": [
+      2870902798671524475389584769079959,
+      86475101565988669
+    ],
+    "honest_phase_bound": 86475101565988669,
+    "observed_phase": 86421230095429090,
+    "observed_below_bound": true,
+    "phase_only_single_coefficient_bits": 69.7148597344953,
+    "phase_only_vector_bits": 56.714859734495306,
+    "meets_64_vector_bound": false,
+    "full_ciphertext_security_proved": false
+  },
+  {
+    "p": 4293918721,
+    "ring": 8192,
+    "products": 2,
+    "fresh_phase_bound": 2743882765418535,
+    "pre_flood_bound": 193036444826272007319343595520,
+    "flood_width": 135,
+    "post_reduce_bounds": [
+      2870902798671524475392547925413414,
+      86475101565988669
+    ],
+    "honest_phase_bound": 86475101565988669,
+    "observed_phase": 86421230095429090,
+    "observed_below_bound": true,
+    "phase_only_single_coefficient_bits": 68.7148597344953,
+    "phase_only_vector_bits": 55.714859734495306,
+    "meets_64_vector_bound": false,
+    "full_ciphertext_security_proved": false
+  },
+  {
+    "p": 4293918721,
+    "ring": 8192,
+    "products": 13,
+    "fresh_phase_bound": 2743882765418535,
+    "pre_flood_bound": 1254736891370768047552116817920,
+    "flood_width": 135,
+    "post_reduce_bounds": [
+      2870902798671524475425142645081421,
+      86475101565988669
+    ],
+    "honest_phase_bound": 86475101565988669,
+    "observed_phase": 86421230095429090,
+    "observed_below_bound": true,
+    "phase_only_single_coefficient_bits": 66.01442001635421,
+    "phase_only_vector_bits": 53.01442001635421,
+    "meets_64_vector_bound": false,
+    "full_ciphertext_security_proved": false
+  }
+]

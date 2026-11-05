@@ -1,0 +1,15 @@
+{
+  "fhe-flp-tests.log": {
+    "passed": 62,
+    "failures": 0
+  },
+  "wrapper-tests.log": {
+    "passed": 37,
+    "failures": 0
+  },
+  "process-restart-tests.log": {
+    "passed": 2,
+    "failures": 0,
+    "note": "additional integration test file after full-suite pass; executes two separate OS processes"
+  }
+}

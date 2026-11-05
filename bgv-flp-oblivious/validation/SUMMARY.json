@@ -1,0 +1,10 @@
+{
+  "tests_passed": {
+    "fhe-flp": 67,
+    "wrapper": 40
+  },
+  "format": "pass",
+  "clippy_warnings_denied": "pass",
+  "production_security": "NOT GREEN",
+  "guard_inclusive_full_benchmarks": "not run"
+}

@@ -130,7 +130,10 @@ fn the_collector_decrypts_exactly_prios_verifier() {
     // The dot products the client proved with are those of the vectors the
     // evaluator derives.
     let d = task.shape().dimension();
-    assert_eq!(input[task.shape().meas_len()..], task.shape().wr_results(&input[..d], &ch.wr_vectors));
+    assert_eq!(
+        input[task.shape().meas_len()..],
+        task.shape().wr_results(&input[..d], &task.wr_vectors(&ch.wr_seed))
+    );
 }
 
 /// One invalid report among honest ones: rejected, and the sum is that of

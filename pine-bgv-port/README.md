@@ -3,6 +3,12 @@
 **Not production-ready. No complete PINE protocol or privacy proof is claimed.**
 Published at the owner's request to preserve and review the work.
 
+The protocol built on this work (client, evaluator, collector, challenges
+bound to the ciphertexts, tests with real ciphertexts and measurements) is
+in `../prio3/fhe-flp`: see `../prio3/fhe-flp/PINE.md`. This folder is kept
+as the earlier snapshot; its upstream copy and `port/pine-circuit` are used
+by that crate's tests.
+
 Implemented: two FieldPrio2 arithmetic circuits using chunked ParallelSum
 square/multiplication gadgets, fixed-point encoding checks, parameter preflight,
 exact integer-update arithmetic, and a real OpenFHE BGV affine-query test.

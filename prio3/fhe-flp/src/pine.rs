@@ -289,15 +289,22 @@ impl PineTask {
         Sha256::digest(bytes).into()
     }
 
-    /// The wraparound test vectors of a report: from its nonce and the
-    /// bytes of its gradient part.
-    fn wr_vectors(&self, nonce: &[u8], gradient_part: &[u8]) -> Vec<i8> {
+    /// The seed of a report's wraparound test vectors: from its nonce and
+    /// the bytes of its gradient part.
+    fn wr_seed(&self, nonce: &[u8], gradient_part: &[u8]) -> [u8; 32] {
         let mut xof = XofTurboShake128::init(&[0u8; 32], &[DST_WR_SEED, &self.binding]);
         xof.update(nonce);
         xof.update(&Self::digest(gradient_part));
-        let seed = xof.into_seed();
+        let mut seed = [0u8; 32];
+        seed.copy_from_slice(xof.into_seed().as_ref());
+        seed
+    }
+
+    /// The wraparound test vectors of a seed ([`Challenges::wr_seed`]):
+    /// `NUM_WR_CHECKS` vectors of `dimension` entries in `{-1, 0, 1}`.
+    pub fn wr_vectors(&self, wr_seed: &[u8; 32]) -> Vec<i8> {
         self.shape()
-            .wr_vectors(&mut XofTurboShake128::seed_stream(seed.as_ref(), &[DST_WR, &self.binding], &[]))
+            .wr_vectors(&mut XofTurboShake128::seed_stream(wr_seed, &[DST_WR, &self.binding], &[]))
     }
 
     /// The joint randomness of every main proof: from the nonce and the
@@ -347,7 +354,7 @@ impl PineTask {
         let (g, w) = (&report[self.part_range(PART_GRADIENT)], &report[self.part_range(PART_WRAPAROUND)]);
         let (t_norm_equality, t_main) = self.query_points(verify_key, report)?;
         Ok(Challenges {
-            wr_vectors: self.wr_vectors(&report[..NONCE_LEN], g),
+            wr_seed: self.wr_seed(&report[..NONCE_LEN], g),
             joint_rands: self.joint_rands(&report[..NONCE_LEN], g, w),
             t_norm_equality,
             t_main,
@@ -364,7 +371,8 @@ impl PineTask {
     /// after ciphertext, and constants. The dot products of the wraparound
     /// tests are folded into the gradient coordinates.
     fn verifier_rows(&self, ch: &Challenges, mut emit: impl FnMut(&[Field], Field) -> Result<()>) -> Result<()> {
-        let (vectors, joint_rands, t_ne, t_main) = (&ch.wr_vectors, &ch.joint_rands, &ch.t_norm_equality, &ch.t_main);
+        let vectors = self.wr_vectors(&ch.wr_seed);
+        let (joint_rands, t_ne, t_main) = (&ch.joint_rands, &ch.t_norm_equality, &ch.t_main);
         let shape = self.shape();
         let (d, il) = (shape.dimension(), shape.input_len());
         let (g_len, m_len) = (self.lens[PART_GRADIENT], shape.meas_len());
@@ -438,8 +446,8 @@ fn wire_len<T: Flp<Field = Field>>(typ: &T) -> usize {
 
 /// The challenges of one report ([`PineTask::challenges`]).
 pub struct Challenges {
-    /// `NUM_WR_CHECKS` vectors of `dimension` entries in `{-1, 0, 1}`.
-    pub wr_vectors: Vec<i8>,
+    /// Seed of the wraparound test vectors ([`PineTask::wr_vectors`]).
+    pub wr_seed: [u8; 32],
     /// Three elements per main proof.
     pub joint_rands: Vec<Field>,
     pub t_norm_equality: Vec<Field>,
@@ -505,7 +513,7 @@ impl<'a> PineClient<'a> {
         let mut nonce = [0u8; NONCE_LEN];
         OsRng.fill_bytes(&mut nonce);
         let g_bytes = self.encrypt(g)?;
-        let vectors = self.task.wr_vectors(&nonce, &g_bytes);
+        let vectors = self.task.wr_vectors(&self.task.wr_seed(&nonce, &g_bytes));
         Ok((nonce, g_bytes, vectors))
     }
 

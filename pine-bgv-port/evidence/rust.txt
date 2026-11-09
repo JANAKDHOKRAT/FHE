@@ -1,0 +1,18 @@
+   Compiling openfhe-tbgv-rs v0.1.0 (/workspace/work/pine-bgv/research/pine-bgv-port/current-fhe/bgv-flp-oblivious/openfhe-tbgv-rs)
+   Compiling pine-circuit v0.1.0 (/workspace/work/pine-bgv/research/pine-bgv-port/port/pine-circuit)
+    Finished `release` profile [optimized] target(s) in 3.63s
+     Running unittests src/lib.rs (/workspace/fhe-build/oblivious-recovered/release/deps/pine_circuit-e8bf14ba914cea3b)
+
+running 4 tests
+test tests::actual_bgv_query_matches_prio_with_arbitrary_padding ... ok
+test tests::chunk_layout_preserves_arbitrary_field_arithmetic ... ok
+test tests::proof_query_decide_and_tampering ... ok
+test tests::refuses_parameters_outside_reference_guards ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 15.47s
+
+   Doc-tests pine_circuit
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

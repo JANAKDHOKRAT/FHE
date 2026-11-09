@@ -1,0 +1,10 @@
+[package]
+name = "pine-circuit"
+version = "0.1.0"
+edition = "2024"
+publish = false
+[workspace]
+[dependencies]
+prio = "=0.18.1"
+[dev-dependencies]
+openfhe-tbgv-rs = { path = "../../current-fhe/bgv-flp-oblivious/openfhe-tbgv-rs" }

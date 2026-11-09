@@ -1,0 +1,18 @@
+test_hostile_floats (test_encoding.Encoding.test_hostile_floats) ... ok
+test_norm_witness (test_encoding.Encoding.test_norm_witness) ... ok
+test_scaling_overflow (test_encoding.Encoding.test_scaling_overflow) ... ok
+test_upstream_rounding (test_encoding.Encoding.test_upstream_rounding) ... ok
+test_exhaustive_small_aggregates (test_integer_updates.IntegerUpdates.test_exhaustive_small_aggregates) ... ok
+test_rejections_still_use_submitted_denominator (test_integer_updates.IntegerUpdates.test_rejections_still_use_submitted_denominator) ... ok
+test_rounding_can_increase_norm (test_integer_updates.IntegerUpdates.test_rounding_can_increase_norm) ... ok
+test_ties_and_signs (test_integer_updates.IntegerUpdates.test_ties_and_signs) ... ok
+test_wrap_guard_and_noncanonical (test_integer_updates.IntegerUpdates.test_wrap_guard_and_noncanonical) ... ok
+test_encoded_capacity (test_parameters.Guards.test_encoded_capacity) ... ok
+test_field_boundary (test_parameters.Guards.test_field_boundary) ... ok
+test_invalid (test_parameters.Guards.test_invalid) ... ok
+test_small_field_cannot_support_bound_16 (test_parameters.Guards.test_small_field_cannot_support_bound_16) ... ok
+
+----------------------------------------------------------------------
+Ran 13 tests in 0.010s
+
+OK

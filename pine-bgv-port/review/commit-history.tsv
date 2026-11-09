@@ -1,0 +1,101 @@
+19db638858d7fc88ad46708803dbcd44d017f76a	Janak Dhokrat	jdhokrat@gmail.com	Add isolated experimental BGV FLP encrypted-verdict package
+4a4ad7f2e2a6e88b9be788dcc075352703192c80	Claude	noreply@anthropic.com	fhe-flp: plan for verdict-oblivious aggregation and its cost
+c577887eb8768e607927e45fbe5dc63f003f632f	Claude	noreply@anthropic.com	fhe-flp: hardening plan for the one-aggregator collector
+d735342e7e025777358db6601169fdd0ae81816b	Claude	noreply@anthropic.com	fhe-flp: Prio3 Sum, SumVec, Histogram, MultihotCountVec in the one-aggregator protocol; fix plaintext-support soundness bug
+89801c34760b2a06483d28e9cf7751557a677043	Claude	noreply@anthropic.com	Fix two small-field issues found by auditing the p = 65537 build
+69cf546c6b01a849447a9b32a32f448f8d9b52fa	Claude	noreply@anthropic.com	Run the one-aggregator protocol in GF(65537) as well as FieldPrio2
+b1b92871ae7610c89615327e1cc041840bf049f7	Claude	noreply@anthropic.com	Add one-aggregator fhe-flp: BGV + Prio3 FLP, collector holds the key
+d9fd7559d3227065d650524ea67952e2346d005f	Claude	noreply@anthropic.com	Add fhe-flp: Prio3's FLP verified under depth-0 threshold BGV
+bc8033c1745999b5c498407838dd72e8c1a72059	Janak Dhokrat	jdhokrat@gmail.com	Add original-encoding small-prime BGV research package
+1b5dc5ff37e3c0541a854bdcc7dd4673cc1ff999	Janak Dhokrat	jdhokrat@gmail.com	Correct Count projection source reference in guide
+73e7485ffc7e8972f51abb1c701c5fd2ea40337a	Janak Dhokrat	jdhokrat@gmail.com	Explain each BGV variant and reproduction for new readers
+7f68f3c4724be5704b97fea2cf370b0c75b3e901	Janak Dhokrat	jdhokrat@gmail.com	Bundle selected small-prime SIMD BGV tasks in optimbgv
+ce95365727964ba0a58aa6f5c1dc3ca4121a6016	Janak Dhokrat	jdhokrat@gmail.com	Add BGV reproduction guide and missing audit evidence
+bf967d4ee00bcb22d99c5a51b693d9b6b77df696	Janak Dhokrat	jdhokrat@gmail.com	Document optimized circuit logic, limitations and reproducible independent audit
+8972e724420ec9f19e9bfb9888f067e09439355b	Janak Dhokrat	jdhokrat@gmail.com	Add isolated OpenFHE 1.4.2 task optimizations and complete core-cost evidence
+44fa1f40dd391b1e680dde8d549a75b142c07ef6	Janak Dhokrat	jdhokrat@gmail.com	Add isolated Count optimization and authentication research evidence
+960f57d041d3a149b3bb0fe1cad0c0edc7eb0bdf	Janak Dhokrat	jdhokrat@gmail.com	Add complete-circuit mode study with qualified baseline and rejected candidates
+084e268ef21d100a5fc9482bc8e41037a3313f03	Janak Dhokrat	jdhokrat@gmail.com	Record practical exact and randomized paper-core benchmarks
+686b8d38033279855cd52e93e5c36eecdec4bdd1	Janak Dhokrat	jdhokrat@gmail.com	Fix paper-core benchmark modes and record SumVec measurements
+c92404f1fd5650bb069562cc9acc306a7ad0d2c3	Janak Dhokrat	jdhokrat@gmail.com	node e2e: the downgrade check cuts the task file by two bytes
+9ac0a402ed1a4f25c82677e54b5aa5a55b390ef1	Janak Dhokrat	jdhokrat@gmail.com	fhe-paper-core: the paper's architecture only, on the exact check (Eq. 10)
+d426cb87729752486d7b7a8947ed1618f0ab39a9	Janak Dhokrat	jdhokrat@gmail.com	prio3-baseline: Prio3 measured with the reference implementation
+e4540c00096b9b46bd9d100cf28e2a626596cae6	Janak Dhokrat	jdhokrat@gmail.com	README: load test on real data, the 60 MS patients of Muslim et al. 2022
+6edbd8f1d9abe84c2a46c6777640167207ac2aa2	Janak Dhokrat	jdhokrat@gmail.com	loadtest/ms_cohort.py: measurement files from the MS patient dataset
+7bbd2b8b4ab040e7dacf0e24565c2b8fae720939	Janak Dhokrat	jdhokrat@gmail.com	Node: rustls-webpki 0.103.16, webpki-roots 1.0.10 (RUSTSEC-2026-0382, -0381)
+1305429e1feedaec2faf51cc63f15458899ca724	Janak Dhokrat	jdhokrat@gmail.com	tests/loadtest.rs: drop a needless borrow (clippy)
+c11ba4aec33ff0e85bd589ef7fc212a8408f43a3	Janak Dhokrat	jdhokrat@gmail.com	Load test from a measurement file, with enrolled senders
+7d155c49e2017bc8fd9b278743cad4bdd7162b39	Janak Dhokrat	jdhokrat@gmail.com	Node: read a plain task's submission as exactly a Report
+0a550367a42507d80a5eab2946855bdccd809f9b	Janak Dhokrat	jdhokrat@gmail.com	Client proofs in verdict mode: close the decryption-failure oracle
+4f2060c7cfc620b45736cf37ef3c64599bebf2d3	Janak Dhokrat	jdhokrat@gmail.com	Share upload measured at production size: exact release, 2.86 reports/s
+e3d1ae75fc8b32be497ba6cb9a7f013b64ea2a6d	Janak Dhokrat	jdhokrat@gmail.com	CI coverage: measure the secret-shared upload; floor from the new measurement
+bdbe0cfe1fa253268265691b7c9c30929a4af65d	Janak Dhokrat	jdhokrat@gmail.com	Node: rustls 0.23.46 (RUSTSEC-2026-0346, -0347, -0348, -0349)
+82ac6c986d0c2765341d6f2583694727a1956b3b	Janak Dhokrat	jdhokrat@gmail.com	Secret-shared upload: Prio3's report format, the validity check still under encryption
+eecf17f4658a176592e2b5c39b6a815e55dfc9fd	Janak Dhokrat	jdhokrat@gmail.com	65,536-report load test: exact release at production size; report ids stored append-only
+fe90269f43b5ca7f0f1d587a671f622d4234e06f	Janak Dhokrat	jdhokrat@gmail.com	Load test resumes after a restart; crash recovery measured at production size
+08a6b4f5d7129324ebb49e96aa219aac2a2794f4	Janak Dhokrat	jdhokrat@gmail.com	Node metrics, health and alerts; load test tool; fixes the load test found
+d155038514226f5a9a14e8a5b0448f8d273e651c	Janak Dhokrat	jdhokrat@gmail.com	Gated release: cover the round logic with a fast test; coverage back above the floor
+dfa0d45c6eb3a4c654ff4e3b8c274c3a0e90dd07	Janak Dhokrat	jdhokrat@gmail.com	Split key (one aggregator + the collector) and small-cell suppression, gated under encryption
+4af19f4f67e282bbfa9137108a0ac14c82c8b11d	Janak Dhokrat	jdhokrat@gmail.com	Silent mode: default to seven repetitions, 2^-137 per report
+597018ddaeb927f45c9c4656f0b5c629d67865c0	Janak Dhokrat	jdhokrat@gmail.com	Silent mode: run the validity circuit once per batch; per report, mask and add
+d31c65b003b8b9574d90b2649acea4cc366a489a	Janak Dhokrat	jdhokrat@gmail.com	Design note: keep LaZer's test-suite output as .txt (the repo ignores *.log)
+1bd3944225fad9624f3e66314110512d53fd906b	Janak Dhokrat	jdhokrat@gmail.com	Design note: zero-knowledge proofs of key well-formedness on LaZer, assessed
+8c46fdce59528c56938216350d372ebd14031f6c	Janak Dhokrat	jdhokrat@gmail.com	CI: the OpenFHE pin job warns on pull requests and fails only on schedule
+01091cb01af1c04082b289ac492621eac86b0f3f	Janak Dhokrat	jdhokrat@gmail.com	Node lockfile: yoke-derive 0.8.4; AUDIT: wire suite passes under ASan+UBSan
+3405dd79ea509c124a4205b6264a08516f575616	Janak Dhokrat	jdhokrat@gmail.com	Production hardening: node error paths, CI gates, draft-22 encodings, shim audit
+ae991c609fcb02334a2229c055885e2e2de5db4d	Janak Dhokrat	jdhokrat@gmail.com	Tests: decode the aggregator secret before deserializing its share
+a61bd0103980edf01e88a087ca80b6f5f7548bf1	Janak Dhokrat	jdhokrat@gmail.com	Key the validity challenge with an aggregator-held verify key
+184a4cb2ee22ab3c54887bdfcc6b2b7067a8a60e	Janak Dhokrat	jdhokrat@gmail.com	Verdict: a check value beyond the flooding range rejects the report
+8c2b09fe13800c1dc216a139a88684378d8e79d4	Janak Dhokrat	jdhokrat@gmail.com	Measure and bound oversized key noise (A3): flooding check and deep key check
+bee98dd48e5967b9d318f5c7492a585d4e6e4fb6	Janak Dhokrat	jdhokrat@gmail.com	vdec: sample checks from a seeded CSPRNG; measure the cost of verification
+efbd6e3f6d6f1e7113f4154edf6f359967946e17	Janak Dhokrat	jdhokrat@gmail.com	Silent mode: a noise-overflowing report is now refused at the verified count
+339697f900ebb5d72e1701e7edc6509f8584ff6c	Janak Dhokrat	jdhokrat@gmail.com	Verifiable decryption against a cheating aggregator; security argument and audit package
+7dd2af5e62916ac86a1828f3acca1fad77cee129	Janak Dhokrat	jdhokrat@gmail.com	Stream the ceremony's material to disk; record the silent-mode ceremony measurement
+5f823432aac2e468c5a231caeab481f9058366ba	Janak Dhokrat	jdhokrat@gmail.com	Distributed key ceremony across machines; exact second moments for any admitted batch
+fcb76e234e97ad9fa442d55137aaf41e8543b3cf	Janak Dhokrat	jdhokrat@gmail.com	Refuse tasks whose range constraints could wrap modulo p
+20f24aa26a66528fdd51880f5050259f9281c0d5	Janak Dhokrat	jdhokrat@gmail.com	Shim build: put the OpenFHE include root on the search path
+e843e2d142c6bdd4ba45caaadb58e7287d5409a3	Janak Dhokrat	jdhokrat@gmail.com	Enforce the OpenFHE the rebuild was tested on, fuzz the wire format in CI, refuse pre-format node state
+285c2041464ab1eab70ae2abfce68384461fbb73	Janak Dhokrat	jdhokrat@gmail.com	Spec: performance tables re-measured with the packed wire format
+831c586ed4782163b3aa1a7660022335714c8017	Janak Dhokrat	jdhokrat@gmail.com	Packed ciphertext wire format: no received byte reaches OpenFHE's loader
+0c7b370e8aad9ead6b8241d419ed8fb7938d4483	Janak Dhokrat	2019et117@sigce.edu.in	Per-collector release policies with chunk-aligned releases and sealed shares
+57777d32e7e28efdc27810301bba1d28a96329e4	Janak Dhokrat	2019et117@sigce.edu.in	BoundedSumVec: exact per-element ranges via per-element Sum encoding
+d5c1ed2a5000bfb5efc66a55dc0d9a407253d4fa	Janak Dhokrat	2019et117@sigce.edu.in	Attested key material: clients pin aggregator identities, router cannot substitute keys
+996de8ae10b4ddf8bc4fd3cb9821f1cc4681ebd6	Janak Dhokrat	2019et117@sigce.edu.in	Sharding across aggregator sets, release-once partial decryptions, key leases
+5ddf6e76cdb7db6f15aafff74d8128661e14f187	Janak Dhokrat	jdhokrat@gmail.com	fhe-prio3: measured numbers, node hardening tests, memory-safe test ordering
+3e057e3b7e6f604c18e2fe7b4e9ba1af2d4129ac	Janak Dhokrat	jdhokrat@gmail.com	fhe-prio3: batched silent mode, network nodes with persistence, regression pilot
+f6a1f88a25e5bed5bab0c7ac3b1a58a1b94649e3	Janak Dhokrat	jdhokrat@gmail.com	fhe-prio3: cost reduction plan for silent mode with feasibility checks
+3ba174e1e8684e1035272806c8108f73d186f2f3	Janak Dhokrat	jdhokrat@gmail.com	fhe-prio3: silent-mode tests validated, measured numbers in spec and README
+31476c13d6e20b5af782318728042da26e922174	Janak Dhokrat	jdhokrat@gmail.com	fhe-prio3: silent mode, client authentication, admission control, batch consistency
+8a6fdbf98368174298b8b7d7ec1502bc26363922	Janak Dhokrat	jdhokrat@gmail.com	Add fhe-prio3: threshold-BGV Prio3 types with a sound homomorphic validity check
+0f6068193b16bd526ca6cd4d75bf5fd6900cf494	Doru	parvudoruionut@yahoo.ro	fix typo
+17fbf18dfc8f2e4de1d496a9e81394a0ec1b217a	Doru	parvudoruionut@yahoo.ro	update layout tesi
+1c70e1f82cc51228d3a0b55e0930c888d0ed19df	Doru	parvudoruionut@yahoo.ro	update tesi
+55ae0e1873fd9be8439a538a273a24f986778ae9	Doru	parvudoruionut@yahoo.ro	remove discorso
+fad88099073f26e41c1945ed4285b0dfabd95bad	Doru	parvudoruionut@yahoo.ro	Reapply "update plots"
+fea03907aff25f061874363fedfe11918152dce6	Doru	parvudoruionut@yahoo.ro	Revert "update plots"
+236c8433865931c101ce59b552935703225d0df0	Doru	parvudoruionut@yahoo.ro	update plots
+ebf841b780a516479d1df1057ced55c8a2aae2d8	Doru	parvudoruionut@yahoo.ro	feat: new plots
+b7a50243a972ab416ea188d0e3a6fff7c5dffd9b	Doru	parvudoruionut@yahoo.ro	feat: 4 samples linear regression
+00df04b8afb0d36a363f32c1406155c20f793626	Doru	parvudoruionut@yahoo.ro	feat: update tesi with bootstrap
+e92643a1389e8c563de419aad6b06368bf697775	Doru	parvudoruionut@yahoo.ro	rotation ckks benchmarks
+cac797fc1f17749f7ac821d6c3385765aa3921cd	Doru	parvudoruionut@yahoo.ro	use hospital data in linear regression
+a6e08860e01b307e09e415d64c7b99474cd21ef5	Doru	parvudoruionut@yahoo.ro	add statistical aggreagions to benchmarks
+24884527b28e181b68809fe9e9cdd09e89fa2769	Doru	parvudoruionut@yahoo.ro	feat: update tesi with 3 new chapters
+540d21ae0c7d631c168a3cc8dc7c29dd6067b229	Doru	parvudoruionut@yahoo.ro	fix: typo
+a90208cad9418ca324543c37bb3183084ef9f716	Doru	parvudoruionut@yahoo.ro	fix: typo
+971358caf55316770581d5182646da4f8695c91c	Doru	parvudoruionut@yahoo.ro	feat: testi chapter on linear regression and fhe-vdaf-0
+d2a8b7f45a405fdf3d8822af0ecc005bea6627c2	Doru	parvudoruionut@yahoo.ro	feat: add schemas png
+a6504485e920f22536b440ec65972c5484b863cd	Doru	parvudoruionut@yahoo.ro	feat: add histogram vdaf like
+f2ff48663face7e6b65e970bca3aeabbd8c042ef	Doru	parvudoruionut@yahoo.ro	feat: improve architecture of vdaf-1 and vdaf-2
+df758e6f8f0ec23ab1aa53cd8aec4794b3454a78	Doru	parvudoruionut@yahoo.ro	fix: update project structure in README to reflect current directory organization
+4dec6734b1096fadbc9b6c51c1b78f9b11d8226f	Doru	parvudoruionut@yahoo.ro	fix: update README to include missing Rust wrapper directory for FHE prototypes
+97e9ab2fab5ebdda27c78d6939440f340fa9937d	Doru	parvudoruionut@yahoo.ro	fix: update README to correct project structure for Prio3 experiments and FHE-based VDAF prototypes
+b151b2542f9f140c23cc14f2c04d334d6c164433	Doru	parvudoruionut@yahoo.ro	feat: add README files for Prio3 and FHE VDAF prototypes; remove main implementation file
+d86470fc6f3fdc6f5fb8239988298b7e21f55bd4	Doru	parvudoruionut@yahoo.ro	feat: add keys and prio3
+82f6172590b9153f978cbd48e2be9acee8fee521	Doru	parvudoruionut@yahoo.ro	fix: update .gitignore to include additional .claude and .codex entries
+ffd1e85c0b8ec5fefc2fd84235563c52d3026ce5	Doru	parvudoruionut@yahoo.ro	fix: correct .claude and .codex entries in .gitignore to include wildcard
+3e8f32731bb78e52f5e3fd3f84c520ae5f5d9254	Doru	parvudoruionut@yahoo.ro	feat: add .claude and .codex to .gitignore
+6afe1fbb9f954df8187650b7525b16f6b3432bc3	Doru	parvudoruionut@yahoo.ro	feat: add .gitignore to exclude .vscode directory
+43d2e835345b495eac0f3c5b20d4b04defdaf403	Doru	parvudoruionut@yahoo.ro	feat: add .gitignore to exclude build directory
+72f52ff4997494f77fe1f9e87473f19197b99e1f	Doru	34928009+kratess@users.noreply.github.com	feat: highlight benchmark guide link
+62bcedf50543562a83ae7ab344789694830d44ea	Doru	parvudoruionut@yahoo.ro	Initial commit

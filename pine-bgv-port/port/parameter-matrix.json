@@ -1,0 +1,1376 @@
+[
+  {
+    "p": 65537,
+    "bound": 1,
+    "dimension": 650,
+    "ring": 4096,
+    "wrap_bound": 16,
+    "encoded_input_elements": 1252,
+    "query_input_elements": 1352,
+    "failures": [],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 65537,
+    "bound": 1,
+    "dimension": 650,
+    "ring": 8192,
+    "wrap_bound": 16,
+    "encoded_input_elements": 1252,
+    "query_input_elements": 1352,
+    "failures": [],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 65537,
+    "bound": 1,
+    "dimension": 650,
+    "ring": 16384,
+    "wrap_bound": 16,
+    "encoded_input_elements": 1252,
+    "query_input_elements": 1352,
+    "failures": [],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 65537,
+    "bound": 1,
+    "dimension": 650,
+    "ring": 32768,
+    "wrap_bound": 16,
+    "encoded_input_elements": 1252,
+    "query_input_elements": 1352,
+    "failures": [],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 65537,
+    "bound": 1,
+    "dimension": 10000,
+    "ring": 4096,
+    "wrap_bound": 16,
+    "encoded_input_elements": 10602,
+    "query_input_elements": 10702,
+    "failures": [
+      "encoded input alone exceeds one polynomial; chunking required"
+    ],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 65537,
+    "bound": 1,
+    "dimension": 10000,
+    "ring": 8192,
+    "wrap_bound": 16,
+    "encoded_input_elements": 10602,
+    "query_input_elements": 10702,
+    "failures": [
+      "encoded input alone exceeds one polynomial; chunking required"
+    ],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 65537,
+    "bound": 1,
+    "dimension": 10000,
+    "ring": 16384,
+    "wrap_bound": 16,
+    "encoded_input_elements": 10602,
+    "query_input_elements": 10702,
+    "failures": [],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 65537,
+    "bound": 1,
+    "dimension": 10000,
+    "ring": 32768,
+    "wrap_bound": 16,
+    "encoded_input_elements": 10602,
+    "query_input_elements": 10702,
+    "failures": [],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 65537,
+    "bound": 16,
+    "dimension": 650,
+    "ring": 4096,
+    "wrap_bound": 256,
+    "encoded_input_elements": 1668,
+    "query_input_elements": 1768,
+    "failures": [
+      "p >= 2600*wrap_bound required"
+    ],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 65537,
+    "bound": 16,
+    "dimension": 650,
+    "ring": 8192,
+    "wrap_bound": 256,
+    "encoded_input_elements": 1668,
+    "query_input_elements": 1768,
+    "failures": [
+      "p >= 2600*wrap_bound required"
+    ],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 65537,
+    "bound": 16,
+    "dimension": 650,
+    "ring": 16384,
+    "wrap_bound": 256,
+    "encoded_input_elements": 1668,
+    "query_input_elements": 1768,
+    "failures": [
+      "p >= 2600*wrap_bound required"
+    ],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 65537,
+    "bound": 16,
+    "dimension": 650,
+    "ring": 32768,
+    "wrap_bound": 256,
+    "encoded_input_elements": 1668,
+    "query_input_elements": 1768,
+    "failures": [
+      "p >= 2600*wrap_bound required"
+    ],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 65537,
+    "bound": 16,
+    "dimension": 10000,
+    "ring": 4096,
+    "wrap_bound": 256,
+    "encoded_input_elements": 11018,
+    "query_input_elements": 11118,
+    "failures": [
+      "p >= 2600*wrap_bound required",
+      "encoded input alone exceeds one polynomial; chunking required"
+    ],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 65537,
+    "bound": 16,
+    "dimension": 10000,
+    "ring": 8192,
+    "wrap_bound": 256,
+    "encoded_input_elements": 11018,
+    "query_input_elements": 11118,
+    "failures": [
+      "p >= 2600*wrap_bound required",
+      "encoded input alone exceeds one polynomial; chunking required"
+    ],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 65537,
+    "bound": 16,
+    "dimension": 10000,
+    "ring": 16384,
+    "wrap_bound": 256,
+    "encoded_input_elements": 11018,
+    "query_input_elements": 11118,
+    "failures": [
+      "p >= 2600*wrap_bound required"
+    ],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 65537,
+    "bound": 16,
+    "dimension": 10000,
+    "ring": 32768,
+    "wrap_bound": 256,
+    "encoded_input_elements": 11018,
+    "query_input_elements": 11118,
+    "failures": [
+      "p >= 2600*wrap_bound required"
+    ],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 65537,
+    "bound": 128,
+    "dimension": 650,
+    "ring": 4096,
+    "wrap_bound": 2048,
+    "encoded_input_elements": 1980,
+    "query_input_elements": 2080,
+    "failures": [
+      "p >= 2600*wrap_bound required"
+    ],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 65537,
+    "bound": 128,
+    "dimension": 650,
+    "ring": 8192,
+    "wrap_bound": 2048,
+    "encoded_input_elements": 1980,
+    "query_input_elements": 2080,
+    "failures": [
+      "p >= 2600*wrap_bound required"
+    ],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 65537,
+    "bound": 128,
+    "dimension": 650,
+    "ring": 16384,
+    "wrap_bound": 2048,
+    "encoded_input_elements": 1980,
+    "query_input_elements": 2080,
+    "failures": [
+      "p >= 2600*wrap_bound required"
+    ],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 65537,
+    "bound": 128,
+    "dimension": 650,
+    "ring": 32768,
+    "wrap_bound": 2048,
+    "encoded_input_elements": 1980,
+    "query_input_elements": 2080,
+    "failures": [
+      "p >= 2600*wrap_bound required"
+    ],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 65537,
+    "bound": 128,
+    "dimension": 10000,
+    "ring": 4096,
+    "wrap_bound": 2048,
+    "encoded_input_elements": 11330,
+    "query_input_elements": 11430,
+    "failures": [
+      "p >= 2600*wrap_bound required",
+      "encoded input alone exceeds one polynomial; chunking required"
+    ],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 65537,
+    "bound": 128,
+    "dimension": 10000,
+    "ring": 8192,
+    "wrap_bound": 2048,
+    "encoded_input_elements": 11330,
+    "query_input_elements": 11430,
+    "failures": [
+      "p >= 2600*wrap_bound required",
+      "encoded input alone exceeds one polynomial; chunking required"
+    ],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 65537,
+    "bound": 128,
+    "dimension": 10000,
+    "ring": 16384,
+    "wrap_bound": 2048,
+    "encoded_input_elements": 11330,
+    "query_input_elements": 11430,
+    "failures": [
+      "p >= 2600*wrap_bound required"
+    ],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 65537,
+    "bound": 128,
+    "dimension": 10000,
+    "ring": 32768,
+    "wrap_bound": 2048,
+    "encoded_input_elements": 11330,
+    "query_input_elements": 11430,
+    "failures": [
+      "p >= 2600*wrap_bound required"
+    ],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 786433,
+    "bound": 1,
+    "dimension": 650,
+    "ring": 4096,
+    "wrap_bound": 16,
+    "encoded_input_elements": 1252,
+    "query_input_elements": 1352,
+    "failures": [],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 786433,
+    "bound": 1,
+    "dimension": 650,
+    "ring": 8192,
+    "wrap_bound": 16,
+    "encoded_input_elements": 1252,
+    "query_input_elements": 1352,
+    "failures": [],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 786433,
+    "bound": 1,
+    "dimension": 650,
+    "ring": 16384,
+    "wrap_bound": 16,
+    "encoded_input_elements": 1252,
+    "query_input_elements": 1352,
+    "failures": [],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 786433,
+    "bound": 1,
+    "dimension": 650,
+    "ring": 32768,
+    "wrap_bound": 16,
+    "encoded_input_elements": 1252,
+    "query_input_elements": 1352,
+    "failures": [],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 786433,
+    "bound": 1,
+    "dimension": 10000,
+    "ring": 4096,
+    "wrap_bound": 16,
+    "encoded_input_elements": 10602,
+    "query_input_elements": 10702,
+    "failures": [
+      "encoded input alone exceeds one polynomial; chunking required"
+    ],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 786433,
+    "bound": 1,
+    "dimension": 10000,
+    "ring": 8192,
+    "wrap_bound": 16,
+    "encoded_input_elements": 10602,
+    "query_input_elements": 10702,
+    "failures": [
+      "encoded input alone exceeds one polynomial; chunking required"
+    ],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 786433,
+    "bound": 1,
+    "dimension": 10000,
+    "ring": 16384,
+    "wrap_bound": 16,
+    "encoded_input_elements": 10602,
+    "query_input_elements": 10702,
+    "failures": [],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 786433,
+    "bound": 1,
+    "dimension": 10000,
+    "ring": 32768,
+    "wrap_bound": 16,
+    "encoded_input_elements": 10602,
+    "query_input_elements": 10702,
+    "failures": [],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 786433,
+    "bound": 16,
+    "dimension": 650,
+    "ring": 4096,
+    "wrap_bound": 256,
+    "encoded_input_elements": 1668,
+    "query_input_elements": 1768,
+    "failures": [],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 786433,
+    "bound": 16,
+    "dimension": 650,
+    "ring": 8192,
+    "wrap_bound": 256,
+    "encoded_input_elements": 1668,
+    "query_input_elements": 1768,
+    "failures": [],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 786433,
+    "bound": 16,
+    "dimension": 650,
+    "ring": 16384,
+    "wrap_bound": 256,
+    "encoded_input_elements": 1668,
+    "query_input_elements": 1768,
+    "failures": [],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 786433,
+    "bound": 16,
+    "dimension": 650,
+    "ring": 32768,
+    "wrap_bound": 256,
+    "encoded_input_elements": 1668,
+    "query_input_elements": 1768,
+    "failures": [],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 786433,
+    "bound": 16,
+    "dimension": 10000,
+    "ring": 4096,
+    "wrap_bound": 256,
+    "encoded_input_elements": 11018,
+    "query_input_elements": 11118,
+    "failures": [
+      "encoded input alone exceeds one polynomial; chunking required"
+    ],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 786433,
+    "bound": 16,
+    "dimension": 10000,
+    "ring": 8192,
+    "wrap_bound": 256,
+    "encoded_input_elements": 11018,
+    "query_input_elements": 11118,
+    "failures": [
+      "encoded input alone exceeds one polynomial; chunking required"
+    ],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 786433,
+    "bound": 16,
+    "dimension": 10000,
+    "ring": 16384,
+    "wrap_bound": 256,
+    "encoded_input_elements": 11018,
+    "query_input_elements": 11118,
+    "failures": [],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 786433,
+    "bound": 16,
+    "dimension": 10000,
+    "ring": 32768,
+    "wrap_bound": 256,
+    "encoded_input_elements": 11018,
+    "query_input_elements": 11118,
+    "failures": [],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 786433,
+    "bound": 128,
+    "dimension": 650,
+    "ring": 4096,
+    "wrap_bound": 2048,
+    "encoded_input_elements": 1980,
+    "query_input_elements": 2080,
+    "failures": [
+      "p >= 2600*wrap_bound required"
+    ],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 786433,
+    "bound": 128,
+    "dimension": 650,
+    "ring": 8192,
+    "wrap_bound": 2048,
+    "encoded_input_elements": 1980,
+    "query_input_elements": 2080,
+    "failures": [
+      "p >= 2600*wrap_bound required"
+    ],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 786433,
+    "bound": 128,
+    "dimension": 650,
+    "ring": 16384,
+    "wrap_bound": 2048,
+    "encoded_input_elements": 1980,
+    "query_input_elements": 2080,
+    "failures": [
+      "p >= 2600*wrap_bound required"
+    ],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 786433,
+    "bound": 128,
+    "dimension": 650,
+    "ring": 32768,
+    "wrap_bound": 2048,
+    "encoded_input_elements": 1980,
+    "query_input_elements": 2080,
+    "failures": [
+      "p >= 2600*wrap_bound required"
+    ],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 786433,
+    "bound": 128,
+    "dimension": 10000,
+    "ring": 4096,
+    "wrap_bound": 2048,
+    "encoded_input_elements": 11330,
+    "query_input_elements": 11430,
+    "failures": [
+      "p >= 2600*wrap_bound required",
+      "encoded input alone exceeds one polynomial; chunking required"
+    ],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 786433,
+    "bound": 128,
+    "dimension": 10000,
+    "ring": 8192,
+    "wrap_bound": 2048,
+    "encoded_input_elements": 11330,
+    "query_input_elements": 11430,
+    "failures": [
+      "p >= 2600*wrap_bound required",
+      "encoded input alone exceeds one polynomial; chunking required"
+    ],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 786433,
+    "bound": 128,
+    "dimension": 10000,
+    "ring": 16384,
+    "wrap_bound": 2048,
+    "encoded_input_elements": 11330,
+    "query_input_elements": 11430,
+    "failures": [
+      "p >= 2600*wrap_bound required"
+    ],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 786433,
+    "bound": 128,
+    "dimension": 10000,
+    "ring": 32768,
+    "wrap_bound": 2048,
+    "encoded_input_elements": 11330,
+    "query_input_elements": 11430,
+    "failures": [
+      "p >= 2600*wrap_bound required"
+    ],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 4293918721,
+    "bound": 1,
+    "dimension": 650,
+    "ring": 4096,
+    "wrap_bound": 16,
+    "encoded_input_elements": 1252,
+    "query_input_elements": 1352,
+    "failures": [],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 4293918721,
+    "bound": 1,
+    "dimension": 650,
+    "ring": 8192,
+    "wrap_bound": 16,
+    "encoded_input_elements": 1252,
+    "query_input_elements": 1352,
+    "failures": [],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 4293918721,
+    "bound": 1,
+    "dimension": 650,
+    "ring": 16384,
+    "wrap_bound": 16,
+    "encoded_input_elements": 1252,
+    "query_input_elements": 1352,
+    "failures": [],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 4293918721,
+    "bound": 1,
+    "dimension": 650,
+    "ring": 32768,
+    "wrap_bound": 16,
+    "encoded_input_elements": 1252,
+    "query_input_elements": 1352,
+    "failures": [],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 4293918721,
+    "bound": 1,
+    "dimension": 10000,
+    "ring": 4096,
+    "wrap_bound": 16,
+    "encoded_input_elements": 10602,
+    "query_input_elements": 10702,
+    "failures": [
+      "encoded input alone exceeds one polynomial; chunking required"
+    ],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 4293918721,
+    "bound": 1,
+    "dimension": 10000,
+    "ring": 8192,
+    "wrap_bound": 16,
+    "encoded_input_elements": 10602,
+    "query_input_elements": 10702,
+    "failures": [
+      "encoded input alone exceeds one polynomial; chunking required"
+    ],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 4293918721,
+    "bound": 1,
+    "dimension": 10000,
+    "ring": 16384,
+    "wrap_bound": 16,
+    "encoded_input_elements": 10602,
+    "query_input_elements": 10702,
+    "failures": [],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 4293918721,
+    "bound": 1,
+    "dimension": 10000,
+    "ring": 32768,
+    "wrap_bound": 16,
+    "encoded_input_elements": 10602,
+    "query_input_elements": 10702,
+    "failures": [],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 4293918721,
+    "bound": 16,
+    "dimension": 650,
+    "ring": 4096,
+    "wrap_bound": 256,
+    "encoded_input_elements": 1668,
+    "query_input_elements": 1768,
+    "failures": [],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 4293918721,
+    "bound": 16,
+    "dimension": 650,
+    "ring": 8192,
+    "wrap_bound": 256,
+    "encoded_input_elements": 1668,
+    "query_input_elements": 1768,
+    "failures": [],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 4293918721,
+    "bound": 16,
+    "dimension": 650,
+    "ring": 16384,
+    "wrap_bound": 256,
+    "encoded_input_elements": 1668,
+    "query_input_elements": 1768,
+    "failures": [],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 4293918721,
+    "bound": 16,
+    "dimension": 650,
+    "ring": 32768,
+    "wrap_bound": 256,
+    "encoded_input_elements": 1668,
+    "query_input_elements": 1768,
+    "failures": [],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 4293918721,
+    "bound": 16,
+    "dimension": 10000,
+    "ring": 4096,
+    "wrap_bound": 256,
+    "encoded_input_elements": 11018,
+    "query_input_elements": 11118,
+    "failures": [
+      "encoded input alone exceeds one polynomial; chunking required"
+    ],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 4293918721,
+    "bound": 16,
+    "dimension": 10000,
+    "ring": 8192,
+    "wrap_bound": 256,
+    "encoded_input_elements": 11018,
+    "query_input_elements": 11118,
+    "failures": [
+      "encoded input alone exceeds one polynomial; chunking required"
+    ],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 4293918721,
+    "bound": 16,
+    "dimension": 10000,
+    "ring": 16384,
+    "wrap_bound": 256,
+    "encoded_input_elements": 11018,
+    "query_input_elements": 11118,
+    "failures": [],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 4293918721,
+    "bound": 16,
+    "dimension": 10000,
+    "ring": 32768,
+    "wrap_bound": 256,
+    "encoded_input_elements": 11018,
+    "query_input_elements": 11118,
+    "failures": [],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 4293918721,
+    "bound": 128,
+    "dimension": 650,
+    "ring": 4096,
+    "wrap_bound": 2048,
+    "encoded_input_elements": 1980,
+    "query_input_elements": 2080,
+    "failures": [],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 4293918721,
+    "bound": 128,
+    "dimension": 650,
+    "ring": 8192,
+    "wrap_bound": 2048,
+    "encoded_input_elements": 1980,
+    "query_input_elements": 2080,
+    "failures": [],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 4293918721,
+    "bound": 128,
+    "dimension": 650,
+    "ring": 16384,
+    "wrap_bound": 2048,
+    "encoded_input_elements": 1980,
+    "query_input_elements": 2080,
+    "failures": [],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 4293918721,
+    "bound": 128,
+    "dimension": 650,
+    "ring": 32768,
+    "wrap_bound": 2048,
+    "encoded_input_elements": 1980,
+    "query_input_elements": 2080,
+    "failures": [],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 4293918721,
+    "bound": 128,
+    "dimension": 10000,
+    "ring": 4096,
+    "wrap_bound": 2048,
+    "encoded_input_elements": 11330,
+    "query_input_elements": 11430,
+    "failures": [
+      "encoded input alone exceeds one polynomial; chunking required"
+    ],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 4293918721,
+    "bound": 128,
+    "dimension": 10000,
+    "ring": 8192,
+    "wrap_bound": 2048,
+    "encoded_input_elements": 11330,
+    "query_input_elements": 11430,
+    "failures": [
+      "encoded input alone exceeds one polynomial; chunking required"
+    ],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 4293918721,
+    "bound": 128,
+    "dimension": 10000,
+    "ring": 16384,
+    "wrap_bound": 2048,
+    "encoded_input_elements": 11330,
+    "query_input_elements": 11430,
+    "failures": [],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  },
+  {
+    "p": 4293918721,
+    "bound": 128,
+    "dimension": 10000,
+    "ring": 32768,
+    "wrap_bound": 2048,
+    "encoded_input_elements": 11330,
+    "query_input_elements": 11430,
+    "failures": [],
+    "qualified_for_production": false,
+    "remaining": [
+      "proof capacity",
+      "NTT domains",
+      "BGV security and noise",
+      "challenge binding",
+      "privacy"
+    ]
+  }
+]

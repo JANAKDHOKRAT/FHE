@@ -16,6 +16,7 @@
 pub mod bitvec;
 pub mod codec;
 pub mod f65537;
+pub mod pine;
 pub mod protocol;
 pub mod single;
 pub mod soundness;

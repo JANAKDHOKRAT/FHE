@@ -264,7 +264,7 @@ impl<F: FheField, T: VerifierMap<F>> SingleTask<F, T> {
 
 /// Flood with the widest width the ciphertext's modulus allows, then switch
 /// to one tower. Flooding first: switching only post-processes it.
-fn finish<F: FheField>(ctx: &Context, ct: &Ciphertext) -> Result<Ciphertext> {
+pub(crate) fn finish<F: FheField>(ctx: &Context, ct: &Ciphertext) -> Result<Ciphertext> {
     let towers = ct.meta()?.num_towers as usize;
     let log_q: f64 = ctx.moduli()?[..towers].iter().map(|&q| (q as f64).log2()).sum();
     let width = log_q.floor() as u32 - (F::PLAIN_MOD as f64).log2().ceil() as u32 - 2;

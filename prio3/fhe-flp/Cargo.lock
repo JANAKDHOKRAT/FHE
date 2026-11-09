@@ -181,8 +181,10 @@ name = "fhe-flp"
 version = "0.1.0"
 dependencies = [
  "openfhe-tbgv-rs",
+ "pine-circuit",
  "prio",
  "rand 0.8.8",
+ "rand_core 0.10.1",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -349,6 +351,13 @@ name = "openfhe-tbgv-rs"
 version = "0.1.0"
 dependencies = [
  "cc",
+]
+
+[[package]]
+name = "pine-circuit"
+version = "0.1.0"
+dependencies = [
+ "prio",
 ]
 
 [[package]]

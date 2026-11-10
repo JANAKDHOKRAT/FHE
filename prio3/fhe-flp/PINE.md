@@ -67,7 +67,7 @@ the task and key, the nonce, and the digest of each of `G`, `W`, `P`.
    the identity's index, the nonce, the three digests and the signature
    (never a ciphertext of the report); per report ciphertext an admission
    copy: the ciphertext with a uniform plaintext on every coefficient and
-   `p` times a uniform 40-bit value added, at the full modulus; and per
+   `p` times a uniform 78-bit value added, at the full modulus; and per
    verifier element: the sum over the report's ciphertexts of one
    plaintext product, the element at coefficient 0, a fresh uniform mask
    on every other coefficient, noise flooding, switch to one tower.
@@ -77,7 +77,7 @@ the task and key, the nonce, and the digest of each of `G`, `W`, `P`.
    batch identifier, the identities and the nonces as used (refusing any
    it saw before). Then, per report: measures the phase of each admission
    copy and rejects the report, without decrypting its verifier, unless
-   all are below `2^96`; otherwise decrypts coefficient 0 of each verifier
+   all are below `2^112`; otherwise decrypts coefficient 0 of each verifier
    ciphertext and runs prio's `decide` on every proof. Returns one bit per
    report.
    With fewer accepted reports than the release threshold the batch is
@@ -102,20 +102,28 @@ shows this on real ciphertexts: the plaintext decrypts intact, the
 product does not.
 
 The collector therefore measures the phase of a masked copy of every
-report ciphertext and admits a report only when all are below `2^96`. The
-mask is below `2^73`, so the phase of an admitted ciphertext is below
-`2^97`; a task is refused at creation unless, with that bound, every
-verifier element and the aggregate stay below `Q / 4` before masking and
-flooding. Then nothing wraps and every decrypted value is exactly the
-linear function of the plaintexts `phase mod p`, for every admitted
-ciphertext, honest or not. An honest ciphertext's masked copy has about 72
-bits (measured, not derived: an honest report over the bound would be a
-completeness failure, not a soundness one).
+report ciphertext and admits a report only when all are below `2^112`.
+`PINE-SECURITY-ARGUMENT.md`, part 1, derives from the library's source
+(the commit the installed library was built from) and the wrapper:
 
-Status of this argument: written here and in `PINE-REPAIR-STATUS.md`,
-checked by tests at both sides of the bound, **not reviewed**; it relies
-on the library's modulus switch adding at most `p (N + 1) / 2` to the
-phase, which is not re-derived here.
+* an admitted ciphertext has a phase below `2^113`, whatever it is;
+* then no verifier element and no aggregate wraps, through masking,
+  flooding and both modulus switches, and every decrypted value is
+  exactly the linear function of the plaintexts `phase mod p`;
+* an honest report is always admitted (honest phase below `2^52`, masked
+  copy below `2^110`);
+* a copy is within `2^-65` of a distribution that does not depend on its
+  plaintext; the collector does learn one component of each report
+  ciphertext, the client's noise up to the mask, and can compute the
+  query points.
+
+`PineTask::new` checks the numeric conditions of that argument for the
+task and refuses it otherwise (up to 512 ciphertexts per report at this
+modulus).
+
+Status: the argument is written and **not reviewed**. Two facts about the
+library are observed in tests and not read from its source (how a
+plaintext is lifted, and that decryption reduces the centered phase).
 
 ### What the challenge derivation binds, and what that does not prove
 
@@ -174,26 +182,35 @@ Limits of these rules:
 
 ## What a cheating client can hope for
 
-| Event | Probability | Where it comes from |
-|---|---|---|
-| the queries miss an invalid proof | `(2 (P - 1) / (p - 2 P))^k` per report, `P` the wire-polynomial length, `k` the proofs of that circuit; the larger of the two circuits (`log2_query_soundness`) | prio's FLP (gadget of degree 2); one try per report |
-| joint randomness under which an invalid measurement makes the main circuit 0 in every proof | `((bit_checked_len + 101) / p)^k` per offline attempt (`log2_joint_rand_per_attempt`) | Schwartz-Zippel on the three random combinations; a client can try nonces and encryptions offline |
-| a squared norm that wraps the field modulus passes all wraparound tests | `2^-100` per offline attempt | each test detects a wraparound with probability at least 1/2: [ROCT23] as cited by the draft, **not re-proved here** |
+`PINE-SECURITY-ARGUMENT.md`, part 2, states and proves (unreviewed, in
+the random-oracle model, with the FLP's soundness and PINE's wraparound
+lemma taken from the literature) a bound on the probability that a report
+whose gradient exceeds the norm bound is accepted, against clients making
+`q` hash queries and submitting `n` reports:
 
-The VDAF draft (section 9.7) asks circuits with joint randomness to aim
-for `(circuit_soundness + flp_soundness)^PROOFS` close to `2^-128`. At
-norm bound 1.0 with 15 fractional bits and chunk length 4 that expression
-is `2^-99.6` with the reference's 5 main proofs and `2^-139.5` with 7
-(`num_proofs` is a task parameter). The wraparound line stays at `2^-100`
-whatever the proof count: it is fixed by PINE's 100 tests.
+    n eps_ne^k_ne  +  sum_j min(1, q C(k,j) delta^j) min(1, n eps^(k-j))  +  q 2^-100
 
-With the reference's proof counts for this field (5 main proofs, 1
-norm-equality proof) the first line is weak: `2^-23` at dimension 1000
-and `2^-18` at dimension 100000 (table below), because a single
-norm-equality proof is queried once. It is an online probability (a failed
-try is a rejected report), which is how the reference justifies it. Raise
-`num_proofs_norm_equality` when that is not enough: 3 proofs give `2^-69`
-at dimension 1000.
+(`PineTask::soundness_bound`). For dimension 1000, norm bound 1.0 with 15
+fractional bits and `q = 2^64`:
+
+| proofs (main / norm eq.) | reports `n` | norm equality | main circuit | wraparound | total |
+|---|---|---:|---:|---:|---:|
+| 5 / 1 (the reference's counts) | 1 | 2^-23.0 | 2^-37.7 | 2^-36.0 | **2^-23.0** |
+| 5 / 1 | 2^16 | 2^-7.0 | 2^-22.0 | 2^-36.0 | **2^-7.0** |
+| 7 / 3 | 1 | 2^-69.0 | 2^-76.3 | 2^-36.0 | **2^-36.0** |
+| 7 / 3 | 2^16 | 2^-53.0 | 2^-60.4 | 2^-36.0 | **2^-36.0** |
+| 7 / 4 | 2^16 | 2^-76.0 | 2^-60.4 | 2^-36.0 | **2^-36.0** |
+
+* One norm-equality proof gives every malicious identity a try at
+  `2^-23`: with 65536 of them, `2^-7`. Use three or four.
+* The main-circuit term is far weaker than the per-attempt figure
+  `delta^k` (`2^-104` for 5 proofs) that earlier versions of this file
+  quoted: an adversary searches offline for joint randomness that is
+  favourable in some of the proofs and needs the queries to miss only on
+  the others.
+* The wraparound term is `q 2^-100` whatever the proof counts: `2^-36`
+  against `2^64` offline hash queries. It is fixed by PINE's 100 tests,
+  which this implementation takes from the reference.
 
 ## What was checked, and against what
 
@@ -224,7 +241,7 @@ p = 4293918721):
   messages. The reference builds on VDAF draft 11 (a proof holds the
   coefficients of the gadget polynomial); prio 0.18.1 implements draft 18
   (it holds values, the Lagrange basis). Proving and verifying are prio's.
-* `tests/pine.rs` (16 tests, real ciphertexts, keys and signatures):
+* `tests/pine.rs` (17 tests, real ciphertexts, keys and signatures):
   * exact sums; the verifier the collector decrypts equals prio's `query`
     on the plaintext;
   * rejected among honest reports, with the sum unchanged: a norm beyond
@@ -269,8 +286,9 @@ p = 4293918721):
 * Every task creation compares both closed-form verifier maps with prio's
   `query` at a random point and refuses to start on a mismatch.
 
-The 47 tests that existed before still pass (75 in total), and the
-wrapper's (38, one new: the exact phase measurement).
+The 47 tests that existed before still pass (76 in total), and the
+wrapper's (40: the exact phase measurement, the derived phase bounds,
+and the chosen-phase counterexample).
 
 ## Measured cost
 
@@ -282,14 +300,14 @@ MB = 10^6.
 
 | dimension | chunk (main / norm eq.) | proofs (main / norm eq.) | ciphertexts per report | report | check request per report | client | evaluator per report | collector per report | query soundness | joint randomness per attempt |
 |---:|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| 20 | 4 / 4 | 5 / 1 | 3 | 1.04 MB | 7.93 MB | 25 ms | 0.83 s | 60 ms | 2^-28.2 | 2^-107.6 |
-| 1000 | 2 / 4 | 5 / 1 | 5 | 1.74 MB | 6.16 MB | 41 ms | 0.62 s | 59 ms | 2^-23.0 | 2^-104.3 |
-| 1000 | 4 / 4 | 5 / 1 | 4 | 1.39 MB | 8.27 MB | 30 ms | 0.93 s | 64 ms | 2^-23.0 | 2^-104.3 |
-| 1000 | 8 / 4 | 5 / 1 | 3 | 1.04 MB | 12.84 MB | 21 ms | 1.57 s | 97 ms | 2^-23.0 | 2^-104.3 |
-| 1000 | 4 / 4 | 5 / 3 | 4 | 1.39 MB | 9.75 MB | 28 ms | 1.06 s | 78 ms | 2^-69.0 | 2^-104.3 |
-| 1000 | 4 / 4 | 7 / 3 | 4 | 1.39 MB | 12.21 MB | 30 ms | 1.32 s | 86 ms | 2^-69.0 | 2^-146.0 |
-| 10000 | 4 / 8 | 5 / 1 | 5 | 1.74 MB | 9.11 MB | 47 ms | 1.10 s | 82 ms | 2^-20.0 | 2^-104.3 |
-| 100000 | 4 / 16 | 5 / 1 | 18 | 6.27 MB | 14.62 MB | 222 ms | 2.80 s | 154 ms | 2^-18.0 | 2^-104.3 |
+| 20 | 4 / 4 | 5 / 1 | 3 | 1.04 MB | 7.93 MB | 22 ms | 1.06 s | 69 ms | 2^-28.2 | 2^-107.6 |
+| 1000 | 2 / 4 | 5 / 1 | 5 | 1.74 MB | 6.16 MB | 38 ms | 0.70 s | 58 ms | 2^-23.0 | 2^-104.3 |
+| 1000 | 4 / 4 | 5 / 1 | 4 | 1.39 MB | 8.27 MB | 32 ms | 1.08 s | 71 ms | 2^-23.0 | 2^-104.3 |
+| 1000 | 8 / 4 | 5 / 1 | 3 | 1.04 MB | 12.84 MB | 24 ms | 1.87 s | 107 ms | 2^-23.0 | 2^-104.3 |
+| 1000 | 4 / 4 | 5 / 3 | 4 | 1.39 MB | 9.75 MB | 31 ms | 1.29 s | 83 ms | 2^-69.0 | 2^-104.3 |
+| 1000 | 4 / 4 | 7 / 3 | 4 | 1.39 MB | 12.21 MB | 32 ms | 1.74 s | 105 ms | 2^-69.0 | 2^-146.0 |
+| 10000 | 4 / 8 | 5 / 1 | 5 | 1.74 MB | 9.11 MB | 70 ms | 1.32 s | 86 ms | 2^-20.0 | 2^-104.3 |
+| 100000 | 4 / 16 | 5 / 1 | 18 | 6.27 MB | 14.62 MB | 248 ms | 3.02 s | 150 ms | 2^-18.0 | 2^-104.3 |
 
 A report carries 96 bytes of identity and signature, a check request 180
 bytes per report besides the ciphertexts. The check request now also
@@ -348,9 +366,10 @@ Reading the table:
   * the FLP's zero knowledge is prio's and the VDAF draft's, for honestly
     generated proofs queried once; that a verifier message is all the
     collector learns per report rests on the points above.
-* **Admission.** The argument above is not reviewed, and the privacy of
-  the admission copies towards the collector is argued, not proved
-  (`PINE-REPAIR-STATUS.md`, section 4).
+* **Review.** `PINE-SECURITY-ARGUMENT.md` (admission; challenge binding
+  with concrete bounds) is written by the implementer and has not been
+  reviewed. It cites, without verifying, the FLP's soundness and PINE's
+  wraparound lemma.
 * **The composition.** No proof covers FLP, wraparound tests, challenge
   derivation and encryption together. The table of probabilities is an
   accounting of known bounds, with the wraparound bound taken from the

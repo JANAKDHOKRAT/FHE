@@ -23,3 +23,37 @@ fn phase_bits_of_fresh_and_noisy_ciphertexts() {
     assert!(times(T - 1) <= fresh + 13, "{} bits", times(T - 1));
     assert!(times(T / 2) > fresh + 30, "{} bits", times(T / 2));
 }
+
+/// The bounds a key holder derives a ciphertext admission rule from, on
+/// real ciphertexts: the sampler's support, the phase of an honest
+/// encryption, and the rounding a modulus switch adds.
+#[test]
+fn honest_phase_and_modulus_switch_stay_within_the_derived_bounds() {
+    let ctx = Context::new_single(T, 128, 60, 55, 3).unwrap();
+    let n = ctx.ring_dim() as u128;
+    assert_eq!(n, 8192);
+    let e = ctx.gaussian_bound().unwrap();
+    assert_eq!(e, 39); // ceil(3.19 * 12.0061)
+    // Every modulus is 1 modulo t: a modulus switch keeps the plaintext.
+    assert!(ctx.moduli().unwrap().iter().all(|q| q % T == 1));
+    // |phase| <= |m| + t (2 N + 1) E for an honest encryption.
+    let honest = T as u128 + T as u128 * (2 * n + 1) * e as u128;
+    let honest_bits = 128 - honest.leading_zeros();
+    let dense: Vec<u64> = (0..8192u64).map(|i| i * 524_287 % T).collect();
+    for _ in 0..20 {
+        let (pk, sk) = keygen_first(&ctx).unwrap();
+        let ct = ctx.encrypt(&pk, &ctx.coef_plaintext(&dense).unwrap()).unwrap();
+        assert!(sk.phase_bits(&ct).unwrap() <= honest_bits);
+        // A modulus switch divides the phase by the dropped modulus (55
+        // bits) and adds at most t (N + 1) / 2, about 2^44.
+        let rounding = T as u128 * (n + 1) / 2;
+        let rounding_bits = 128 - (rounding + 1).leading_zeros();
+        let small = sk.phase_bits(&ctx.mod_reduce(&ct, 1).unwrap()).unwrap();
+        assert!(small <= rounding_bits, "{small} bits after switching a fresh ciphertext");
+        let flooded = ctx.flood(&ct, 120).unwrap();
+        let before = sk.phase_bits(&flooded).unwrap();
+        let after = sk.phase_bits(&ctx.mod_reduce(&flooded, 1).unwrap()).unwrap();
+        assert!((before - 56..=before - 54).contains(&after), "{before} bits before, {after} after");
+        assert_eq!(sk.decrypt_coeffs(&ctx.mod_reduce(&flooded, 2).unwrap(), &[0, 1, 2]).unwrap(), dense[..3]);
+    }
+}

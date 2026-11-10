@@ -794,12 +794,16 @@ fn a_ciphertext_with_large_noise_is_not_evaluated_linearly() {
     assert!((90..96).contains(&sk.phase_bits(&bounded).unwrap()));
     // An honest ciphertext, and its masked copy, are far below the bound.
     let mask: Vec<u64> = (0..n).map(|_| random()).collect();
-    let copy = ctx.flood(&ctx.add_plain(&honest, &ctx.coef_plaintext(&mask).unwrap()).unwrap(), 40).unwrap();
+    let (admit, mask_bits) = (fhe_flp::pine::ADMIT_BITS, fhe_flp::pine::ADMIT_MASK_BITS);
+    let copy = ctx
+        .flood(&ctx.add_plain(&honest, &ctx.coef_plaintext(&mask).unwrap()).unwrap(), mask_bits)
+        .unwrap();
     let (fresh_bits, copy_bits) = (sk.phase_bits(&honest).unwrap(), sk.phase_bits(&copy).unwrap());
     assert!(
-        fresh_bits < 64 && (70..=74).contains(&copy_bits),
+        fresh_bits <= 52 && (106..=110).contains(&copy_bits),
         "fresh {fresh_bits} bits, masked copy {copy_bits} bits"
     );
+    assert!(copy_bits < admit && sk.phase_bits(&bounded).unwrap() < admit && sk.phase_bits(&noisy).unwrap() > admit);
 }
 
 /// A validly signed report, consistent with its challenges, whose gradient
@@ -847,4 +851,43 @@ fn noise_beyond_the_admission_bound_is_refused_before_the_verifier_is_decrypted(
     );
     let sum = collector.unshard(&evaluator.aggregate_request(&verdicts).unwrap()).unwrap();
     assert_eq!(sum, expected(&shape, &[&g[0], &g[3]]));
+}
+
+/// The concrete soundness bounds of `PINE-SECURITY-ARGUMENT.md` for the
+/// reference's proof counts and for more proofs, against 2^64 hash queries.
+#[test]
+fn concrete_soundness_bounds() {
+    let keys = signing_keys(17, 1);
+    let bound = |proofs: usize, proofs_ne: usize, log2_reports: f64| {
+        let p = PineParams {
+            dimension: 1000,
+            l2_norm_bound: 32768,
+            num_frac_bits: 15,
+            chunk_length: 4,
+            chunk_length_norm_equality: 4,
+            num_proofs: proofs,
+            num_proofs_norm_equality: proofs_ne,
+        };
+        PineTask::new(descriptor(p, 17, &keys)).unwrap().soundness_bound(64.0, log2_reports)
+    };
+    for (proofs, proofs_ne, reports) in [(5, 1, 0.0), (5, 1, 16.0), (7, 3, 0.0), (7, 3, 16.0), (7, 4, 16.0)] {
+        eprintln!("proofs {proofs}/{proofs_ne}, 2^{reports} reports: {:?}", bound(proofs, proofs_ne, reports));
+    }
+    let near = |x: f64, want: f64| (x - want).abs() < 0.3;
+    // 5 main proofs, 1 norm-equality proof (the reference's counts), one report.
+    let b = bound(5, 1, 0.0);
+    assert!(
+        near(b.log2_norm_equality, -23.0) && near(b.log2_wraparound, -36.0) && near(b.log2_total, -23.0),
+        "{b:?}"
+    );
+    // 7 and 3: the wraparound tests dominate.
+    let b = bound(7, 3, 0.0);
+    assert!(near(b.log2_norm_equality, -69.0) && near(b.log2_total, -36.0), "{b:?}");
+    assert!(b.log2_main < -70.0, "{b:?}");
+    // More reports only help the online terms.
+    let many = bound(7, 3, 16.0);
+    assert!(
+        near(many.log2_norm_equality, -53.0) && many.log2_main > b.log2_main && many.log2_wraparound == b.log2_wraparound,
+        "{many:?}"
+    );
 }

@@ -151,6 +151,7 @@ unsafe extern "C" {
     pub fn tbgv_ciphertext_add_noise_for_tests(ctx: TbgvContext, ct: TbgvCiphertext, log2_magnitude: u32, seed: u64) -> TbgvCiphertext;
 
     pub fn tbgv_flooding_sigma(ctx: TbgvContext) -> f64;
+    pub fn tbgv_gaussian_bound(ctx: TbgvContext, bound: *mut u32) -> c_int;
     pub fn tbgv_fuse_raw(
         ctx: TbgvContext,
         partials: *const TbgvCiphertext,

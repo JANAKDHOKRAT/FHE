@@ -226,6 +226,7 @@ TbgvCiphertext tbgv_ciphertext_add_noise_for_tests(TbgvContext ctx, TbgvCipherte
 /* ---- threshold decryption --------------------------------------------- */
 /* Full-precision decryption values (see tbgv.cpp). `out_over_t` may be NULL. */
 double tbgv_flooding_sigma(TbgvContext ctx);
+int tbgv_gaussian_bound(TbgvContext ctx, uint32_t* bound);
 int tbgv_fuse_raw(TbgvContext ctx, const TbgvCiphertext* partials, size_t n, double* out_over_t, size_t out_len, double* log2_max,
                   double* log2_q);
 int tbgv_raw_decrypt_for_tests(TbgvContext ctx, TbgvCiphertext ct, const TbgvSecretKey* sks, size_t n, double* out_over_t,

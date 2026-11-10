@@ -429,6 +429,19 @@ impl Context {
         self.wrap_ct(unsafe { ffi::tbgv_eval_negate(self.raw(), a.ptr) })
     }
 
+    /// Largest magnitude of a coefficient the context's discrete Gaussian
+    /// sampler returns (39 at the default standard deviation 3.19): the
+    /// library samples by inversion from a table of that many entries. With
+    /// ternary secrets this bounds the phase of an honest encryption of `m`
+    /// by `|m| + t * (2 N + 1) * bound`.
+    pub fn gaussian_bound(&self) -> Result<u32> {
+        let mut bound = 0u32;
+        if unsafe { ffi::tbgv_gaussian_bound(self.raw(), &mut bound) } == 0 {
+            return Err(last_error());
+        }
+        Ok(bound)
+    }
+
     /// TEST HOOK: a copy of `ct` with `p * N(X)` added to its first component,
     /// `N` having uniformly random coefficients below `2^log2_magnitude`. The
     /// plaintext is unchanged, the noise is not. Models a client that submits

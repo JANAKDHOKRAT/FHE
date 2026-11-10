@@ -65,16 +65,12 @@
 //! plaintext on every coefficient and `p` times a uniform
 //! `ADMIT_MASK_BITS`-bit value added, at the full modulus; the collector
 //! measures its phase exactly and rejects the report, without decrypting
-//! its verifier, unless every copy is below `2^ADMIT_BITS`. For an
-//! admitted report every phase is below `2^(ADMIT_BITS + 1)`, and the
-//! task is refused at creation unless that makes every verifier element
-//! and the aggregate stay below `Q / 4` before masking and flooding: then
-//! nothing wraps, and each decrypted value is exactly the linear function
-//! of the plaintexts `phase mod p`. (The bound on the modulus switch's
-//! rounding is the library's and is not re-derived here.) The collector
-//! learns from a copy the report's second ciphertext component and the
-//! first one masked; that this reveals nothing of the plaintext is argued
-//! in `PINE-REPAIR-STATUS.md`, not proved.
+//! its verifier, unless every copy is below `2^ADMIT_BITS`. Then every
+//! decrypted value is exactly the linear function of the plaintexts
+//! `phase mod p`, honest reports are always admitted, and a copy is within
+//! `2^-65` of a distribution independent of its plaintext:
+//! `PINE-SECURITY-ARGUMENT.md`, part 1, whose numeric conditions
+//! [`PineTask::new`] checks for the task. That argument is not reviewed.
 //!
 //! The task ([`descriptor::TaskDescriptor`]) lists the clients authorized
 //! to report. A client signs its report's commitment: the task, the
@@ -161,9 +157,11 @@ const AGGREGATE_HEADER: usize = BATCH_LEN + 32 + 8;
 /// copy of each of its ciphertexts has fewer than this many bits. The mask
 /// is a uniform plaintext plus `p` times a uniform value of
 /// `ADMIT_MASK_BITS` bits, so the phase of an admitted report ciphertext is
-/// below `2^(ADMIT_BITS + 1)` (see the module documentation).
-const ADMIT_BITS: u32 = 96;
-const ADMIT_MASK_BITS: u32 = 40;
+/// below `2^(ADMIT_BITS + 1)`, and a copy differs from one that is
+/// independent of the plaintext with probability at most
+/// `2^-ADMIT_MASK_BITS` per coefficient (`PINE-SECURITY-ARGUMENT.md`).
+pub const ADMIT_BITS: u32 = 112;
+pub const ADMIT_MASK_BITS: u32 = 78;
 /// What a client appends to a report's body: its identity and signature.
 const SEAL_LEN: usize = 32 + 64;
 
@@ -235,18 +233,38 @@ impl PineTask {
             params.num_proofs_norm_equality * norm_eq.proof_len() + params.num_proofs * main.proof_len(),
         ];
 
-        // Admission makes every evaluation exact: a verifier element sums, over
-        // at most `cts` ciphertexts, `ring` products of a plaintext coefficient
-        // below p < 2^32 with a phase coefficient below 2^(ADMIT_BITS + 1); the
-        // sum of at most MAX_BATCH = 2^24 gradient ciphertexts is smaller. With
-        // the mask (below 2^32) and the flooding (below Q / 8) the phase must
-        // stay below Q / 2: it suffices that the sum is below Q / 4.
+        // The numeric conditions of `PINE-SECURITY-ARGUMENT.md`, part 1, for
+        // this context and this task; a task that fails one is refused.
+        let (p, n) = (PLAIN_MOD as u128, ring as u128);
         let cts: usize = lens.iter().map(|l| l.div_ceil(ring)).sum();
         let log_q = moduli.iter().map(|&q| (q as f64).log2()).sum::<f64>().floor() as u32;
-        if ADMIT_BITS + 1 + cts.next_power_of_two().ilog2() + ring.next_power_of_two().ilog2() + 32 + 2 > log_q || ADMIT_BITS < 32 + ADMIT_MASK_BITS + 1 {
-            return Err(Error::Protocol(format!(
-                "a report of {cts} ciphertexts is too large for the admission bound at this modulus"
-            )));
+        let refuse = |m: &str| Err(Error::Protocol(format!("admission bound: {m}")));
+        // (a) A modulus switch keeps the plaintext: every modulus is 1 modulo p.
+        if moduli.iter().any(|q| q % PLAIN_MOD != 1) {
+            return refuse("a ciphertext modulus is not 1 modulo p");
+        }
+        // (b) Completeness: an honest ciphertext has |phase| <= p + p (2 N + 1) E
+        // (ternary secrets, sampler support E), its copy's mask is below
+        // p + p 2^(ADMIT_MASK_BITS - 1), and their sum is below 2^ADMIT_BITS.
+        let honest = p + p * (2 * n + 1) * u128::from(ctx.gaussian_bound()?);
+        let mask = p + (p << (ADMIT_MASK_BITS - 1));
+        if honest + mask >= 1 << ADMIT_BITS {
+            return refuse("an honest report would not be admitted");
+        }
+        // (c) Exactness: an admitted ciphertext has |phase| < 2^ADMIT_BITS +
+        // mask < 2^(ADMIT_BITS + 1). A verifier element sums, over at most `cts`
+        // ciphertexts, `ring` products of a plaintext coefficient below p < 2^32
+        // with a phase coefficient; the aggregate sums at most MAX_BATCH = 2^24
+        // phases. Either sum must be below Q / 4: with the mask (below 2^32) and
+        // the flooding (below Q / 8) the phase then stays below Q / 2.
+        let terms = (cts.next_power_of_two().ilog2() + ring.next_power_of_two().ilog2() + 32).max(MAX_BATCH.next_power_of_two().ilog2());
+        if mask >= 1 << ADMIT_BITS || ADMIT_BITS + 1 + terms + 2 > log_q {
+            return refuse(&format!("a report of {cts} ciphertexts is too large at this modulus"));
+        }
+        // (d) Each modulus switch adds at most p (N + 1) / 2 to the phase, which
+        // must fit in the eighth of the remaining modulus left by (c).
+        if p * (n + 1) >= u128::from(moduli[0]) / 8 {
+            return refuse("the modulus switch rounding does not fit");
         }
 
         // The descriptor, then everything else the code fixes: the circuits'
@@ -419,6 +437,42 @@ impl PineTask {
         (per(wire_len(&self.norm_eq)) * self.descriptor.params.num_proofs_norm_equality as f64)
             .max(per(wire_len(&self.main)) * self.descriptor.params.num_proofs as f64)
     }
+    /// Concrete bounds on the probability that a report whose gradient has
+    /// an integer L2 norm above the bound is accepted, against clients that
+    /// make `2^log2_queries` hash queries and submit `2^log2_reports`
+    /// reports, in the model and under the hypotheses of
+    /// `PINE-SECURITY-ARGUMENT.md`, part 2 (random oracle; the wraparound
+    /// lemma of [ROCT23]). log2 of each term and of their sum, at most 0.
+    pub fn soundness_bound(&self, log2_queries: f64, log2_reports: f64) -> SoundnessBound {
+        let p = PLAIN_MOD as f64;
+        let per = |w: usize| (2.0 * (w as f64 - 1.0) / (p - 2.0 * w as f64)).log2();
+        let (k_ne, k) = (self.descriptor.params.num_proofs_norm_equality as f64, self.descriptor.params.num_proofs);
+        // The norm equality has no joint randomness: one query miss per proof.
+        let norm_equality = (log2_reports + k_ne * per(wire_len(&self.norm_eq))).min(0.0);
+        // Main circuit: some queried input has j proofs whose joint randomness
+        // hides the violation (at most q C(k, j) delta^j), and the queries
+        // miss on the other k - j proofs of some report (at most n eps^(k - j)).
+        let (delta, eps) = ((self.main.joint_rand_degree() as f64 / p).log2(), per(wire_len(&self.main)));
+        let mut main = 0.0f64;
+        let mut choose = 1.0f64;
+        for j in 0..=k {
+            let found = (log2_queries + choose.log2() + j as f64 * delta).min(0.0);
+            let missed = (log2_reports + (k - j) as f64 * eps).min(0.0);
+            main += (found + missed).exp2();
+            choose = choose * (k - j) as f64 / (j + 1) as f64;
+        }
+        let main = main.log2().min(0.0);
+        // Wraparound: 100 tests, each passed with probability at most 1/2, per
+        // queried choice of test vectors.
+        let wraparound = (log2_queries - NUM_WR_CHECKS as f64).min(0.0);
+        SoundnessBound {
+            log2_norm_equality: norm_equality,
+            log2_main: main,
+            log2_wraparound: wraparound,
+            log2_total: (norm_equality.exp2() + main.exp2() + wraparound.exp2()).log2().min(0.0),
+        }
+    }
+
     /// log2 of the probability that one choice of joint randomness makes
     /// the main circuit 0 on an invalid measurement in every proof (see
     /// [`Main::joint_rand_degree`]). A client can try choices offline.
@@ -622,6 +676,15 @@ impl PineTask {
 /// Length `P` of the wire polynomials of a circuit's gadget.
 fn wire_len<T: Flp<Field = Field>>(typ: &T) -> usize {
     (1 + typ.gadget()[0].calls()).next_power_of_two()
+}
+
+/// [`PineTask::soundness_bound`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct SoundnessBound {
+    pub log2_norm_equality: f64,
+    pub log2_main: f64,
+    pub log2_wraparound: f64,
+    pub log2_total: f64,
 }
 
 /// The challenges of one report ([`PineTask::challenges`]).

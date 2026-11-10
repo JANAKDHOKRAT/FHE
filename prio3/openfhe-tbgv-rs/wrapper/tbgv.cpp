@@ -1045,6 +1045,23 @@ double tbgv_flooding_sigma(TbgvContext ctx) {
     TBGV_CATCH(-1.0)
 }
 
+// Largest magnitude the context's discrete Gaussian sampler returns:
+// OpenFHE 1.3.1 (discretegaussiangenerator-impl.h, Initialize and
+// FindInVector) samples by inversion from a table of
+// ceil(std * 12.00610553538285) entries and throws beyond it. Refused for
+// standard deviations at or above the library's switch to another sampler.
+int tbgv_gaussian_bound(TbgvContext ctx, uint32_t* bound) {
+    TBGV_TRY
+    if (bound == nullptr) { set_error("missing output"); return 0; }
+    const auto cp = std::dynamic_pointer_cast<CryptoParametersRLWE<DCRTPoly>>(cc_of(ctx)->GetCryptoParameters());
+    if (!cp) { set_error("not an RLWE context"); return 0; }
+    const double std_dev = cp->GetDistributionParameter();
+    if (!(std_dev > 0) || std_dev >= KARNEY_THRESHOLD) { set_error("no table bound for this standard deviation"); return 0; }
+    *bound = static_cast<uint32_t>(std::ceil(std_dev * 12.00610553538285));
+    return 1;
+    TBGV_CATCH(0)
+}
+
 int tbgv_fuse_raw(TbgvContext ctx, const TbgvCiphertext* partials, size_t n, double* out_over_t, size_t out_len, double* log2_max,
                   double* log2_q) {
     TBGV_TRY

@@ -105,7 +105,9 @@
 //! * the noise flooding has a measured margin, not a worst-case proof, and
 //!   the collector does not check the noise of what it decrypts.
 pub mod circuit;
+pub mod collector_session;
 pub mod descriptor;
+pub mod training;
 
 use crate::codec::ResidueCodec;
 use crate::protocol::{MAX_BATCH, MAX_PROOFS, NONCE_LEN, from_u64, to_u64};
@@ -1161,6 +1163,7 @@ pub struct PineCollector<'a> {
     state: State,
     accepted: Option<u64>,
     decryptions: Cell<u64>,
+    secret_key_operations: Cell<u64>,
 }
 
 impl<'a> PineCollector<'a> {
@@ -1192,6 +1195,7 @@ impl<'a> PineCollector<'a> {
             state: State::Idle,
             accepted: None,
             decryptions: Cell::new(0),
+            secret_key_operations: Cell::new(0),
         })
     }
 
@@ -1201,16 +1205,25 @@ impl<'a> PineCollector<'a> {
         Ok(self.sk.serialize()?)
     }
 
-    /// Ciphertexts this collector has decrypted so far (tests establish
-    /// with it that a refusal came before any decryption).
+    /// Plaintext openings of verifier/aggregate ciphertexts. Admission phase
+    /// measurements also use the secret key and are NOT counted here; use
+    /// `secret_key_operations` to establish refusal before any key-dependent work.
     pub fn decryptions(&self) -> u64 {
         self.decryptions.get()
+    }
+
+    /// Request-driven secret-key operations, including admission phase measurements.
+    /// Key-pair self-tests during construction are excluded. Unlike `decryptions`,
+    /// this does not hide the secret-key work done before verifier openings.
+    pub fn secret_key_operations(&self) -> u64 {
+        self.secret_key_operations.get()
     }
 
     fn open(&self, bytes: &[u8], idx: &[u32]) -> Result<Vec<Field>> {
         let res = self.task.reduced_codec.unpack(bytes, 2, self.task.ring)?;
         let ct = self.task.ctx.build_ciphertext(&self.reference, &self.task.reduced_meta, &res)?;
         self.decryptions.set(self.decryptions.get() + 1);
+        self.secret_key_operations.set(self.secret_key_operations.get() + 1);
         Ok(self.sk.decrypt_coeffs(&ct, idx)?.into_iter().map(from_u64).collect())
     }
 
@@ -1303,6 +1316,7 @@ impl<'a> PineCollector<'a> {
                 let copy = task
                     .ctx
                     .build_ciphertext(&self.reference, &fresh, &task.fresh_codec.unpack(bytes, 2, task.ring)?)?;
+                self.secret_key_operations.set(self.secret_key_operations.get() + 1);
                 admitted &= self.sk.phase_bits(&copy)? < ADMIT_BITS;
             }
             let mut verifier = Vec::with_capacity(task.verifier_len());

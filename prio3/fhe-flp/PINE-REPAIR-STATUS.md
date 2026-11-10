@@ -14,9 +14,9 @@ red.**
 | 4. Challenge binding: construction and proof | Argument written for malicious clients (`PINE-SECURITY-ARGUMENT.md`), with concrete bounds; **not reviewed**, two statements cited. Gate not met |
 | 5. Authenticated computation before decryption | **Not done.** Relation stated below; no proof system |
 | 6. Randomness ownership, ciphertext privacy | Ownership table below; a statistical argument for a passive collector with honest clients and evaluator (`PINE-SECURITY-ARGUMENT.md`, 1.6), unreviewed. **Not done** for adversarial inputs, an active collector, or an evaluator that deviates |
-| 7. Collector state machine | Done in code, with limits below |
+| 7. Collector state machine | Existing state machine plus bounded fail-closed `CollectorSession`; limits in `PINE-COLLECTOR-TRAINING.md` |
 | 8. Regression and adversarial evidence | Partly done: table below |
-| 9. Parameters and end-to-end qualification | Parameter guards done; training qualification not done |
+| 9. Parameters and end-to-end qualification | Parameter guards and functional real-data training qualification implemented; not a production privacy-isolated deployment |
 | 10. Release sequence | Step 1 written, unreviewed. Steps 2 to 4 open. Step 5 done for what can be refused today. Steps 6 to 9 open |
 
 ## 3. Canonical transcript and authenticated cohort
@@ -285,6 +285,16 @@ releases the sum and the accepted count; the averaging denominator is the
 caller's policy and is not fixed here. Weighted averaging is not
 supported.
 
-Not done: any training run, honest or adversarial; whole-round
-measurements with repeated samples, peak memory and recovery;
-norm-valid poisoning is outside what the protocol addresses.
+Functional training integration is now implemented in `src/pine/training.rs`,
+with a real-data runner in `src/bin/train_pine.rs`. Five rounds on real digit
+images exercise a 650-parameter model, four clients, actual PINE/BGV verification,
+and exact integer-sum/model/checkpoint comparison. Regression tests include
+rejected-client averaging, wrong-model refusal and post-quantization bounds.
+See `PINE-COLLECTOR-TRAINING.md` and `results/collector-training/` for evidence and
+precise scope. The runner holds all roles in one process for qualification; it
+is not a privacy-isolated deployment.
+
+Not done: production transport/isolation, malicious-evaluator authentication,
+joint collector privacy, exactly-once recovery across release/checkpoint loss,
+whole-round measurements with repeated samples and peak memory. Norm-valid
+poisoning remains outside what PINE's norm predicate prevents.

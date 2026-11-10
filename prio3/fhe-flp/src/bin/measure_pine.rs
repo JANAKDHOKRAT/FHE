@@ -35,10 +35,13 @@ fn main() {
 
     let t = Instant::now();
     let task = PineTask::new(params.clone(), [7; 32]).expect("task");
-    let (mut collector, pk) = PineCollector::new(&task).expect("collector");
+    // Both parties' ledgers, removed at the end.
+    let ledger = std::env::temp_dir().join(format!("fhe-flp-measure-pine-{}", std::process::id()));
+    std::fs::create_dir(&ledger).expect("ledger directory");
+    let (mut collector, pk) = PineCollector::new(&task, &ledger).expect("collector");
     let setup = t.elapsed();
     let client = PineClient::new(&task, &pk);
-    let mut evaluator = PineEvaluator::new(&task, &pk, [42; 32]).expect("evaluator");
+    let mut evaluator = PineEvaluator::new(&task, &pk, [42; 32], &ledger).expect("evaluator");
 
     // Real norm about half the bound.
     let scale = params.l2_norm_bound as f64 / 2f64.powi(params.num_frac_bits as i32);
@@ -85,6 +88,8 @@ fn main() {
     let want: Vec<f64> = want.into_iter().map(|w| w as f64 / 2f64.powi(params.num_frac_bits as i32)).collect();
     assert_eq!(sum, want, "the decoded sum is not the sum of the encoded gradients");
 
+    std::fs::remove_dir_all(&ledger).expect("remove the ledger directory");
+
     let per = reports as f64;
     println!(
         "{{\"dimension\":{d},\"l2_norm_bound\":{},\"num_frac_bits\":{},\"chunk_length\":{},\"chunk_length_norm_equality\":{},\"num_proofs\":{},\"num_proofs_norm_equality\":{},\"reports\":{reports},\"ciphertexts_per_report\":{},\"report_bytes\":{},\"verifier_len\":{},\"check_bytes_per_report\":{},\"aggregate_bytes\":{},\"log2_query_soundness\":{:.1},\"log2_joint_rand_per_attempt\":{:.1},\"max_batch\":{},\"setup_ms\":{:.1},\"shard_ms_per_report\":{:.1},\"ingest_ms_per_report\":{:.1},\"check_request_ms_per_report\":{:.1},\"collector_check_ms_per_report\":{:.1},\"aggregate_request_ms\":{:.1},\"unshard_ms\":{:.1}}}",
@@ -97,7 +102,7 @@ fn main() {
         task.ciphertexts_per_report(),
         task.report_len(),
         task.verifier_len(),
-        (request.len() - 4) / reports,
+        (request.len() - 36) / reports,
         aggregate.len(),
         task.log2_query_soundness(),
         task.log2_joint_rand_per_attempt(),

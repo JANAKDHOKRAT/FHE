@@ -19,9 +19,10 @@
 //! collector              : decrypts the gradient coordinates, PINE's decode
 //! ```
 //!
-//! Challenges. PINE fixes its randomness in two steps, each bound to a
-//! commitment to what the client already sent. Here the commitment is the
-//! ciphertext bytes (decryption is a function of them), as [`crate::single`]
+//! Challenges. PINE fixes its randomness in two steps, each after the
+//! client is committed to what the step tests. The reference commits
+//! through hashes of the aggregators' shares, checked between them. Here
+//! the derivation hashes ciphertext bytes instead, as [`crate::single`]
 //! does for Prio3's joint randomness:
 //! * the wraparound test vectors come from the nonce and the bytes of `G`;
 //! * the main circuit's joint randomness comes from the nonce and the bytes
@@ -29,8 +30,13 @@
 //! * the query points come from the evaluator's secret key and the whole
 //!   report.
 //!
-//! So `W` cannot depend on test vectors other than those `G` fixes, and the
-//! proofs cannot change `G` or `W`.
+//! What this implements is a binding of bytes: changing any byte of `G`
+//! changes the test vectors, changing any byte of `G` or `W` changes the
+//! joint randomness, and every verifier row reads each part only from that
+//! part's ciphertexts. **It is not proved that this derivation inherits
+//! PINE's (or Prio3's) security**: there is no composition proof for
+//! deriving the challenges from ciphertexts under the collector's key
+//! (`PINE.md`, "Not proved").
 //!
 //! The dot products of the wraparound tests are not sent: they are linear
 //! in the gradient, so the evaluator folds the test vectors into the
@@ -39,7 +45,8 @@
 //! report's layout only: what a malicious client puts elsewhere is
 //! multiplied by 0, and the aggregate reads the gradient coordinates only.
 //!
-//! What a cheating client can hope for (per report unless stated):
+//! What a cheating client can hope for (per report unless stated; an
+//! accounting of known bounds, see `PINE.md`):
 //! * an FLP query that misses: [`PineTask::log2_query_soundness`];
 //! * joint randomness under which an invalid measurement evaluates to 0 in
 //!   every main proof: [`PineTask::log2_joint_rand_per_attempt`] per
@@ -48,10 +55,26 @@
 //!   detects one with probability at least 1/2 ([ROCT23], as cited by the
 //!   draft), so `2^-100` per offline attempt at the reference's 100 tests.
 //!
-//! Not provided here: hiding the verdicts from the evaluator, binding of
-//! the requests to a batch, a noise bound checked by the collector, and
-//! protection against an evaluator that deviates (`HARDENING-PLAN.md`,
-//! `OBLIVIOUS-AGGREGATION-PLAN.md`).
+//! Single use, kept in a ledger directory that must survive restarts and
+//! must not be rolled back ([`Ledger`]):
+//! * the evaluator accepts a report nonce once per task;
+//! * the collector accepts a batch identifier once, and a report nonce
+//!   once, reserving them before it decrypts anything; it releases the sum
+//!   of a batch once, reserving the release before it decrypts it.
+//!
+//! Every ciphertext of a request is decoded and checked before the first
+//! one is decrypted.
+//!
+//! Outside what this module provides, all of which a deployment has to
+//! weigh (`PINE.md`, "Not done"):
+//! * the evaluator learns the verdicts;
+//! * the collector cannot tell whether the ciphertexts it is asked to
+//!   decrypt were computed as prescribed: an evaluator that deviates can
+//!   have other linear functions decrypted, and can replace the sum by a
+//!   ciphertext of its choice (the accepted count it reports is no proof);
+//! * the nonces a request lists are the evaluator's claim;
+//! * the noise flooding has a measured margin, not a worst-case proof, and
+//!   the collector does not check the noise of what it decrypts.
 pub mod circuit;
 
 use crate::codec::ResidueCodec;
@@ -67,7 +90,9 @@ use rand::RngCore;
 use rand::rngs::OsRng;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
+use std::fs::{self, OpenOptions};
 use std::ops::Range;
+use std::path::{Path, PathBuf};
 
 const DST_TASK: &[u8] = b"fhe-flp/1 pine task";
 const DST_WR_SEED: &[u8] = b"fhe-flp/1 pine wraparound seed";
@@ -82,6 +107,13 @@ const DST_SELF_CHECK: &[u8] = b"fhe-flp/1 pine self check";
 /// A client retries with a fresh nonce when a wraparound test fails on an
 /// honest gradient; each retry fails with negligible probability.
 const SHARD_ATTEMPTS: usize = 8;
+
+/// A batch identifier: 32 random bytes chosen by the evaluator.
+pub const BATCH_LEN: usize = 32;
+/// Check request: report count, batch identifier, then the nonces.
+const CHECK_HEADER: usize = 4 + BATCH_LEN;
+/// Aggregate request: batch identifier, accepted count.
+const AGGREGATE_HEADER: usize = BATCH_LEN + 8;
 
 /// The three parts of a report, in order.
 pub const PART_GRADIENT: usize = 0;
@@ -258,14 +290,23 @@ impl PineTask {
         self.params.num_proofs_norm_equality * self.norm_eq.verifier_len() + self.params.num_proofs * self.main.verifier_len()
     }
     pub fn check_request_len(&self, reports: usize) -> usize {
-        4 + reports * self.verifier_len() * self.reduced_len()
+        CHECK_HEADER + reports * (NONCE_LEN + self.verifier_len() * self.reduced_len())
     }
     /// Ciphertexts of the aggregate: those holding gradient coordinates.
     fn output_blocks(&self) -> usize {
         self.params.dimension.div_ceil(self.ring)
     }
     pub fn aggregate_request_len(&self) -> usize {
-        8 + self.output_blocks() * self.reduced_len()
+        AGGREGATE_HEADER + self.output_blocks() * self.reduced_len()
+    }
+
+    /// Decodes every ciphertext of a request without decrypting any:
+    /// lengths, canonical residues, padding.
+    fn preflight(&self, ciphertexts: &[u8]) -> Result<()> {
+        for bytes in ciphertexts.chunks(self.reduced_len()) {
+            self.reduced_codec.unpack(bytes, 2, self.ring)?;
+        }
+        Ok(())
     }
 
     /// log2 of the probability that the queries of one report miss an
@@ -571,32 +612,99 @@ impl<'a> PineClient<'a> {
     }
 }
 
+/// Single-use markers that survive restarts: one empty file per marker in
+/// a directory of the operator's choice, created exclusively and synced
+/// (file and directory) before the caller goes on.
+///
+/// The directory must be on a local file system that honours exclusive
+/// creation and `fsync`, writable only by the party that owns it, and must
+/// never be rolled back or emptied while the task's keys are in use:
+/// deleting it removes the protection. Markers are never removed.
+pub struct Ledger {
+    dir: PathBuf,
+}
+
+impl Ledger {
+    /// `root` must exist and be a directory (not a symbolic link). The
+    /// markers of a task and role go to their own subdirectory.
+    fn open(root: &Path, task: &PineTask, role: &str) -> Result<Self> {
+        let io = |e: std::io::Error| Error::Protocol(format!("ledger: {e}"));
+        let meta = fs::symlink_metadata(root).map_err(io)?;
+        if !meta.is_dir() {
+            return Err(Error::Protocol("the ledger root must be an existing directory".into()));
+        }
+        let dir = root.join(format!("pine-{}-{role}", hex(&task.binding)));
+        match fs::create_dir(&dir) {
+            Ok(()) => fs::File::open(root).and_then(|f| f.sync_all()).map_err(io)?,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(io(e)),
+        }
+        if !fs::symlink_metadata(&dir).map_err(io)?.is_dir() {
+            return Err(Error::Protocol("the ledger directory is not a directory".into()));
+        }
+        Ok(Self { dir })
+    }
+
+    /// Records `kind`/`id`, or fails when it was recorded before.
+    fn reserve(&self, kind: &str, id: &[u8]) -> Result<()> {
+        let file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(self.dir.join(format!("{kind}-{}", hex(id))))
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::AlreadyExists {
+                    Error::Protocol(format!("{kind} was used before"))
+                } else {
+                    Error::Protocol(format!("ledger: {e}"))
+                }
+            })?;
+        file.sync_all()
+            .and_then(|()| fs::File::open(&self.dir)?.sync_all())
+            .map_err(|e| Error::Protocol(format!("ledger: {e}")))
+    }
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 struct Stored {
+    nonce: [u8; NONCE_LEN],
     cts: Vec<Ciphertext>,
     challenges: Challenges,
 }
 
-/// The single aggregator. One instance per batch.
+/// The single aggregator. One instance per batch: reports are ingested,
+/// then the check request is built once, then the aggregate request once.
 pub struct PineEvaluator<'a> {
     task: &'a PineTask,
     verify_key: [u8; 32],
     reference: Ciphertext,
-    seen: HashSet<[u8; NONCE_LEN]>,
+    ledger: Ledger,
+    batch: [u8; BATCH_LEN],
     reports: Vec<Stored>,
+    sealed: bool,
+    released: bool,
 }
 
 impl<'a> PineEvaluator<'a> {
     /// `verify_key` is the evaluator's secret: clients must not predict the
-    /// query points.
-    pub fn new(task: &'a PineTask, pk: &PublicKey, verify_key: [u8; 32]) -> Result<Self> {
+    /// query points. `ledger_root`: see [`Ledger`]; it holds the nonces of
+    /// every report this evaluator accepted for the task.
+    pub fn new(task: &'a PineTask, pk: &PublicKey, verify_key: [u8; 32], ledger_root: &Path) -> Result<Self> {
         verify_single_rebuild_once(&task.ctx)?;
         let reference = task.ctx.encrypt(pk, &task.ctx.coef_plaintext(&[0])?)?;
+        let mut batch = [0u8; BATCH_LEN];
+        OsRng.fill_bytes(&mut batch);
         Ok(Self {
             task,
             verify_key,
             reference,
-            seen: HashSet::new(),
+            ledger: Ledger::open(ledger_root, task, "evaluator")?,
+            batch,
             reports: Vec::new(),
+            sealed: false,
+            released: false,
         })
     }
 
@@ -606,11 +714,20 @@ impl<'a> PineEvaluator<'a> {
     pub fn is_empty(&self) -> bool {
         self.reports.is_empty()
     }
+    /// The identifier of this batch.
+    pub fn batch(&self) -> &[u8; BATCH_LEN] {
+        &self.batch
+    }
 
     /// Stores a report and derives its challenges. Refuses malformed bytes,
-    /// a replayed nonce and a full batch.
+    /// a full or sealed batch, and a nonce this evaluator accepted before
+    /// for the task, in this batch or any earlier one (a valid report
+    /// cannot change its nonce: the challenges depend on it).
     pub fn ingest(&mut self, report: &[u8]) -> Result<()> {
         let task = self.task;
+        if self.sealed {
+            return Err(Error::Protocol("the batch is sealed".into()));
+        }
         if report.len() != task.report_len() {
             return Err(Error::Codec(format!("report has {} bytes, expected {}", report.len(), task.report_len())));
         }
@@ -624,26 +741,36 @@ impl<'a> PineEvaluator<'a> {
             let residues = task.fresh_codec.unpack(bytes, 2, task.ring)?;
             cts.push(task.ctx.build_ciphertext(&self.reference, &meta, &residues)?);
         }
-        if !self.seen.insert(nonce) {
-            return Err(Error::Protocol("duplicate report nonce".into()));
-        }
+        self.ledger.reserve("nonce", &nonce)?;
         self.reports.push(Stored {
+            nonce,
             cts,
             challenges: task.challenges(&self.verify_key, report)?,
         });
         Ok(())
     }
 
-    /// The batch's check request: for every report and verifier element,
-    /// the sum over the report's ciphertexts of `ct x row`, the element at
-    /// coefficient 0 (with the verifier's constant added) and a fresh
-    /// uniform mask on every other coefficient, flooded and switched to one
-    /// tower.
-    pub fn check_request(&self) -> Result<Vec<u8>> {
+    /// Seals the batch and builds its check request: the batch identifier,
+    /// the nonces, and for every report and verifier element the sum over
+    /// the report's ciphertexts of `ct x row`, the element at coefficient 0
+    /// (with the verifier's constant added) and a fresh uniform mask on
+    /// every other coefficient, flooded and switched to one tower.
+    pub fn check_request(&mut self) -> Result<Vec<u8>> {
         let task = self.task;
+        if self.sealed {
+            return Err(Error::Protocol("the batch is sealed".into()));
+        }
+        if self.reports.is_empty() {
+            return Err(Error::Protocol("the batch is empty".into()));
+        }
+        self.sealed = true;
         let n = task.ring;
         let mut out = Vec::with_capacity(task.check_request_len(self.reports.len()));
         out.extend((self.reports.len() as u32).to_le_bytes());
+        out.extend(self.batch);
+        for r in &self.reports {
+            out.extend(r.nonce);
+        }
         for r in &self.reports {
             task.verifier_rows(&r.challenges, |row, constant| {
                 let mut sum: Option<Ciphertext> = None;
@@ -673,11 +800,15 @@ impl<'a> PineEvaluator<'a> {
         Ok(out)
     }
 
-    /// The aggregate request: the sum of the gradient ciphertexts the
-    /// verdicts accept, a fresh uniform mask on every coefficient that is
-    /// not a gradient coordinate, flooded and switched to one tower.
-    pub fn aggregate_request(&self, verdicts: &[u8]) -> Result<Vec<u8>> {
+    /// The aggregate request, once per batch: the batch identifier, the
+    /// accepted count, and the sum of the gradient ciphertexts the verdicts
+    /// accept, with a fresh uniform mask on every coefficient that is not a
+    /// gradient coordinate, flooded and switched to one tower.
+    pub fn aggregate_request(&mut self, verdicts: &[u8]) -> Result<Vec<u8>> {
         let task = self.task;
+        if !self.sealed || self.released {
+            return Err(Error::Protocol("the aggregate request follows the check request, once".into()));
+        }
         if verdicts.len() != self.reports.len().div_ceil(8) {
             return Err(Error::Codec("verdicts have the wrong length".into()));
         }
@@ -691,7 +822,9 @@ impl<'a> PineEvaluator<'a> {
         if accepted.is_empty() {
             return Err(Error::Protocol("no accepted reports".into()));
         }
-        let mut msg = (accepted.len() as u64).to_le_bytes().to_vec();
+        self.released = true;
+        let mut msg = self.batch.to_vec();
+        msg.extend((accepted.len() as u64).to_le_bytes());
         for b in 0..task.output_blocks() {
             let mut sum = accepted[0].cts[b].try_clone()?;
             for r in &accepted[1..] {
@@ -707,29 +840,53 @@ impl<'a> PineEvaluator<'a> {
 }
 
 /// The collector: holds the whole secret key.
+///
+/// It decrypts what it is sent: nothing here lets it verify that a
+/// ciphertext was computed as prescribed. The single-use rules below stop
+/// repetition, not an evaluator that deviates.
 pub struct PineCollector<'a> {
     task: &'a PineTask,
     sk: SecretShare,
     reference: Ciphertext,
+    ledger: Ledger,
+    /// The checked batch whose sum has not been released, with its count.
+    pending: Option<([u8; BATCH_LEN], u64)>,
     accepted: Option<u64>,
 }
 
 impl<'a> PineCollector<'a> {
     /// Generates the key pair; the public key goes to clients and the
-    /// evaluator.
-    pub fn new(task: &'a PineTask) -> Result<(Self, PublicKey)> {
-        verify_single_rebuild_once(&task.ctx)?;
+    /// evaluator. `ledger_root`: see [`Ledger`]; it holds the batch
+    /// identifiers, nonces and releases this collector processed.
+    pub fn new(task: &'a PineTask, ledger_root: &Path) -> Result<(Self, PublicKey)> {
         let (pk, sk) = keygen_first(&task.ctx)?;
-        let reference = task.ctx.encrypt(&pk, &task.ctx.coef_plaintext(&[0])?)?;
-        Ok((
-            Self {
-                task,
-                sk,
-                reference,
-                accepted: None,
-            },
-            pk,
-        ))
+        Ok((Self::with_keys(task, &pk, sk, ledger_root)?, pk))
+    }
+
+    /// The collector of an existing key pair, after a restart: with the
+    /// ledger it used before. A batch that was checked but not released
+    /// before the restart cannot be released any more.
+    pub fn with_keys(task: &'a PineTask, pk: &PublicKey, sk: SecretShare, ledger_root: &Path) -> Result<Self> {
+        verify_single_rebuild_once(&task.ctx)?;
+        let probe = [1, 2, 3, 4];
+        if sk.decrypt_coeffs(&task.ctx.encrypt(pk, &task.ctx.coef_plaintext(&probe)?)?, &[0, 1, 2, 3])? != probe {
+            return Err(Error::Protocol("the secret key does not match the public key".into()));
+        }
+        let reference = task.ctx.encrypt(pk, &task.ctx.coef_plaintext(&[0])?)?;
+        Ok(Self {
+            task,
+            sk,
+            reference,
+            ledger: Ledger::open(ledger_root, task, "collector")?,
+            pending: None,
+            accepted: None,
+        })
+    }
+
+    /// The secret key, to be stored by the operator for [`Self::with_keys`].
+    /// Whoever reads these bytes can decrypt every report of the task.
+    pub fn serialize_secret_key(&self) -> Result<Vec<u8>> {
+        Ok(self.sk.serialize()?)
     }
 
     fn open(&self, bytes: &[u8], idx: &[u32]) -> Result<Vec<Field>> {
@@ -746,19 +903,39 @@ impl<'a> PineCollector<'a> {
 
     /// [`Self::check`], also returning each report's verifier message,
     /// which the collector learns in any case.
+    ///
+    /// Before anything is decrypted: the whole request is decoded, and the
+    /// batch identifier and every nonce are recorded as used; a request
+    /// that repeats one is refused, and what it recorded until then stays
+    /// recorded. A refused request leaves a checked batch releasable; a
+    /// request that passes this point replaces it, released or not.
     pub fn check_with_verifiers(&mut self, request: &[u8]) -> Result<(Vec<u8>, Vec<Vec<Field>>)> {
         let task = self.task;
-        if request.len() < 4 {
+        if request.len() < CHECK_HEADER {
             return Err(Error::Codec("check request too short".into()));
         }
         let n = u32::from_le_bytes(request[..4].try_into().expect("length checked")) as usize;
-        if n as u64 > task.max_batch() || request.len() != task.check_request_len(n) {
+        if n == 0 || n as u64 > task.max_batch() || request.len() != task.check_request_len(n) {
             return Err(Error::Codec("check request has the wrong length".into()));
         }
+        let batch: [u8; BATCH_LEN] = request[4..CHECK_HEADER].try_into().expect("length checked");
+        let (nonces, ciphertexts) = request[CHECK_HEADER..].split_at(n * NONCE_LEN);
+        if nonces.chunks(NONCE_LEN).collect::<HashSet<_>>().len() != n {
+            return Err(Error::Protocol("a nonce appears twice in the request".into()));
+        }
+        task.preflight(ciphertexts)?;
+
+        self.ledger.reserve("batch", &batch)?;
+        for nonce in nonces.chunks(NONCE_LEN) {
+            self.ledger.reserve("nonce", nonce)?;
+        }
+        self.pending = None;
+        self.accepted = None;
+
         let mut verdicts = vec![0u8; n.div_ceil(8)];
         let mut verifiers = Vec::with_capacity(n);
         let mut accepted = 0u64;
-        for (i, report) in request[4..].chunks(task.verifier_len() * task.reduced_len()).enumerate() {
+        for (i, report) in ciphertexts.chunks(task.verifier_len() * task.reduced_len()).enumerate() {
             let mut verifier = Vec::with_capacity(task.verifier_len());
             for bytes in report.chunks(task.reduced_len()) {
                 verifier.extend(self.open(bytes, &[0])?);
@@ -769,6 +946,7 @@ impl<'a> PineCollector<'a> {
             }
             verifiers.push(verifier);
         }
+        self.pending = Some((batch, accepted));
         self.accepted = Some(accepted);
         Ok((verdicts, verifiers))
     }
@@ -778,20 +956,30 @@ impl<'a> PineCollector<'a> {
         self.accepted
     }
 
-    /// Decrypts the gradient coordinates of the aggregate and decodes them:
-    /// the sum of the accepted gradients. Refused unless the count matches
-    /// the reports this collector accepted.
-    pub fn unshard(&self, request: &[u8]) -> Result<Vec<f64>> {
+    /// Decrypts the gradient coordinates of the aggregate and decodes them,
+    /// once per checked batch. Refused unless the request names the batch
+    /// just checked and the count this collector accepted; the release is
+    /// recorded as used before anything is decrypted.
+    ///
+    /// The count is the evaluator's statement, not a proof: the collector
+    /// cannot tell whether the ciphertext is the sum of the reports it
+    /// accepted.
+    pub fn unshard(&mut self, request: &[u8]) -> Result<Vec<f64>> {
         let task = self.task;
         if request.len() != task.aggregate_request_len() {
             return Err(Error::Codec("aggregate request has the wrong length".into()));
         }
-        let count = u64::from_le_bytes(request[..8].try_into().expect("length checked"));
-        if Some(count) != self.accepted || count == 0 {
-            return Err(Error::Protocol("the aggregate does not cover the accepted reports".into()));
+        let (batch, rest) = request.split_at(BATCH_LEN);
+        let count = u64::from_le_bytes(rest[..8].try_into().expect("length checked"));
+        match self.pending {
+            Some((pending, accepted)) if pending == batch && accepted == count && count > 0 => {}
+            _ => return Err(Error::Protocol("the aggregate does not cover the batch and the reports just accepted".into())),
         }
+        task.preflight(&rest[8..])?;
+        self.ledger.reserve("release", batch)?;
+        self.pending = None;
         let mut sum = Vec::with_capacity(task.params.dimension);
-        for (b, bytes) in request[8..].chunks(task.reduced_len()).enumerate() {
+        for (b, bytes) in rest[8..].chunks(task.reduced_len()).enumerate() {
             let coordinates = (task.params.dimension - b * task.ring).min(task.ring) as u32;
             sum.extend(self.open(bytes, &(0..coordinates).collect::<Vec<u32>>())?);
         }

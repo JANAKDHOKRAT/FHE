@@ -1,0 +1,16 @@
+   Compiling fhe-flp v0.1.0 (/workspace/work/pine-bgv/collector-training/prio3/fhe-flp)
+    Finished `release` profile [optimized] target(s) in 29.55s
+     Running tests/pine_training.rs (/workspace/fhe-build/oblivious-recovered/release/deps/pine_training-303586dec37bbf0a)
+
+running 8 tests
+test complete_encrypted_training_rounds_match_integer_reference ... ok
+test local_step_matches_cross_entropy_gradient ... ok
+test malformed_release_burns_release_without_secret_work ... ok
+test malformed_request_is_terminal_and_survives_restart ... ok
+test quantization_checks_integer_norm_after_rounding ... ok
+test rejected_client_is_excluded_from_sum_and_average ... ok
+test under_threshold_is_terminal_without_aggregate_release ... ok
+test wrong_model_report_is_refused_before_secret_work ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 13.46s
+

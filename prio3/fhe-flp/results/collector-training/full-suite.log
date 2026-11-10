@@ -1,0 +1,176 @@
+   Compiling fhe-flp v0.1.0 (/workspace/work/pine-bgv/collector-training/prio3/fhe-flp)
+    Finished `release` profile [optimized] target(s) in 1m 32s
+     Running unittests src/lib.rs (/workspace/fhe-build/oblivious-recovered/release/deps/fhe_flp-6507b2afb2631861)
+
+running 21 tests
+test bitvec::tests::closed_form_equals_prio_query ... ok
+test bitvec::tests::closed_form_on_a_gadget_point_that_is_a_2w_th_root ... ok
+test codec::tests::out_of_range_residue_in_bytes_is_refused ... ok
+test codec::tests::roundtrip_and_canonical ... ok
+test f65537::tests::arithmetic_matches_integer_reference ... ok
+test f65537::tests::encodings_are_canonical ... ok
+test f65537::tests::every_nonzero_element_has_its_inverse ... ok
+test f65537::tests::prio_flp_proves_and_decides_in_this_field ... ok
+test f65537::tests::random_vectors_are_in_range_and_spread ... ok
+test f65537::tests::roots_of_unity_and_generator ... ok
+test pine::circuit::tests::a_norm_that_wraps_the_field_fails_the_wraparound_tests ... ok
+test pine::circuit::tests::closed_form_verifier_maps_agree_with_prio_query ... ok
+test pine::circuit::tests::encoding_rounds_to_even_and_refuses_what_the_reference_refuses ... ok
+test pine::circuit::tests::honest_inputs_satisfy_both_circuits_and_each_violation_is_caught ... ok
+test pine::circuit::tests::parameters_outside_the_reference_guards_are_refused ... ok
+test pine::circuit::tests::prio_proves_and_decides_both_circuits ... ok
+test pine::circuit::tests::wraparound_vectors_have_the_reference_distribution_and_layout ... ok
+test pine::descriptor::tests::encoding_is_canonical_and_strict ... ok
+test pine::tests::flooding_margin_of_a_dense_row_over_every_ciphertext ... ok
+test single::tests::aggregate_maps_of_prio3_types ... ok
+test single::tests::weights_that_are_not_one_shifted_pattern_are_refused ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.75s
+
+     Running unittests src/bin/measure.rs (/workspace/fhe-build/oblivious-recovered/release/deps/measure-ab9c3e8354ab813f)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/measure_pine.rs (/workspace/fhe-build/oblivious-recovered/release/deps/measure_pine-838f2094551363a8)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/measure_single.rs (/workspace/fhe-build/oblivious-recovered/release/deps/measure_single-b8c2cb1dbee263e7)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/soundness.rs (/workspace/fhe-build/oblivious-recovered/release/deps/soundness-603e23dc6284d138)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/train_pine.rs (/workspace/fhe-build/oblivious-recovered/release/deps/train_pine-6faef4c9b7458d98)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/junk_coefficients.rs (/workspace/fhe-build/oblivious-recovered/release/deps/junk_coefficients-52f73a9144456881)
+
+running 3 tests
+test a_single_coefficient_above_z_is_rejected ... ok
+test coefficients_above_z_cannot_make_an_invalid_count_pass ... ok
+test threshold_coefficients_above_z_cannot_make_an_invalid_count_pass ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.88s
+
+     Running tests/pine.rs (/workspace/fhe-build/oblivious-recovered/release/deps/pine-a7b2e11825534bec)
+
+running 17 tests
+test a_ciphertext_with_large_noise_is_not_evaluated_linearly ... ok
+test a_claimed_bit_that_is_not_a_bit_is_rejected ... ok
+test a_cohort_the_clients_did_not_sign_is_refused_before_anything_is_decrypted ... ok
+test a_malformed_ciphertext_is_refused_before_anything_is_recorded_or_decrypted ... ok
+test a_norm_beyond_the_bound_is_rejected ... ok
+test a_squared_norm_that_wraps_the_field_is_rejected ... ok
+test below_the_release_threshold_nothing_is_released ... ok
+test checks_and_releases_cannot_be_repeated_and_the_rules_survive_a_restart ... ok
+test coefficients_outside_the_layout_change_nothing ... ok
+test concrete_soundness_bounds ... ok
+test gradients_longer_than_one_ciphertext ... ok
+test honest_gradients_are_summed_exactly ... ok
+test known_limit_an_evaluator_that_deviates_can_substitute_the_sum ... ok
+test malformed_and_replayed_reports_and_wrong_requests_are_refused ... ok
+test noise_beyond_the_admission_bound_is_refused_before_the_verifier_is_decrypted ... ok
+test parts_of_other_reports_re_encryptions_and_other_nonces_are_rejected ... ok
+test the_collector_decrypts_exactly_prios_verifier ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 38.08s
+
+     Running tests/pine_training.rs (/workspace/fhe-build/oblivious-recovered/release/deps/pine_training-303586dec37bbf0a)
+
+running 8 tests
+test complete_encrypted_training_rounds_match_integer_reference ... ok
+test local_step_matches_cross_entropy_gradient ... ok
+test malformed_release_burns_release_without_secret_work ... ok
+test malformed_request_is_terminal_and_survives_restart ... ok
+test quantization_checks_integer_norm_after_rounding ... ok
+test rejected_client_is_excluded_from_sum_and_average ... ok
+test under_threshold_is_terminal_without_aggregate_release ... ok
+test wrong_model_report_is_refused_before_secret_work ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 13.48s
+
+     Running tests/pine_upstream.rs (/workspace/fhe-build/oblivious-recovered/release/deps/pine_upstream-943cbe341c523a09)
+
+running 3 tests
+test both_circuits_agree_with_the_separately_written_port ... ok
+test gradient_encoding_and_decoding_match_the_reference_vectors ... ok
+test measurements_wraparound_tests_and_circuits_match_the_reference_vectors ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/protocol.rs (/workspace/fhe-build/oblivious-recovered/release/deps/protocol-06abd0b8f75d3310)
+
+running 10 tests
+test a_flipped_ciphertext_bit_is_not_accepted ... ok
+test bitvec_end_to_end_and_rejects_a_single_non_bit ... ok
+test count_end_to_end_two_and_three_aggregators ... ok
+test decrypted_verifier_is_exactly_prio_query_and_prio3_combined_verifier ... ok
+test invalid_inputs_with_honestly_computed_proofs_are_rejected ... ok
+test linear_map_reproduces_query_on_random_points ... ok
+test malformed_and_replayed_reports_are_refused ... ok
+test shares_from_the_wrong_parties_are_refused ... ok
+test tampered_proofs_are_rejected ... ok
+test unsupported_tasks_are_refused ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 12.08s
+
+     Running tests/single.rs (/workspace/fhe-build/oblivious-recovered/release/deps/single-a58dff1dda4b1143)
+
+running 8 tests
+test a_report_under_another_key_is_rejected ... ok
+test bitvec100_end_to_end_and_rejects_a_single_non_bit ... ok
+test check_requests_are_freshly_masked_and_flooded ... ok
+test collector_refuses_inconsistent_requests ... ok
+test count_end_to_end ... ok
+test decrypted_verifier_is_exactly_prio_query ... ok
+test invalid_inputs_and_tampered_proofs_are_rejected_and_not_counted ... ok
+test malformed_replayed_and_flipped_reports ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.17s
+
+     Running tests/single_p65537.rs (/workspace/fhe-build/oblivious-recovered/release/deps/single_p65537-649a4625ede85cdd)
+
+running 7 tests
+test batches_are_capped_so_sums_never_wrap_modulo_p ... ok
+test bitvec_end_to_end_and_rejects_a_non_bit ... ok
+test circuits_beyond_the_fields_roots_are_refused_not_panicking ... ok
+test closed_form_at_roots_of_unity_in_gf65537 ... ok
+test count_end_to_end_with_exact_prio_verifiers ... ok
+test invalid_and_tampered_reports_are_rejected ... ok
+test proofs_for_2_to_the_minus_128 ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 102.65s
+
+     Running tests/single_variants.rs (/workspace/fhe-build/oblivious-recovered/release/deps/single_variants-ee0f00b30160688b)
+
+running 7 tests
+test batches_are_capped_by_the_largest_output ... ok
+test encodings_are_prio3s ... ok
+test histogram_end_to_end_rejects_two_hot_and_zero_vectors ... ok
+test multihot_end_to_end_in_field_prio2_rejects_overweight ... ok
+test sum_end_to_end_one_ciphertext ... ok
+test sumvec_end_to_end_two_ciphertexts_with_joint_randomness ... ok
+test the_proofs_cannot_change_the_input_that_fixed_the_joint_randomness ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.78s
+
+   Doc-tests fhe_flp
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

@@ -160,6 +160,7 @@ unsafe extern "C" {
         log2_max: *mut f64,
         log2_q: *mut f64,
     ) -> c_int;
+    pub fn tbgv_phase_bits(ctx: TbgvContext, ct: TbgvCiphertext, sk: TbgvSecretKey, bits: *mut u32) -> c_int;
     pub fn tbgv_raw_decrypt_for_tests(
         ctx: TbgvContext,
         ct: TbgvCiphertext,

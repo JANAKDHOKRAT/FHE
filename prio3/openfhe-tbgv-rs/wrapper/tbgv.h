@@ -230,6 +230,7 @@ int tbgv_fuse_raw(TbgvContext ctx, const TbgvCiphertext* partials, size_t n, dou
                   double* log2_q);
 int tbgv_raw_decrypt_for_tests(TbgvContext ctx, TbgvCiphertext ct, const TbgvSecretKey* sks, size_t n, double* out_over_t,
                                size_t out_len, double* log2_max, double* log2_q);
+int tbgv_phase_bits(TbgvContext ctx, TbgvCiphertext ct, TbgvSecretKey sk, uint32_t* bits);
 TbgvPublicKey tbgv_pubkey_inflate_for_tests(TbgvContext ctx, TbgvPublicKey pk, uint32_t log2_k, uint64_t seed, int constant);
 /* Every fused coefficient within t (n Q'/2 + Q' 2^-slack + 1), Q' = Q_l / q0:
  * what n partials flooded as OpenFHE floods them can reach. */

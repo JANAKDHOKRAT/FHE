@@ -56,6 +56,26 @@
 //!   detects one with probability at least 1/2 ([ROCT23], as cited by the
 //!   draft), so `2^-100` per offline attempt at the reference's 100 tests.
 //!
+//! Admission. A client may send any two ring elements as a ciphertext.
+//! With a large phase (noise), a plaintext product wraps modulo `Q` and
+//! the decrypted verifier element is no longer a linear query of a fixed
+//! vector, which is what the FLP's soundness is stated for
+//! (`tests/pine.rs`, `a_ciphertext_with_large_noise_is_not_evaluated_linearly`).
+//! So the evaluator sends, per report ciphertext, a copy with a uniform
+//! plaintext on every coefficient and `p` times a uniform
+//! `ADMIT_MASK_BITS`-bit value added, at the full modulus; the collector
+//! measures its phase exactly and rejects the report, without decrypting
+//! its verifier, unless every copy is below `2^ADMIT_BITS`. For an
+//! admitted report every phase is below `2^(ADMIT_BITS + 1)`, and the
+//! task is refused at creation unless that makes every verifier element
+//! and the aggregate stay below `Q / 4` before masking and flooding: then
+//! nothing wraps, and each decrypted value is exactly the linear function
+//! of the plaintexts `phase mod p`. (The bound on the modulus switch's
+//! rounding is the library's and is not re-derived here.) The collector
+//! learns from a copy the report's second ciphertext component and the
+//! first one masked; that this reveals nothing of the plaintext is argued
+//! in `PINE-REPAIR-STATUS.md`, not proved.
+//!
 //! The task ([`descriptor::TaskDescriptor`]) lists the clients authorized
 //! to report. A client signs its report's commitment: the task, the
 //! collector's key, the nonce and the digest of each part. The evaluator
@@ -86,9 +106,6 @@
 //!   evaluator that deviates can have other linear functions decrypted,
 //!   and can replace the sum by a ciphertext of its choice;
 //! * the evaluator can leave reports out;
-//! * a ciphertext with more noise than an honest encryption makes a
-//!   decrypted verifier element differ from the linear query the FLP's
-//!   soundness is stated for; nothing bounds a client's noise;
 //! * the noise flooding has a measured margin, not a worst-case proof, and
 //!   the collector does not check the noise of what it decrypts.
 pub mod circuit;
@@ -140,6 +157,13 @@ const CHECK_HEADER: usize = 4 + BATCH_LEN;
 const ENTRY_LEN: usize = 4 + NONCE_LEN + 3 * 32 + 64;
 /// Aggregate request: batch identifier, verdict hash, accepted count.
 const AGGREGATE_HEADER: usize = BATCH_LEN + 32 + 8;
+/// Admission: the collector refuses a report unless the phase of the masked
+/// copy of each of its ciphertexts has fewer than this many bits. The mask
+/// is a uniform plaintext plus `p` times a uniform value of
+/// `ADMIT_MASK_BITS` bits, so the phase of an admitted report ciphertext is
+/// below `2^(ADMIT_BITS + 1)` (see the module documentation).
+const ADMIT_BITS: u32 = 96;
+const ADMIT_MASK_BITS: u32 = 40;
 /// What a client appends to a report's body: its identity and signature.
 const SEAL_LEN: usize = 32 + 64;
 
@@ -211,6 +235,20 @@ impl PineTask {
             params.num_proofs_norm_equality * norm_eq.proof_len() + params.num_proofs * main.proof_len(),
         ];
 
+        // Admission makes every evaluation exact: a verifier element sums, over
+        // at most `cts` ciphertexts, `ring` products of a plaintext coefficient
+        // below p < 2^32 with a phase coefficient below 2^(ADMIT_BITS + 1); the
+        // sum of at most MAX_BATCH = 2^24 gradient ciphertexts is smaller. With
+        // the mask (below 2^32) and the flooding (below Q / 8) the phase must
+        // stay below Q / 2: it suffices that the sum is below Q / 4.
+        let cts: usize = lens.iter().map(|l| l.div_ceil(ring)).sum();
+        let log_q = moduli.iter().map(|&q| (q as f64).log2()).sum::<f64>().floor() as u32;
+        if ADMIT_BITS + 1 + cts.next_power_of_two().ilog2() + ring.next_power_of_two().ilog2() + 32 + 2 > log_q || ADMIT_BITS < 32 + ADMIT_MASK_BITS + 1 {
+            return Err(Error::Protocol(format!(
+                "a report of {cts} ciphertexts is too large for the admission bound at this modulus"
+            )));
+        }
+
         // The descriptor, then everything else the code fixes: the circuits'
         // constants, the field and the BGV parameters.
         let mut h = Sha256::new();
@@ -223,6 +261,8 @@ impl PineTask {
             ALPHA.to_bits(),
             PLAIN_MOD,
             ring as u64,
+            u64::from(ADMIT_BITS),
+            u64::from(ADMIT_MASK_BITS),
             moduli.len() as u64,
         ] {
             h.update(v.to_le_bytes());
@@ -339,7 +379,7 @@ impl PineTask {
         self.descriptor.params.num_proofs_norm_equality * self.norm_eq.verifier_len() + self.descriptor.params.num_proofs * self.main.verifier_len()
     }
     pub fn check_request_len(&self, reports: usize) -> usize {
-        CHECK_HEADER + reports * (ENTRY_LEN + self.verifier_len() * self.reduced_len())
+        CHECK_HEADER + reports * (ENTRY_LEN + self.check_len())
     }
     /// Ciphertexts of the aggregate: those holding gradient coordinates.
     fn output_blocks(&self) -> usize {
@@ -347,6 +387,16 @@ impl PineTask {
     }
     pub fn aggregate_request_len(&self) -> usize {
         AGGREGATE_HEADER + self.output_blocks() * self.reduced_len()
+    }
+
+    /// Bytes of one report's ciphertexts in a check request: the masked
+    /// copies of its ciphertexts (all towers), then its verifier elements.
+    fn check_len(&self) -> usize {
+        self.ciphertexts_per_report() * self.fresh_len() + self.verifier_len() * self.reduced_len()
+    }
+    /// One report's masked copies and its verifier elements.
+    fn split_check<'b>(&self, report: &'b [u8]) -> (&'b [u8], &'b [u8]) {
+        report.split_at(self.ciphertexts_per_report() * self.fresh_len())
     }
 
     /// Decodes every ciphertext of a request without decrypting any:
@@ -619,9 +669,9 @@ impl<'a> PineClient<'a> {
         let shape = self.task.shape();
         let g = shape.encode_gradient_and_norm(gradient)?;
         for _ in 0..SHARD_ATTEMPTS {
-            let (nonce, g_bytes, vectors) = self.commit(&g)?;
+            let (nonce, g_bytes, vectors) = self.commit(&g, &|_, _| {})?;
             if let Some((wr_bits, results)) = shape.encode_wr_checks(&g[..shape.dimension()], &vectors) {
-                return self.complete(nonce, &g, g_bytes, &wr_bits, &results);
+                return self.complete(nonce, &g, g_bytes, &wr_bits, &results, &|_, _| {});
             }
         }
         Err(Error::Protocol("the wraparound tests failed on every attempt".into()))
@@ -634,27 +684,37 @@ impl<'a> PineClient<'a> {
     /// fixes and returns the wraparound part to send, and the proofs are
     /// prio's for that input (malicious-client tests).
     pub fn shard_encoded(&self, gradient_part: &[Field], claim: impl FnOnce(&[Field]) -> Vec<Field>) -> Result<Vec<u8>> {
+        self.shard_tampered(gradient_part, claim, &|_, _| {})
+    }
+
+    /// [`Self::shard_encoded`] for a client that also alters its
+    /// ciphertexts: `tamper` receives each part (`PART_*`) right after it
+    /// is encrypted and before anything is derived from its bytes, so the
+    /// report stays consistent with its challenges and is validly signed
+    /// (tests: ciphertexts that are not honest encryptions).
+    pub fn shard_tampered(&self, gradient_part: &[Field], claim: impl FnOnce(&[Field]) -> Vec<Field>, tamper: &dyn Fn(usize, &mut Vec<u8>)) -> Result<Vec<u8>> {
         let task = self.task;
         let shape = task.shape();
         let g_len = task.lens[PART_GRADIENT];
         if gradient_part.len() < g_len || gradient_part.len() > task.blocks(PART_GRADIENT) * task.ring {
             return Err(Error::Protocol("unexpected gradient part length".into()));
         }
-        let (nonce, g_bytes, vectors) = self.commit(gradient_part)?;
+        let (nonce, g_bytes, vectors) = self.commit(gradient_part, tamper)?;
         let results = shape.wr_results(&gradient_part[..shape.dimension()], &vectors);
         let wr_bits = claim(&results);
         if wr_bits.len() != task.lens[PART_WRAPAROUND] {
             return Err(Error::Protocol("unexpected wraparound part length".into()));
         }
-        Ok(self.complete(nonce, &gradient_part[..g_len], g_bytes, &wr_bits, &results)?.0)
+        Ok(self.complete(nonce, &gradient_part[..g_len], g_bytes, &wr_bits, &results, tamper)?.0)
     }
 
     /// A fresh nonce, the encrypted gradient part and the wraparound test
     /// vectors they fix.
-    fn commit(&self, g: &[Field]) -> Result<([u8; NONCE_LEN], Vec<u8>, Vec<i8>)> {
+    fn commit(&self, g: &[Field], tamper: &dyn Fn(usize, &mut Vec<u8>)) -> Result<([u8; NONCE_LEN], Vec<u8>, Vec<i8>)> {
         let mut nonce = [0u8; NONCE_LEN];
         OsRng.fill_bytes(&mut nonce);
-        let g_bytes = self.encrypt(g)?;
+        let mut g_bytes = self.encrypt(g)?;
+        tamper(PART_GRADIENT, &mut g_bytes);
         let vectors = self.task.wr_vectors(&self.task.wr_seed(&self.key, &nonce, &PineTask::digest(&g_bytes)));
         Ok((nonce, g_bytes, vectors))
     }
@@ -667,10 +727,12 @@ impl<'a> PineClient<'a> {
         g_bytes: Vec<u8>,
         wr_bits: &[Field],
         results: &[Field],
+        tamper: &dyn Fn(usize, &mut Vec<u8>),
     ) -> Result<(Vec<u8>, Vec<Field>, Vec<Field>)> {
         let task = self.task;
         let (ne, main) = (&task.norm_eq, &task.main);
-        let w_bytes = self.encrypt(wr_bits)?;
+        let mut w_bytes = self.encrypt(wr_bits)?;
+        tamper(PART_WRAPAROUND, &mut w_bytes);
         let joint_rands = task.joint_rands(&self.key, &nonce, &PineTask::digest(&g_bytes), &PineTask::digest(&w_bytes));
         let input = [g, wr_bits, results].concat();
 
@@ -691,7 +753,9 @@ impl<'a> PineClient<'a> {
         let mut body = nonce.to_vec();
         body.extend(g_bytes);
         body.extend(w_bytes);
-        body.extend(self.encrypt(&proofs)?);
+        let mut p_bytes = self.encrypt(&proofs)?;
+        tamper(PART_PROOFS, &mut p_bytes);
+        body.extend(p_bytes);
         Ok((self.seal(&body)?, input, proofs))
     }
 
@@ -929,6 +993,16 @@ impl<'a> PineEvaluator<'a> {
             out.extend(r.entry);
         }
         for r in &self.reports {
+            // Admission copies: each ciphertext with a uniform plaintext on
+            // every coefficient and p times a uniform ADMIT_MASK_BITS-bit
+            // value added, at the full modulus: the collector measures the
+            // phase and learns nothing of the plaintext.
+            for ct in &r.cts {
+                let copy = task
+                    .ctx
+                    .flood(&task.ctx.add_plain(ct, &task.ctx.coef_plaintext(&task.mask())?)?, ADMIT_MASK_BITS)?;
+                out.extend(task.fresh_codec.pack(&copy.export_residues()?, 2, task.ring)?);
+            }
             task.verifier_rows(&r.challenges, |row, constant| {
                 let mut sum: Option<Ciphertext> = None;
                 for (ct, block) in r.cts.iter().zip(row.chunks(n)) {
@@ -1137,7 +1211,14 @@ impl<'a> PineCollector<'a> {
         if cohort.iter().map(|(_, nonce)| nonce).collect::<HashSet<_>>().len() != n {
             return Err(Error::Protocol("a nonce appears twice in the request".into()));
         }
-        task.preflight(ciphertexts)?;
+        let fresh = self.reference.meta()?;
+        for report in ciphertexts.chunks(task.check_len()) {
+            let (copies, elements) = task.split_check(report);
+            for bytes in copies.chunks(task.fresh_len()) {
+                task.fresh_codec.unpack(bytes, 2, task.ring)?;
+            }
+            task.preflight(elements)?;
+        }
 
         self.ledger.reserve("batch", &batch)?;
         for (identity, nonce) in &cohort {
@@ -1149,12 +1230,25 @@ impl<'a> PineCollector<'a> {
         let mut verdicts = vec![0u8; n.div_ceil(8)];
         let mut verifiers = Vec::with_capacity(n);
         let mut accepted = 0u64;
-        for (i, report) in ciphertexts.chunks(task.verifier_len() * task.reduced_len()).enumerate() {
-            let mut verifier = Vec::with_capacity(task.verifier_len());
-            for bytes in report.chunks(task.reduced_len()) {
-                verifier.extend(self.open(bytes, &[0])?);
+        for (i, report) in ciphertexts.chunks(task.check_len()).enumerate() {
+            let (copies, elements) = task.split_check(report);
+            // Admission first: a report with a ciphertext whose phase is
+            // beyond the bound is rejected and none of its verifier
+            // elements is decrypted.
+            let mut admitted = true;
+            for bytes in copies.chunks(task.fresh_len()) {
+                let copy = task
+                    .ctx
+                    .build_ciphertext(&self.reference, &fresh, &task.fresh_codec.unpack(bytes, 2, task.ring)?)?;
+                admitted &= self.sk.phase_bits(&copy)? < ADMIT_BITS;
             }
-            if task.decide(&verifier)? {
+            let mut verifier = Vec::with_capacity(task.verifier_len());
+            if admitted {
+                for bytes in elements.chunks(task.reduced_len()) {
+                    verifier.extend(self.open(bytes, &[0])?);
+                }
+            }
+            if admitted && task.decide(&verifier)? {
                 verdicts[i / 8] |= 1 << (i % 8);
                 accepted += 1;
             }

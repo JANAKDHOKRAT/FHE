@@ -65,16 +65,21 @@ the task and key, the nonce, and the digest of each of `G`, `W`, `P`.
    folded into it. The check request, built once per batch, carries a
    random batch identifier; per report, in increasing order of identity:
    the identity's index, the nonce, the three digests and the signature
-   (never a ciphertext of the report); and per verifier element: the sum
-   over the report's ciphertexts of one plaintext product, the element at
-   coefficient 0, a fresh uniform mask on every other coefficient, noise
-   flooding, switch to one tower.
+   (never a ciphertext of the report); per report ciphertext an admission
+   copy: the ciphertext with a uniform plaintext on every coefficient and
+   `p` times a uniform 40-bit value added, at the full modulus; and per
+   verifier element: the sum over the report's ciphertexts of one
+   plaintext product, the element at coefficient 0, a fresh uniform mask
+   on every other coefficient, noise flooding, switch to one tower.
 3. **Collector.** Refuses the request while a checked batch awaits
    release. Decodes the whole request; verifies every identity (authorized,
    increasing, so each at most once) and every signature; records the
    batch identifier, the identities and the nonces as used (refusing any
-   it saw before); only then decrypts coefficient 0 of each ciphertext,
-   runs prio's `decide` on every proof, and returns one bit per report.
+   it saw before). Then, per report: measures the phase of each admission
+   copy and rejects the report, without decrypting its verifier, unless
+   all are below `2^96`; otherwise decrypts coefficient 0 of each verifier
+   ciphertext and runs prio's `decide` on every proof. Returns one bit per
+   report.
    With fewer accepted reports than the release threshold the batch is
    closed.
 4. **Evaluator.** Once per batch: sums the `G` ciphertexts of the accepted
@@ -86,6 +91,31 @@ the task and key, the nonce, and the digest of each of `G`, `W`, `P`.
    coordinates and decodes them (centered lift divided by `2^f`).
 
 Depth 0: plaintext products and additions only, no evaluation keys.
+
+### Admission: why a client's noise is bounded
+
+A client may send any two ring elements as a ciphertext. With a large
+phase a plaintext product wraps modulo `Q`, and the decrypted value is no
+longer a linear query of one fixed vector, which is what the FLP's
+soundness is stated for. `a_ciphertext_with_large_noise_is_not_evaluated_linearly`
+shows this on real ciphertexts: the plaintext decrypts intact, the
+product does not.
+
+The collector therefore measures the phase of a masked copy of every
+report ciphertext and admits a report only when all are below `2^96`. The
+mask is below `2^73`, so the phase of an admitted ciphertext is below
+`2^97`; a task is refused at creation unless, with that bound, every
+verifier element and the aggregate stay below `Q / 4` before masking and
+flooding. Then nothing wraps and every decrypted value is exactly the
+linear function of the plaintexts `phase mod p`, for every admitted
+ciphertext, honest or not. An honest ciphertext's masked copy has about 72
+bits (measured, not derived: an honest report over the bound would be a
+completeness failure, not a soundness one).
+
+Status of this argument: written here and in `PINE-REPAIR-STATUS.md`,
+checked by tests at both sides of the bound, **not reviewed**; it relies
+on the library's modulus switch adding at most `p (N + 1) / 2` to the
+phase, which is not re-derived here.
 
 ### What the challenge derivation binds, and what that does not prove
 
@@ -194,7 +224,7 @@ p = 4293918721):
   messages. The reference builds on VDAF draft 11 (a proof holds the
   coefficients of the gadget polynomial); prio 0.18.1 implements draft 18
   (it holds values, the Lagrange basis). Proving and verifying are prio's.
-* `tests/pine.rs` (14 tests, real ciphertexts, keys and signatures):
+* `tests/pine.rs` (16 tests, real ciphertexts, keys and signatures):
   * exact sums; the verifier the collector decrypts equals prio's `query`
     on the plaintext;
   * rejected among honest reports, with the sum unchanged: a norm beyond
@@ -218,7 +248,13 @@ p = 4293918721):
     process);
   * a request with a malformed last ciphertext is refused with no
     decryption and nothing recorded; nothing is released below the
-    release threshold.
+    release threshold;
+  * noise: a ciphertext with a 142-bit phase decrypts to its plaintext
+    but its product with a row does not decrypt to the product, while
+    with a 92-bit phase it does; a validly signed, challenge-consistent
+    report with such noise in its gradient or proof ciphertext is
+    rejected and none of its verifier elements is decrypted; with noise
+    inside the bound the report is accepted and summed exactly.
   Refusals "with no decryption" are asserted on the collector's count of
   decrypted ciphertexts, not on an error code alone.
   One test documents a limit instead of a protection:
@@ -233,7 +269,8 @@ p = 4293918721):
 * Every task creation compares both closed-form verifier maps with prio's
   `query` at a random point and refuses to start on a mismatch.
 
-The 47 tests that existed before still pass (73 in total).
+The 47 tests that existed before still pass (75 in total), and the
+wrapper's (38, one new: the exact phase measurement).
 
 ## Measured cost
 
@@ -245,17 +282,20 @@ MB = 10^6.
 
 | dimension | chunk (main / norm eq.) | proofs (main / norm eq.) | ciphertexts per report | report | check request per report | client | evaluator per report | collector per report | query soundness | joint randomness per attempt |
 |---:|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| 20 | 4 / 4 | 5 / 1 | 3 | 1.04 MB | 6.88 MB | 25 ms | 1.03 s | 55 ms | 2^-28.2 | 2^-107.6 |
-| 1000 | 2 / 4 | 5 / 1 | 5 | 1.74 MB | 4.42 MB | 38 ms | 0.66 s | 36 ms | 2^-23.0 | 2^-104.3 |
-| 1000 | 4 / 4 | 5 / 1 | 4 | 1.39 MB | 6.88 MB | 30 ms | 1.03 s | 52 ms | 2^-23.0 | 2^-104.3 |
-| 1000 | 8 / 4 | 5 / 1 | 3 | 1.04 MB | 11.80 MB | 30 ms | 1.77 s | 86 ms | 2^-23.0 | 2^-104.3 |
-| 1000 | 4 / 4 | 5 / 3 | 4 | 1.39 MB | 8.36 MB | 34 ms | 1.23 s | 62 ms | 2^-69.0 | 2^-104.3 |
-| 1000 | 4 / 4 | 7 / 3 | 4 | 1.39 MB | 10.81 MB | 32 ms | 1.61 s | 86 ms | 2^-69.0 | 2^-146.0 |
-| 10000 | 4 / 8 | 5 / 1 | 5 | 1.74 MB | 7.37 MB | 55 ms | 1.21 s | 56 ms | 2^-20.0 | 2^-104.3 |
-| 100000 | 4 / 16 | 5 / 1 | 18 | 6.27 MB | 8.36 MB | 256 ms | 2.78 s | 66 ms | 2^-18.0 | 2^-104.3 |
+| 20 | 4 / 4 | 5 / 1 | 3 | 1.04 MB | 7.93 MB | 25 ms | 0.83 s | 60 ms | 2^-28.2 | 2^-107.6 |
+| 1000 | 2 / 4 | 5 / 1 | 5 | 1.74 MB | 6.16 MB | 41 ms | 0.62 s | 59 ms | 2^-23.0 | 2^-104.3 |
+| 1000 | 4 / 4 | 5 / 1 | 4 | 1.39 MB | 8.27 MB | 30 ms | 0.93 s | 64 ms | 2^-23.0 | 2^-104.3 |
+| 1000 | 8 / 4 | 5 / 1 | 3 | 1.04 MB | 12.84 MB | 21 ms | 1.57 s | 97 ms | 2^-23.0 | 2^-104.3 |
+| 1000 | 4 / 4 | 5 / 3 | 4 | 1.39 MB | 9.75 MB | 28 ms | 1.06 s | 78 ms | 2^-69.0 | 2^-104.3 |
+| 1000 | 4 / 4 | 7 / 3 | 4 | 1.39 MB | 12.21 MB | 30 ms | 1.32 s | 86 ms | 2^-69.0 | 2^-146.0 |
+| 10000 | 4 / 8 | 5 / 1 | 5 | 1.74 MB | 9.11 MB | 47 ms | 1.10 s | 82 ms | 2^-20.0 | 2^-104.3 |
+| 100000 | 4 / 16 | 5 / 1 | 18 | 6.27 MB | 14.62 MB | 222 ms | 2.80 s | 154 ms | 2^-18.0 | 2^-104.3 |
 
 A report carries 96 bytes of identity and signature, a check request 180
-bytes per report besides the ciphertexts. The aggregate request is one
+bytes per report besides the ciphertexts. The check request now also
+holds one admission copy (348,160 bytes) per report ciphertext: that is
+the growth over the previous table of this file's history, 1.0 to 6.3 MB
+per report. The aggregate request is one
 ciphertext of 122,888 bytes per 8192 gradient coordinates, plus 72 bytes.
 The client's time includes signing and deriving the key context; the
 collector's includes verifying the signatures, decoding every ciphertext
@@ -270,8 +310,10 @@ Reading the table:
 * Going from 5 to 7 main proofs (the VDAF draft's `2^-128` guidance, see
   above) costs 20 more verifier ciphertexts per report here: 8.36 MB to
   10.81 MB and about a quarter more evaluator time.
-* The collector's work does not grow with the dimension; the evaluator's
-  grows slowly (it reads more ciphertexts per verifier element).
+* The collector's work grows with the number of report ciphertexts (one
+  phase measurement each) and otherwise not with the dimension; the
+  evaluator's grows slowly (it reads more ciphertexts per verifier
+  element).
 
 ## Limits of the parameters
 
@@ -306,6 +348,9 @@ Reading the table:
   * the FLP's zero knowledge is prio's and the VDAF draft's, for honestly
     generated proofs queried once; that a verifier message is all the
     collector learns per report rests on the points above.
+* **Admission.** The argument above is not reviewed, and the privacy of
+  the admission copies towards the collector is argued, not proved
+  (`PINE-REPAIR-STATUS.md`, section 4).
 * **The composition.** No proof covers FLP, wraparound tests, challenge
   derivation and encryption together. The table of probabilities is an
   accounting of known bounds, with the wraparound bound taken from the
@@ -323,8 +368,6 @@ Reading the table:
   proof of the evaluator's computation that the collector can check
   without seeing reports (`PINE-REPAIR-STATUS.md`, section 5); none
   exists here.
-* **Nothing bounds the noise of a client's ciphertexts**
-  (`PINE-REPAIR-STATUS.md`, section 4).
 * The evaluator can leave reports out.
 * The evaluator learns the verdicts. `OBLIVIOUS-AGGREGATION-PLAN.md`
   describes hiding them; the implementation on `main`

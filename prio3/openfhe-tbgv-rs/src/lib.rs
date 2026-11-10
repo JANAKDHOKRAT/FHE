@@ -807,6 +807,19 @@ impl SecretShare {
         Ok(out.iter().map(|&v| self.ctx.uncenter(v)).collect())
     }
 
+    /// Bit length of the largest coefficient magnitude of `ct`'s phase
+    /// `c0 + c1 * s`, as centered integers modulo `ct`'s whole modulus (0
+    /// for the zero phase), computed exactly. The phase of an encryption of
+    /// `m` with noise `e` is `m + t * e`: a key holder uses this to refuse
+    /// ciphertexts whose noise is beyond a bound.
+    pub fn phase_bits(&self, ct: &Ciphertext) -> Result<u32> {
+        let mut bits = 0u32;
+        if unsafe { ffi::tbgv_phase_bits(self.ctx.raw(), ct.ptr, self.ptr, &mut bits) } == 0 {
+            return Err(last_error());
+        }
+        Ok(bits)
+    }
+
     /// Single-share decryption. With more than one party this returns
     /// garbage by construction; it exists so tests can demonstrate that.
     pub fn decrypt_alone_for_tests(&self, ct: &Ciphertext, num_slots: usize) -> Result<Vec<u64>> {

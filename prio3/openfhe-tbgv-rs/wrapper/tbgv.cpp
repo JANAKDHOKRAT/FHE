@@ -1076,6 +1076,41 @@ int tbgv_raw_decrypt_for_tests(TbgvContext ctx, TbgvCiphertext h, const TbgvSecr
     TBGV_CATCH(0)
 }
 
+// Bit length of max_j |phase_j|, phase = c0 + c1 * s as centered integers
+// modulo the ciphertext's whole modulus (0 for the zero phase). Exact: the
+// phase is CRT-interpolated. For a key holder that must refuse ciphertexts
+// whose noise is beyond a bound before it evaluates or decrypts them.
+int tbgv_phase_bits(TbgvContext ctx, TbgvCiphertext h, TbgvSecretKey sk, uint32_t* bits) {
+    TBGV_TRY
+    (void)ctx;
+    if (bits == nullptr) { set_error("missing output"); return 0; }
+    const CT& ct = ct_of(h);
+    const auto& el = ct->GetElements();
+    if (el.size() != 2) { set_error("phase expects a two-element ciphertext"); return 0; }
+    const size_t towers = el[0].GetNumOfElements();
+    DCRTPoly s = sk_of(sk)->GetPrivateElement();
+    if (s.GetNumOfElements() < towers) { set_error("secret has fewer towers than the ciphertext"); return 0; }
+    s.DropLastElements(s.GetNumOfElements() - towers);
+    s.SetFormat(el[1].GetFormat());
+    DCRTPoly x = el[1] * s;
+    DCRTPoly c0 = el[0];
+    c0.SetFormat(el[1].GetFormat());
+    x += c0;
+    x.SetFormat(Format::COEFFICIENT);
+    DCRTPoly::PolyLargeType big = x.CRTInterpolate();
+    const BigInteger Q = big.GetModulus();
+    const BigInteger half = Q >> 1;
+    BigInteger mx(0);
+    for (usint i = 0; i < big.GetLength(); ++i) {
+        const BigInteger& v = big[i];
+        const BigInteger a = v > half ? Q - v : v;
+        if (a > mx) mx = a;
+    }
+    *bits = static_cast<uint32_t>(mx.GetMSB());
+    return 1;
+    TBGV_CATCH(0)
+}
+
 TbgvPublicKey tbgv_pubkey_inflate_for_tests(TbgvContext ctx, TbgvPublicKey h, uint32_t log2_k, uint64_t seed, int constant) {
     TBGV_TRY
     const auto& el = pk_of(h)->GetPublicElements();

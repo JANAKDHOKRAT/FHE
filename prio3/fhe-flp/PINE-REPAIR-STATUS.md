@@ -11,7 +11,7 @@ red.**
 |---|---|
 | 2. Security contract | Written: `PINE-THREAT-MODEL.md`. Not reviewed by anyone else |
 | 3. Canonical transcript, authenticated cohort | Done in code, with limits below |
-| 4. Challenge binding: construction and proof | **Not done.** Route B specified below; obligations open; one obstacle identified |
+| 4. Challenge binding: construction and proof | **Not done.** Route B specified below. The ciphertext-admission obstacle is demonstrated and has a construction with a written, unreviewed argument; the other obligations are open |
 | 5. Authenticated computation before decryption | **Not done.** Relation stated below; no proof system |
 | 6. Randomness ownership, ciphertext privacy | Ownership table below. **Privacy theorem not done** |
 | 7. Collector state machine | Done in code, with limits below |
@@ -81,29 +81,73 @@ randomness; `P` before the query points, which the client never learns.
 
 ### What a proof has to establish, and where it stands
 
-1. **The committed input is well defined.** The argument "decryption is
-   a function of the bytes" needs a single plaintext vector that every
-   verifier element is a linear query of. *Obstacle identified:* this
-   holds for ciphertexts whose noise is small, and fails otherwise. A
-   verifier element is decrypted from `X = sum over ciphertexts of
-   <row, phase>` reduced modulo `Q`. All three moduli of the context are
-   1 modulo `p` (checked on the context in use), so the decrypted value is
+1. **The committed input is well defined (client ciphertext admission).**
+   The argument "decryption is a function of the bytes" needs a single
+   plaintext vector that every verifier element is a linear query of.
 
-       <row, phase mod p> + constant - k   (mod p),   k = number of wraps of X modulo Q
+   *The problem, demonstrated.* A verifier element is decrypted from
+   `X = sum over ciphertexts of <row, phase>` reduced modulo `Q`. All
+   three moduli of the context are 1 modulo `p` (checked), so the
+   decrypted value is `<row, phase mod p> + constant - k (mod p)` with
+   `k` the number of wraps of `X` modulo `Q`. For an honest encryption
+   `k = 0`; for arbitrary ring elements it is not, and the verifier is no
+   longer linear in a fixed vector.
+   `a_ciphertext_with_large_noise_is_not_evaluated_linearly` shows it on
+   real ciphertexts.
 
-   For an honest encryption `k = 0`. A client may send any two ring
-   elements as a ciphertext; with a large phase, `k` is nonzero and
-   depends on the row, so the verifier is no longer a linear function of
-   a fixed vector, and prio's FLP soundness statement does not apply as
-   written. The aggregate sums phases without a product, so the same
-   ciphertext can be within range there. **Nothing in this protocol
-   bounds a client's noise.** Whether a wrap can be steered to pass an
-   invalid input is not known here; rows of the gadget test have
-   coefficients that depend on the secret query point, which suggests it
-   is hard, and that is not a proof. Closing this needs either a client
-   proof of a bounded encryption witness (all admitted values of
-   randomness and error stated and covered), or an argument that no
-   admitted wrap helps. Neither exists.
+   *The construction.* Per report ciphertext `ct = (c0, c1)` the
+   evaluator sends the collector `copy = (c0 + u + p r, c1)` at the full
+   modulus, `u` a uniform plaintext on every coefficient, `r` uniform of
+   40 bits per coefficient. The collector computes the phase of the copy
+   exactly (`SecretShare::phase_bits`) and admits the report only if every
+   copy is below `2^96`.
+
+   *The argument (E1: honest evaluator and collector).*
+   * `|u + p r| < 2^32 + 2^72`, so an admitted ciphertext has
+     `|phase| < 2^96 + 2^73 < 2^97`.
+   * A verifier element sums, over at most `C` ciphertexts, `N = 8192`
+     products of a plaintext coefficient below `p < 2^32` with a phase
+     coefficient: `|X| < C N p 2^97`. Task creation refuses unless
+     `97 + ceil(log2 C) + 13 + 32 + 2 <= floor(log2 Q)`, that is
+     `|X| < Q / 4` (`Q` is about `2^170`; `C <= 18` in the measurements).
+     The aggregate, at most `2^24` phases, is smaller.
+   * The mask adds less than `2^32` and the flooding less than `Q / 8`
+     (`p 2^(w - 1)` with `w = floor(log2 Q) - 34`), so the phase stays
+     below `Q / 2`: no wrap, `k = 0`.
+   * The modulus switch divides the phase by the dropped modulus and adds
+     at most `p (N + 1) / 2` (the library's rounding with a ternary
+     secret; read off OpenFHE 1.3.1 by the analysis on `main`, **not
+     re-derived here**), which keeps it below half the remaining modulus.
+   * Hence every decrypted verifier element equals prio's `query` on the
+     vector `m = (phase mod p)` of the report's ciphertexts, and the
+     aggregate equals the sum of those vectors' gradient coordinates: one
+     fixed vector per report, a function of the ciphertext bytes and the
+     collector's key, for **every admitted ciphertext**.
+
+   *Evidence.* `noise_beyond_the_admission_bound_is_refused_before_the_verifier_is_decrypted`:
+   a signed, challenge-consistent report with a 142-bit phase in its
+   gradient or proof ciphertext is rejected with none of its verifier
+   elements decrypted; with a 92-bit phase it is accepted and summed
+   exactly through the real flooding and modulus switch.
+
+   *What is still open here.*
+   * The argument is not reviewed, and the modulus-switch bound is cited.
+   * Completeness is measured, not derived: an honest masked copy has
+     about 72 bits, 24 below the bound; no worst-case bound on an honest
+     client's phase is derived.
+   * Privacy of the copies towards the collector (experiment E3). The
+     collector sees `c1` of every report ciphertext and `c0 + u + p r`.
+     Informally: the copy decrypts to `m + u` modulo `p`, uniform; the
+     integer carry of `m + u` is hidden by `p r` up to about `2^-40` per
+     coefficient given the client's own noise is far smaller; `c1` is an
+     RLWE sample under the client's randomness. **Not proved**, and it is
+     a new exposure: the key holder now stores one component of each
+     report ciphertext, so the deployment boundary of the threat model
+     matters more, not less.
+   * Against a malicious evaluator the copies prove nothing (it makes
+     them); and such an evaluator could send unmasked report ciphertexts
+     as "copies". That is collusion-equivalent only if the collector then
+     decrypts them; an honest collector only measures their phase.
 2. **Extraction order.** In the random-oracle model for the XOF and
    SHA-256, with an honest collector key: the plaintext of `G` (given 1)
    is fixed before `wr_seed` is queried, that of `G` and `W` before
@@ -177,7 +221,8 @@ refusal test that can be refused today.
 | Value | Generated by | Distribution | Seen by | Lifetime | If biased, reused or revealed |
 |---|---|---|---|---|---|
 | nonce | client, OS randomness | 16 uniform bytes | evaluator, collector | one report | reuse: the report is refused; predictability alone does not help a client (challenges also depend on its ciphertexts) |
-| encryption randomness of `G`, `W`, `P` | client, OpenFHE's samplers | the library's ternary and Gaussian | nobody (inside the ciphertexts) | one report | the client's own privacy; a malicious client may use any values (section 4, item 1) |
+| encryption randomness of `G`, `W`, `P` | client, OpenFHE's samplers | the library's ternary and Gaussian | nobody (inside the ciphertexts) | one report | the client's own privacy; a malicious client may use any values: admitted only with a phase below `2^97` (section 4, item 1) |
+| masks of the admission copies | evaluator, OS randomness (plaintext part) and `flood` (the `p r` part) | uniform field elements; uniform 40-bit values | nobody | one copy | revealed to the collector: it decrypts that report ciphertext |
 | prover randomness | client, OS randomness expanded by XofTurboShake128 | uniform field elements | nobody | one report | reuse or bias: the FLP's zero knowledge for that client |
 | signing key | client | Ed25519 | nobody | the client's | compromise: reports in its name |
 | wraparound vectors, joint randomness | derived by hashing | as PINE samples them | evaluator; client | one report | public by design; soundness rests on when they become known |
@@ -231,7 +276,7 @@ analysed (the verdict bits themselves are the documented reaction).
 | 6. proof for one descriptor paired with another | No computation proofs exist. For signatures: another round and another key are refused |
 | 7. malformed ciphertext in the last position | Refused, no decryption, nothing recorded (`a_malformed_ciphertext_...`). Malformed proofs: none exist |
 | 8. crash at every durable transition, concurrency, rollback | **Not done.** Only re-creation of both parties from stored key and ledger |
-| 9. altered masks, reused randomness, invalid encryption witnesses, noise growth | **Not done** |
+| 9. altered masks, reused randomness, invalid encryption witnesses, noise growth | Partly: ciphertexts that are not honest encryptions (noise beyond and inside the admission bound) are tested. Altered masks and reused randomness: **not done** |
 
 Challenge code: domain separation by task and key is exercised through
 the cross-round and cross-key refusals; the reference vectors cover the

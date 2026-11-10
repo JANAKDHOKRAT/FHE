@@ -717,3 +717,134 @@ fn known_limit_an_evaluator_that_deviates_can_substitute_the_sum() {
     assert_eq!(released, expected(task.shape(), &[&other]));
     assert_ne!(released, expected(task.shape(), &[&honest]));
 }
+
+/// Adds `p * 2^log2` to every residue of the first element of a ciphertext
+/// (`residues`: element, then tower, then position). The plaintext is
+/// unchanged modulo `p`; the phase grows to about `log2 + 32` bits.
+fn add_noise(moduli: &[u64], residues: &mut [u64], log2: u32) {
+    let n = residues.len() / (2 * moduli.len());
+    for (t, &q) in moduli.iter().enumerate() {
+        let mut d = (PLAIN_MOD % q) as u128;
+        for _ in 0..log2 {
+            d = d * 2 % q as u128;
+        }
+        for r in &mut residues[t * n..(t + 1) * n] {
+            *r = ((*r as u128 + d) % q as u128) as u64;
+        }
+    }
+}
+
+/// The same on the first ciphertext of a report part, as bytes.
+fn add_noise_to_part(task: &PineTask, bytes: &mut [u8], log2: u32) {
+    let moduli = task.context().moduli().unwrap();
+    let codec = fhe_flp::codec::ResidueCodec::new(&moduli).unwrap();
+    let len = codec.len(2, 8192);
+    let mut residues = codec.unpack(&bytes[..len], 2, 8192).unwrap();
+    add_noise(&moduli, &mut residues, log2);
+    bytes[..len].copy_from_slice(&codec.pack(&residues, 2, 8192).unwrap());
+}
+
+/// Why admission exists, on real ciphertexts. Two ring elements that are
+/// not an honest encryption still decrypt, coefficient by coefficient, to a
+/// plaintext; but a plaintext product of them does not decrypt to the
+/// product of that plaintext: the phase wraps modulo Q. The FLP's
+/// soundness is stated for linear queries of one fixed vector, which such
+/// a ciphertext does not provide. Its phase is far beyond the admission
+/// bound; that of an honest ciphertext, even masked as the evaluator masks
+/// the copy it sends, is far below.
+#[test]
+fn a_ciphertext_with_large_noise_is_not_evaluated_linearly() {
+    let (task, _) = task(20, 15, 1);
+    let ctx = task.context();
+    let moduli = ctx.moduli().unwrap();
+    openfhe_tbgv_rs::verify_single_rebuild_once(ctx).unwrap();
+    let (pk, sk) = openfhe_tbgv_rs::keygen_first(ctx).unwrap();
+    let n = 8192;
+    let mut state = 5u64;
+    let mut random = || {
+        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        (state >> 16) % PLAIN_MOD
+    };
+    let m: Vec<u64> = (0..n).map(|_| random()).collect();
+    let mut q: Vec<u64> = (0..n).map(|_| random()).collect();
+    q[0] = PLAIN_MOD / 2; // a coefficient of full size where the noise goes
+    // Coefficient 0 of q * m modulo X^n + 1 and p.
+    let mut want = q[0] as u128 * m[0] as u128 % PLAIN_MOD as u128;
+    for i in 1..n {
+        want = (want + PLAIN_MOD as u128 - q[n - i] as u128 * m[i] as u128 % PLAIN_MOD as u128) % PLAIN_MOD as u128;
+    }
+    let row = ctx.coef_plaintext(&q).unwrap();
+    let honest = ctx.encrypt(&pk, &ctx.coef_plaintext(&m).unwrap()).unwrap();
+    assert_eq!(sk.decrypt_coeffs(&ctx.mult_plain(&honest, &row).unwrap(), &[0]).unwrap(), vec![want as u64]);
+
+    let with_noise = |log2: u32| {
+        let mut residues = honest.export_residues().unwrap();
+        add_noise(&moduli, &mut residues, log2);
+        ctx.build_ciphertext(&honest, &honest.meta().unwrap(), &residues).unwrap()
+    };
+    // Noise of about 142 bits: the plaintext is intact, the product is not.
+    let noisy = with_noise(110);
+    let first: Vec<u32> = (0..64).collect();
+    assert_eq!(sk.decrypt_coeffs(&noisy, &first).unwrap(), m[..64]);
+    assert_ne!(sk.decrypt_coeffs(&ctx.mult_plain(&noisy, &row).unwrap(), &[0]).unwrap(), vec![want as u64]);
+    assert!(sk.phase_bits(&noisy).unwrap() > 140);
+    // Noise of about 92 bits, inside the admission bound: the product is exact.
+    let bounded = with_noise(60);
+    assert_eq!(sk.decrypt_coeffs(&ctx.mult_plain(&bounded, &row).unwrap(), &[0]).unwrap(), vec![want as u64]);
+    assert!((90..96).contains(&sk.phase_bits(&bounded).unwrap()));
+    // An honest ciphertext, and its masked copy, are far below the bound.
+    let mask: Vec<u64> = (0..n).map(|_| random()).collect();
+    let copy = ctx.flood(&ctx.add_plain(&honest, &ctx.coef_plaintext(&mask).unwrap()).unwrap(), 40).unwrap();
+    let (fresh_bits, copy_bits) = (sk.phase_bits(&honest).unwrap(), sk.phase_bits(&copy).unwrap());
+    assert!(
+        fresh_bits < 64 && (70..=74).contains(&copy_bits),
+        "fresh {fresh_bits} bits, masked copy {copy_bits} bits"
+    );
+}
+
+/// A validly signed report, consistent with its challenges, whose gradient
+/// (or proof) ciphertext has noise beyond the admission bound: rejected,
+/// none of its verifier elements is decrypted, the honest sum is intact.
+/// With noise inside the bound the same report is accepted and summed
+/// exactly, through the real flooding and modulus switch.
+#[test]
+fn noise_beyond_the_admission_bound_is_refused_before_the_verifier_is_decrypted() {
+    let (task, keys) = task(20, 16, 4);
+    let dir = TempDir::new();
+    let (mut collector, pk) = PineCollector::new(&task, dir.path()).unwrap();
+    let shape = task.shape().clone();
+    let client = |i: usize| PineClient::new(&task, &pk, &keys[i]).unwrap();
+    let g: Vec<Vec<f64>> = (0..4).map(|i| gradient(20, 100 + i)).collect();
+    let tampered = |i: usize, part: usize, log2: u32| {
+        client(i)
+            .shard_tampered(
+                &shape.encode_gradient_and_norm(&g[i]).unwrap(),
+                |results| honest_claim(&shape, results),
+                &|p, bytes| {
+                    if p == part {
+                        add_noise_to_part(&task, bytes, log2);
+                    }
+                },
+            )
+            .unwrap()
+    };
+    let reports = vec![
+        client(0).shard(&g[0]).unwrap(),
+        tampered(1, PART_GRADIENT, 110),
+        tampered(2, PART_PROOFS, 110),
+        tampered(3, PART_GRADIENT, 60),
+    ];
+    let mut evaluator = PineEvaluator::new(&task, &pk, VERIFY_KEY, dir.path()).unwrap();
+    for r in &reports {
+        evaluator.ingest(r).unwrap();
+    }
+    let verdicts = collector.check(&evaluator.check_request().unwrap()).unwrap();
+    assert_eq!(verdicts, vec![0b1001]);
+    assert_eq!(
+        collector.decryptions(),
+        2 * task.verifier_len() as u64,
+        "only the admitted reports' verifiers were decrypted"
+    );
+    let sum = collector.unshard(&evaluator.aggregate_request(&verdicts).unwrap()).unwrap();
+    assert_eq!(sum, expected(&shape, &[&g[0], &g[3]]));
+}

@@ -80,6 +80,13 @@ makes a valid report invalid.
 | joint randomness under which an invalid measurement makes the main circuit 0 in every proof | `((bit_checked_len + 101) / p)^k` per offline attempt (`log2_joint_rand_per_attempt`) | Schwartz-Zippel on the three random combinations; a client can try nonces and encryptions offline |
 | a squared norm that wraps the field modulus passes all wraparound tests | `2^-100` per offline attempt | each test detects a wraparound with probability at least 1/2: [ROCT23] as cited by the draft, **not re-proved here** |
 
+The VDAF draft (section 9.7) asks circuits with joint randomness to aim
+for `(circuit_soundness + flp_soundness)^PROOFS` close to `2^-128`. At
+norm bound 1.0 with 15 fractional bits and chunk length 4 that expression
+is `2^-99.6` with the reference's 5 main proofs and `2^-139.5` with 7
+(`num_proofs` is a task parameter). The wraparound line stays at `2^-100`
+whatever the proof count: it is fixed by PINE's 100 tests.
+
 With the reference's proof counts for this field (5 main proofs, 1
 norm-equality proof) the first line is weak: `2^-23` at dimension 1000
 and `2^-18` at dimension 100000 (table below), because a single
@@ -98,18 +105,25 @@ p = 4293918721):
   layout of the test vectors; both circuits are 0 on honest inputs and
   nonzero for each kind of violation; the closed-form verifier maps equal
   prio's `query` on random points; prio proves and decides both circuits.
-* `tests/pine_upstream.rs` (2 tests): the gradient encoding and the decoded
-  aggregate against the reference's 8 `Field32` test vectors (16 reports);
-  both circuits against `pine-bgv-port/port/pine-circuit`, written
-  separately from the same reference, on random inputs.
-  **Not compared with the reference's vectors:** the bit-checked part of a
-  measurement, proofs and verifier messages. The vectors hold the helpers'
-  shares as seeds, and expanding them with the reference's XOF as shipped
-  next to the vectors does not reproduce the vectors' own output shares, so
-  the full measurement cannot be recombined without running the reference
-  (Sage and the VDAF draft-11 library, not available here). Proofs differ
-  in any case: the reference builds on VDAF draft 11, prio 0.18.1 on
-  draft 18.
+* `tests/pine_upstream.rs` (3 tests), against the reference's `Field32`
+  test vectors:
+  * for the four vectors with the reference's default 100 wraparound tests
+    (8 reports), each measurement is recombined from its shares with the
+    reference's XOF and tags, and must equal what this crate encodes from
+    the vector's floats: the gradient, the norm bits, and the wraparound
+    part produced from the stream the reference derives. Both circuits are
+    0 on it with the reference's joint randomness and nonzero on modified
+    measurements, and the two joint-randomness seeds equal the vector's.
+  * for all eight vectors (16 reports) the gradient encoding and the
+    decoded aggregate match. (Four vectors use 75 wraparound tests, which
+    this crate does not offer.)
+  * both circuits agree with `pine-bgv-port/port/pine-circuit`, written
+    separately from the same reference, on random inputs.
+
+  **Not compared with the reference's vectors:** proofs and verifier
+  messages. The reference builds on VDAF draft 11 (a proof holds the
+  coefficients of the gadget polynomial); prio 0.18.1 implements draft 18
+  (it holds values, the Lagrange basis). Proving and verifying are prio's.
 * `tests/pine.rs` (9 tests, real ciphertexts and keys): exact sums; the
   verifier the collector decrypts equals prio's `query` on the plaintext;
   rejected among honest reports, with the sum unchanged: a norm beyond the
@@ -125,7 +139,7 @@ p = 4293918721):
 * Every task creation compares both closed-form verifier maps with prio's
   `query` at a random point and refuses to start on a mismatch.
 
-The 47 tests that existed before still pass (66 in total).
+The 47 tests that existed before still pass (67 in total).
 
 ## Measured cost
 
@@ -181,8 +195,8 @@ Reading the table:
 * No security proof of the composition. The table of probabilities above
   is an accounting of known bounds, with the wraparound bound taken from
   the literature.
-* The full measurement and the proofs are not compared with the
-  reference's test vectors (see above).
+* Proofs and verifier messages are not compared with the reference's
+  test vectors (different VDAF draft, see above).
 * This is aggregation only: no training loop, no clipping policy, no
   differential-privacy noise, no client authentication.
 * One run per measurement on a shared machine: the times are indications.

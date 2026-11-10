@@ -11,9 +11,10 @@ through `../openfhe-tbgv-rs`.
 
 **Status: research implementation, tested end to end with real
 ciphertexts. Not production certified, and not secure against an evaluator
-that deviates.** "Not proved" and "Not done" below list what is missing;
-nothing in this file claims more than the tests and measurements named in
-it.
+that deviates.** `PINE-THREAT-MODEL.md` states what is to be achieved
+against whom; `PINE-REPAIR-STATUS.md` states, per section of
+`PINE-SECURITY-FIX-GUIDE.md`, what is done and what is not. Nothing in
+this file claims more than the tests and measurements named in it.
 
 ## Parties and trust
 
@@ -29,8 +30,15 @@ malicious.
 
 ## Protocol
 
-A report is `nonce || G || W || P`, each part one or more ciphertexts of
-8192 coefficients:
+The task is a descriptor (`src/pine/descriptor.rs`) with one canonical
+binary encoding: application identifier, model hash, round, the PINE
+parameters, a release threshold and the Ed25519 verification keys of the
+clients authorized to report. Its hash, with the constants the code fixes
+(wraparound parameters, field, BGV ring and moduli), and separately the
+collector's public key, enter every derivation and every signature.
+
+A report is `nonce || G || W || P || identity || signature`; `G`, `W`
+and `P` are each one or more ciphertexts of 8192 coefficients:
 
 | Part | Plaintext coefficients |
 |---|---|
@@ -38,32 +46,43 @@ A report is `nonce || G || W || P`, each part one or more ciphertexts of
 | `W` | per wraparound test: the bits of the shifted dot product and the success bit |
 | `P` | the norm-equality proofs, then the main proofs |
 
+The signature is the client's, over the report's commitment: the hash of
+the task and key, the nonce, and the digest of each of `G`, `W`, `P`.
+
 1. **Client.** Encodes the gradient (`round(x * 2^f)`, ties to even),
    encrypts `G`, derives the 100 wraparound test vectors from the nonce and
    the bytes of `G`, runs the tests, encrypts `W`, derives the joint
    randomness from the nonce and the bytes of `G` and `W`, proves both
    circuits with prio's `Flp::prove`, encrypts `P`. If a wraparound test
    fails on an honest gradient the client starts again with a new nonce.
-2. **Evaluator.** Refuses a nonce it accepted before for the task.
-   Re-derives the test vectors and the joint randomness from the bytes it
-   received, and the query points from its `verify_key` and the whole
-   report. Each verifier element is an affine function of the report's
-   plaintext; the dot products of the wraparound tests are linear in the
-   gradient and are folded into it. The check request, built once per
-   batch, carries a random batch identifier, the nonces, and per verifier
-   element: the sum over the report's ciphertexts of one plaintext
-   product, the element at coefficient 0, a fresh uniform mask on every
-   other coefficient, noise flooding, switch to one tower.
-3. **Collector.** Decodes the whole request, records the batch identifier
-   and every nonce as used (refusing any it saw before), then decrypts
-   coefficient 0 of each ciphertext, runs prio's `decide` on every proof,
-   and returns one bit per report.
+2. **Evaluator.** Refuses a report whose identity is not authorized,
+   whose signature does not verify, or whose identity or nonce it accepted
+   before for the task. Re-derives the test vectors and the joint
+   randomness from the digests of what it received, and the query points
+   from its `verify_key` and the report's commitment. Each verifier
+   element is an affine function of the report's plaintext; the dot
+   products of the wraparound tests are linear in the gradient and are
+   folded into it. The check request, built once per batch, carries a
+   random batch identifier; per report, in increasing order of identity:
+   the identity's index, the nonce, the three digests and the signature
+   (never a ciphertext of the report); and per verifier element: the sum
+   over the report's ciphertexts of one plaintext product, the element at
+   coefficient 0, a fresh uniform mask on every other coefficient, noise
+   flooding, switch to one tower.
+3. **Collector.** Refuses the request while a checked batch awaits
+   release. Decodes the whole request; verifies every identity (authorized,
+   increasing, so each at most once) and every signature; records the
+   batch identifier, the identities and the nonces as used (refusing any
+   it saw before); only then decrypts coefficient 0 of each ciphertext,
+   runs prio's `decide` on every proof, and returns one bit per report.
+   With fewer accepted reports than the release threshold the batch is
+   closed.
 4. **Evaluator.** Once per batch: sums the `G` ciphertexts of the accepted
    reports, masks every coefficient that is not a gradient coordinate,
-   floods, switches to one tower; sends it with the batch identifier and
-   the accepted count.
-5. **Collector.** Requires the batch it just checked and the count it
-   accepted, records the release as used, then decrypts the gradient
+   floods, switches to one tower; sends it with the batch identifier, the
+   hash of the batch's commitments and verdicts, and the accepted count.
+5. **Collector.** Requires the batch it just checked, that hash and that
+   count, records the release as used, then decrypts the gradient
    coordinates and decodes them (centered lift divided by `2^f`).
 
 Depth 0: plaintext products and additions only, no evaluation keys.
@@ -99,29 +118,29 @@ exclusively and synced to disk before the party goes on (`Ledger` in
 
 | Rule | Enforced by | When |
 |---|---|---|
-| a report nonce is accepted once per task | evaluator | at ingestion, across batches and restarts |
-| a batch identifier is checked once | collector | before anything in the request is decrypted |
-| a nonce is checked once | collector | same |
-| the sum of a checked batch is released once | collector | recorded before the aggregate is decrypted |
+| an identity reports once per task, a nonce is accepted once | evaluator | at ingestion, across batches and restarts |
+| a batch identifier, an identity and a nonce are checked once | collector | after the cohort is authenticated, before anything in the request is decrypted |
+| nothing is checked while a checked batch awaits release | collector | in memory; `abandon` gives the batch up for good |
+| the sum of a checked batch is released once, and only at the release threshold | collector | recorded before the aggregate is decrypted |
 | one check request and one aggregate request per batch | evaluator | in memory |
 
-A request refused by these rules leaves a checked batch releasable. A
-batch that was checked but not released before the collector restarts is
-lost (`with_keys` starts with nothing pending).
+A batch that was checked but not released before the collector restarts
+is lost (`with_keys` starts with nothing pending). A client whose report
+was ingested by an evaluator that then failed cannot report again in that
+task: there is no retry within a round.
 
 Limits of these rules:
 * The ledger directory must be on a local file system that honours
   exclusive creation and `fsync`, be writable only by its owner, and never
   be rolled back or emptied while the keys are in use. Deleting it removes
   the protection. Markers are never removed.
-* The nonces in a check request are the evaluator's statement. The
-  collector cannot see reports, so it cannot tell whether a ciphertext
-  belongs to the nonce listed with it. The rules stop repetition by an
-  evaluator that follows the protocol (including after a crash or a
-  restore of its own state); they do not constrain one that deviates.
-* A client can still submit the same gradient twice under two nonces, and
-  nothing identifies clients: there is no protection against fabricated
-  (Sybil) reports.
+* The identities, nonces and digests of a check request are signed by
+  the clients, so the evaluator cannot invent them. The collector cannot
+  see reports, though, so it cannot tell whether a ciphertext it decrypts
+  was computed from the report listed with it.
+* Who is on the list of authorized identities is the application's
+  decision: a list with fabricated identities gives fabricated reports.
+* The evaluator can leave reports out; the collector cannot know.
 
 ## What a cheating client can hope for
 
@@ -175,20 +194,38 @@ p = 4293918721):
   messages. The reference builds on VDAF draft 11 (a proof holds the
   coefficients of the gadget polynomial); prio 0.18.1 implements draft 18
   (it holds values, the Lagrange basis). Proving and verifying are prio's.
-* `tests/pine.rs` (12 tests, real ciphertexts and keys): exact sums; the
-  verifier the collector decrypts equals prio's `query` on the plaintext;
-  rejected among honest reports, with the sum unchanged: a norm beyond the
-  bound, a squared norm that wraps the field modulus (both ways of
-  claiming the tests), a claimed bit that is not a bit; the binding checks
-  above; coefficients outside the layout change nothing; malformed and
-  replayed reports and wrong counts are refused; a gradient of 9000
-  coordinates over two ciphertexts; the single-use rules, also after both
-  parties are rebuilt from the stored key and the same ledger directory
-  (objects re-created in one process, not a killed process); a request
-  with a malformed ciphertext, or with one nonce twice, is refused before
-  anything is recorded or decrypted.
+* `tests/pine.rs` (14 tests, real ciphertexts, keys and signatures):
+  * exact sums; the verifier the collector decrypts equals prio's `query`
+    on the plaintext;
+  * rejected among honest reports, with the sum unchanged: a norm beyond
+    the bound, a squared norm that wraps the field modulus (both ways of
+    claiming the tests), a claimed bit that is not a bit;
+  * byte binding: a client's own valid report with a part of another
+    valid report, a re-encrypted gradient part or another nonce is refused
+    by the evaluator when the signature is the old one, and rejected by
+    the proofs when the client signs it again;
+  * coefficients outside the layout change nothing; a gradient of 9000
+    coordinates over two ciphertexts; malformed and replayed reports and
+    wrong requests are refused;
+  * the cohort: a check request with a changed signature, digest, nonce
+    or identity, an identity outside the task, one client twice, or
+    reordered entries is refused with no decryption and nothing recorded;
+    a report signed outside the task, or made for another round or
+    another collector key, is refused by the evaluator;
+  * the single-use rules, the pending-batch rule and `abandon`, also
+    after both parties are rebuilt from the stored key and the same
+    ledger directory (objects re-created in one process, not a killed
+    process);
+  * a request with a malformed last ciphertext is refused with no
+    decryption and nothing recorded; nothing is released below the
+    release threshold.
+  Refusals "with no decryption" are asserted on the collector's count of
+  decrypted ciphertexts, not on an error code alone.
   One test documents a limit instead of a protection:
-  `known_limit_an_evaluator_that_deviates_can_substitute_the_sum`.
+  `known_limit_an_evaluator_that_deviates_can_substitute_the_sum`. It
+  passing means the attack succeeds.
+* `src/pine/descriptor.rs` (1 test): the descriptor's encoding is
+  canonical and strict.
 * `src/pine.rs` (1 test): the flooding margin of a dense row summed over 4
   ciphertexts, measured on real ciphertexts: 85.7 bits. This is a
   measurement of one random instance. It is not a worst-case bound and not
@@ -196,7 +233,7 @@ p = 4293918721):
 * Every task creation compares both closed-form verifier maps with prio's
   `query` at a random point and refuses to start on a mismatch.
 
-The 47 tests that existed before still pass (70 in total).
+The 47 tests that existed before still pass (73 in total).
 
 ## Measured cost
 
@@ -208,19 +245,21 @@ MB = 10^6.
 
 | dimension | chunk (main / norm eq.) | proofs (main / norm eq.) | ciphertexts per report | report | check request per report | client | evaluator per report | collector per report | query soundness | joint randomness per attempt |
 |---:|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| 20 | 4 / 4 | 5 / 1 | 3 | 1.04 MB | 6.88 MB | 20 ms | 1.08 s | 54 ms | 2^-28.2 | 2^-107.6 |
-| 1000 | 2 / 4 | 5 / 1 | 5 | 1.74 MB | 4.42 MB | 36 ms | 0.66 s | 38 ms | 2^-23.0 | 2^-104.3 |
-| 1000 | 4 / 4 | 5 / 1 | 4 | 1.39 MB | 6.88 MB | 27 ms | 1.04 s | 51 ms | 2^-23.0 | 2^-104.3 |
-| 1000 | 8 / 4 | 5 / 1 | 3 | 1.04 MB | 11.80 MB | 23 ms | 1.76 s | 90 ms | 2^-23.0 | 2^-104.3 |
-| 1000 | 4 / 4 | 5 / 3 | 4 | 1.39 MB | 8.36 MB | 29 ms | 1.24 s | 66 ms | 2^-69.0 | 2^-104.3 |
-| 1000 | 4 / 4 | 7 / 3 | 4 | 1.39 MB | 10.81 MB | 31 ms | 1.58 s | 92 ms | 2^-69.0 | 2^-146.0 |
-| 10000 | 4 / 8 | 5 / 1 | 5 | 1.74 MB | 7.37 MB | 44 ms | 1.28 s | 60 ms | 2^-20.0 | 2^-104.3 |
-| 100000 | 4 / 16 | 5 / 1 | 18 | 6.27 MB | 8.36 MB | 227 ms | 2.83 s | 83 ms | 2^-18.0 | 2^-104.3 |
+| 20 | 4 / 4 | 5 / 1 | 3 | 1.04 MB | 6.88 MB | 25 ms | 1.03 s | 55 ms | 2^-28.2 | 2^-107.6 |
+| 1000 | 2 / 4 | 5 / 1 | 5 | 1.74 MB | 4.42 MB | 38 ms | 0.66 s | 36 ms | 2^-23.0 | 2^-104.3 |
+| 1000 | 4 / 4 | 5 / 1 | 4 | 1.39 MB | 6.88 MB | 30 ms | 1.03 s | 52 ms | 2^-23.0 | 2^-104.3 |
+| 1000 | 8 / 4 | 5 / 1 | 3 | 1.04 MB | 11.80 MB | 30 ms | 1.77 s | 86 ms | 2^-23.0 | 2^-104.3 |
+| 1000 | 4 / 4 | 5 / 3 | 4 | 1.39 MB | 8.36 MB | 34 ms | 1.23 s | 62 ms | 2^-69.0 | 2^-104.3 |
+| 1000 | 4 / 4 | 7 / 3 | 4 | 1.39 MB | 10.81 MB | 32 ms | 1.61 s | 86 ms | 2^-69.0 | 2^-146.0 |
+| 10000 | 4 / 8 | 5 / 1 | 5 | 1.74 MB | 7.37 MB | 55 ms | 1.21 s | 56 ms | 2^-20.0 | 2^-104.3 |
+| 100000 | 4 / 16 | 5 / 1 | 18 | 6.27 MB | 8.36 MB | 256 ms | 2.78 s | 66 ms | 2^-18.0 | 2^-104.3 |
 
-The aggregate request is one ciphertext of 122,888 bytes per 8192 gradient
-coordinates, plus 40 bytes. The collector's time includes decoding every
-ciphertext twice (once before anything is decrypted) and the ledger
-writes.
+A report carries 96 bytes of identity and signature, a check request 180
+bytes per report besides the ciphertexts. The aggregate request is one
+ciphertext of 122,888 bytes per 8192 gradient coordinates, plus 72 bytes.
+The client's time includes signing and deriving the key context; the
+collector's includes verifying the signatures, decoding every ciphertext
+twice (once before anything is decrypted) and the ledger writes.
 
 Reading the table:
 * A gradient of 100000 coordinates is 400 kB as plain field elements and a
@@ -274,29 +313,33 @@ Reading the table:
 
 ## Not done
 
-* **Nothing authenticates the evaluator's computation.** The collector
-  decrypts what it is sent. An evaluator that deviates can have the
-  collector decrypt linear functions other than the verifier (and learns
-  one accept/reject bit for each), and can replace the aggregate by a
-  ciphertext of its choice: the batch identifier and the accepted count it
-  must quote are no proof that the ciphertext sums the accepted reports.
+* **Nothing authenticates the evaluator's computation.** The cohort of a
+  check request is authenticated; the ciphertexts are not tied to it. An
+  evaluator that deviates can have the collector decrypt linear functions
+  other than the verifier (and learns one accept/reject bit for each),
+  and can replace the aggregate by a ciphertext of its choice.
   `known_limit_an_evaluator_that_deviates_can_substitute_the_sum` shows
-  the substitution succeeding. Closing this needs a proof of the
-  evaluator's linear computation that the collector can check without
-  seeing reports, and clients that authenticate their reports; neither
+  the substitution succeeding. Refusing it before decryption needs a
+  proof of the evaluator's computation that the collector can check
+  without seeing reports (`PINE-REPAIR-STATUS.md`, section 5); none
   exists here.
+* **Nothing bounds the noise of a client's ciphertexts**
+  (`PINE-REPAIR-STATUS.md`, section 4).
+* The evaluator can leave reports out.
 * The evaluator learns the verdicts. `OBLIVIOUS-AGGREGATION-PLAN.md`
   describes hiding them; the implementation on `main`
   (`bgv-flp-oblivious`) does not cover PINE.
 * The collector does not check the noise of what it decrypts
   (`HARDENING-PLAN.md`, W1).
 * The single-use rules have the limits listed under "Single use": a
-  trusted, never-rolled-back ledger directory; nonces as stated by the
-  evaluator; no client identity. The restart test re-creates the objects
-  in one process; it does not kill a process mid-request.
+  trusted, never-rolled-back ledger directory; an application-supplied
+  list of identities. The restart test re-creates the objects in one
+  process; it does not kill a process at each durable step, and
+  concurrent requests are not tested.
+* The signatures are Ed25519: not post-quantum, unlike the encryption.
 * Proofs and verifier messages are not compared with the reference's
   test vectors (different VDAF draft, see above).
 * Side channels (timing of decisions, error messages) are not analysed.
 * This is aggregation only: no training loop, no clipping policy, no
-  differential-privacy noise, no client authentication.
+  differential-privacy noise.
 * One run per measurement on a shared machine: the times are indications.

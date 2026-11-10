@@ -9,6 +9,8 @@
 //! with 15 fractional bits (`--bound 32768 --frac-bits 15`), 4 reports.
 //! The gradients are pseudorandom with norm below the bound; the decoded
 //! sum is compared with the exact sum of the encoded gradients.
+use ed25519_dalek::SigningKey;
+use fhe_flp::pine::descriptor::TaskDescriptor;
 use fhe_flp::pine::{PineClient, PineCollector, PineEvaluator, PineParams, PineTask};
 use std::time::{Duration, Instant};
 
@@ -34,13 +36,25 @@ fn main() {
     let d = params.dimension;
 
     let t = Instant::now();
-    let task = PineTask::new(params.clone(), [7; 32]).expect("task");
+    // One signing key per report, in the descriptor's order of identities.
+    let mut keys: Vec<SigningKey> = (0..reports as u64)
+        .map(|i| SigningKey::from_bytes(&[[7u8; 24].as_slice(), &i.to_le_bytes()].concat().try_into().expect("32 bytes")))
+        .collect();
+    keys.sort_by_key(|k| k.verifying_key().to_bytes());
+    let task = PineTask::new(TaskDescriptor {
+        application: [7; 32],
+        model_hash: [0; 32],
+        round: 0,
+        params: params.clone(),
+        min_accepted: 1,
+        identities: keys.iter().map(|k| k.verifying_key().to_bytes()).collect(),
+    })
+    .expect("task");
     // Both parties' ledgers, removed at the end.
     let ledger = std::env::temp_dir().join(format!("fhe-flp-measure-pine-{}", std::process::id()));
     std::fs::create_dir(&ledger).expect("ledger directory");
     let (mut collector, pk) = PineCollector::new(&task, &ledger).expect("collector");
     let setup = t.elapsed();
-    let client = PineClient::new(&task, &pk);
     let mut evaluator = PineEvaluator::new(&task, &pk, [42; 32], &ledger).expect("evaluator");
 
     // Real norm about half the bound.
@@ -58,7 +72,11 @@ fn main() {
         .collect();
 
     let t = Instant::now();
-    let shards: Vec<Vec<u8>> = gradients.iter().map(|g| client.shard(g).expect("shard")).collect();
+    let shards: Vec<Vec<u8>> = gradients
+        .iter()
+        .zip(&keys)
+        .map(|(g, key)| PineClient::new(&task, &pk, key).expect("client").shard(g).expect("shard"))
+        .collect();
     let shard = t.elapsed();
     let t = Instant::now();
     for s in &shards {

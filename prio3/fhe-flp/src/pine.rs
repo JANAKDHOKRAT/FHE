@@ -7,7 +7,8 @@
 //! collude and follow the protocol; clients may be malicious.
 //!
 //! ```text
-//! client    -> evaluator : report = nonce || G || W || P, each one or more ciphertexts:
+//! client    -> evaluator : report = nonce || G || W || P || identity || signature;
+//!                          G, W and P are each one or more ciphertexts:
 //!                          G = gradient || norm bits
 //!                          W = wraparound test results and success bits
 //!                          P = norm-equality proofs || main proofs (prio's unchanged FLP)
@@ -55,33 +56,51 @@
 //!   detects one with probability at least 1/2 ([ROCT23], as cited by the
 //!   draft), so `2^-100` per offline attempt at the reference's 100 tests.
 //!
+//! The task ([`descriptor::TaskDescriptor`]) lists the clients authorized
+//! to report. A client signs its report's commitment: the task, the
+//! collector's key, the nonce and the digest of each part. The evaluator
+//! forwards, per report, the identity, nonce, digests and signature, never
+//! a ciphertext of the report; the collector verifies them before it
+//! decrypts anything. So the reports of a check request are reports that
+//! authorized clients made for this task and key, each client at most once.
+//! Nothing ties the ciphertexts the collector decrypts to those reports.
+//!
 //! Single use, kept in a ledger directory that must survive restarts and
 //! must not be rolled back ([`Ledger`]):
-//! * the evaluator accepts a report nonce once per task;
-//! * the collector accepts a batch identifier once, and a report nonce
-//!   once, reserving them before it decrypts anything; it releases the sum
-//!   of a batch once, reserving the release before it decrypts it.
+//! * the evaluator accepts an identity and a nonce once per task;
+//! * the collector accepts a batch identifier, an identity and a nonce
+//!   once, reserving them before it decrypts anything; while a checked
+//!   batch awaits release it checks nothing else; it releases the sum of a
+//!   batch once, reserving the release before it decrypts it, and only
+//!   with at least the task's threshold of accepted reports.
 //!
 //! Every ciphertext of a request is decoded and checked before the first
 //! one is decrypted.
 //!
 //! Outside what this module provides, all of which a deployment has to
-//! weigh (`PINE.md`, "Not done"):
-//! * the evaluator learns the verdicts;
+//! weigh (`PINE-THREAT-MODEL.md`, `PINE-REPAIR-STATUS.md`):
+//! * the evaluator learns the verdicts, the collector the verdict of each
+//!   identity;
 //! * the collector cannot tell whether the ciphertexts it is asked to
-//!   decrypt were computed as prescribed: an evaluator that deviates can
-//!   have other linear functions decrypted, and can replace the sum by a
-//!   ciphertext of its choice (the accepted count it reports is no proof);
-//! * the nonces a request lists are the evaluator's claim;
+//!   decrypt were computed from the signed reports as prescribed: an
+//!   evaluator that deviates can have other linear functions decrypted,
+//!   and can replace the sum by a ciphertext of its choice;
+//! * the evaluator can leave reports out;
+//! * a ciphertext with more noise than an honest encryption makes a
+//!   decrypted verifier element differ from the linear query the FLP's
+//!   soundness is stated for; nothing bounds a client's noise;
 //! * the noise flooding has a measured margin, not a worst-case proof, and
 //!   the collector does not check the noise of what it decrypts.
 pub mod circuit;
+pub mod descriptor;
 
 use crate::codec::ResidueCodec;
 use crate::protocol::{MAX_BATCH, MAX_PROOFS, NONCE_LEN, from_u64, to_u64};
 use crate::single::finish;
 use crate::{Error, FheField, Field, PLAIN_MOD, Result};
-use circuit::{Main, NUM_WR_CHECKS, NormEquality, Shape, check_linear_map};
+use circuit::{ALPHA, Main, NUM_WR_CHECKS, NUM_WR_SUCCESSES, NormEquality, Shape, check_linear_map};
+use descriptor::TaskDescriptor;
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use openfhe_tbgv_rs::{Ciphertext, CiphertextMeta, Context, PublicKey, SecretShare, keygen_first, verify_single_rebuild_once};
 use prio::field::{FieldElement, FieldElementWithInteger};
 use prio::flp::Flp;
@@ -89,12 +108,16 @@ use prio::vdaf::xof::{IntoFieldVec, Xof, XofTurboShake128};
 use rand::RngCore;
 use rand::rngs::OsRng;
 use sha2::{Digest, Sha256};
+use std::cell::Cell;
 use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 const DST_TASK: &[u8] = b"fhe-flp/1 pine task";
+const DST_KEY: &[u8] = b"fhe-flp/1 pine task and key";
+const DST_REPORT: &[u8] = b"fhe-flp/1 pine report commitment";
+const DST_VERDICTS: &[u8] = b"fhe-flp/1 pine verdicts";
 const DST_WR_SEED: &[u8] = b"fhe-flp/1 pine wraparound seed";
 const DST_WR: &[u8] = b"fhe-flp/1 pine wraparound vectors";
 const DST_JOINT_RAND_SEED: &[u8] = b"fhe-flp/1 pine joint randomness seed";
@@ -110,10 +133,15 @@ const SHARD_ATTEMPTS: usize = 8;
 
 /// A batch identifier: 32 random bytes chosen by the evaluator.
 pub const BATCH_LEN: usize = 32;
-/// Check request: report count, batch identifier, then the nonces.
+/// Check request: report count, batch identifier, then one entry per report.
 const CHECK_HEADER: usize = 4 + BATCH_LEN;
-/// Aggregate request: batch identifier, accepted count.
-const AGGREGATE_HEADER: usize = BATCH_LEN + 8;
+/// A report's entry in a check request: identity index, nonce, the digests
+/// of its three parts, the client's signature.
+const ENTRY_LEN: usize = 4 + NONCE_LEN + 3 * 32 + 64;
+/// Aggregate request: batch identifier, verdict hash, accepted count.
+const AGGREGATE_HEADER: usize = BATCH_LEN + 32 + 8;
+/// What a client appends to a report's body: its identity and signature.
+const SEAL_LEN: usize = 32 + 64;
 
 /// The three parts of a report, in order.
 pub const PART_GRADIENT: usize = 0;
@@ -137,7 +165,7 @@ pub struct PineParams {
 
 /// Everything the client, the evaluator and the collector agree on.
 pub struct PineTask {
-    params: PineParams,
+    descriptor: TaskDescriptor,
     norm_eq: NormEquality,
     main: Main,
     /// Hash of the task identifier and every parameter: part of every
@@ -156,7 +184,9 @@ impl PineTask {
     /// Refused: parameters outside the reference's guards, proofs the field
     /// has no roots of unity for, more than `MAX_PROOFS` proofs of a kind,
     /// and a closed-form verifier map that disagrees with prio's `query`.
-    pub fn new(params: PineParams, task_id: [u8; 32]) -> Result<Self> {
+    pub fn new(descriptor: TaskDescriptor) -> Result<Self> {
+        let encoded = descriptor.encode()?;
+        let params = descriptor.params.clone();
         let shape = Shape::new(params.dimension, params.l2_norm_bound, params.num_frac_bits)?;
         let norm_eq = NormEquality::new(shape.clone(), params.chunk_length_norm_equality)?;
         let main = Main::new(shape.clone(), params.chunk_length)?;
@@ -181,20 +211,19 @@ impl PineTask {
             params.num_proofs_norm_equality * norm_eq.proof_len() + params.num_proofs * main.proof_len(),
         ];
 
+        // The descriptor, then everything else the code fixes: the circuits'
+        // constants, the field and the BGV parameters.
         let mut h = Sha256::new();
         h.update(DST_TASK);
-        h.update(task_id);
+        h.update((encoded.len() as u64).to_le_bytes());
+        h.update(&encoded);
         for v in [
-            params.dimension as u64,
-            params.l2_norm_bound,
-            params.num_frac_bits as u64,
-            params.chunk_length as u64,
-            params.chunk_length_norm_equality as u64,
-            params.num_proofs as u64,
-            params.num_proofs_norm_equality as u64,
             NUM_WR_CHECKS as u64,
+            NUM_WR_SUCCESSES as u64,
+            ALPHA.to_bits(),
             PLAIN_MOD,
             ring as u64,
+            moduli.len() as u64,
         ] {
             h.update(v.to_le_bytes());
         }
@@ -213,7 +242,7 @@ impl PineTask {
             return Err(Error::Fhe(format!("unexpected reduced metadata {reduced_meta:?} / {:?}", sum.meta()?)));
         }
         let task = Self {
-            params,
+            descriptor,
             norm_eq,
             main,
             binding: h.finalize().into(),
@@ -244,8 +273,24 @@ impl PineTask {
         check_linear_map(main, &main.linear_map(t_main[0], jr)?, z_main, t_main[0], jr)
     }
 
+    pub fn descriptor(&self) -> &TaskDescriptor {
+        &self.descriptor
+    }
     pub fn params(&self) -> &PineParams {
-        &self.params
+        &self.descriptor.params
+    }
+    /// What every derivation and signature of a report is bound to: this
+    /// task and this public key (the key's identity enters separately from
+    /// the parameters).
+    pub fn key_context(&self, pk: &PublicKey) -> Result<[u8; 32]> {
+        // A key's serialization changes at its first deserialization and is
+        // stable afterwards: hash the stable form.
+        let stable = self.ctx.deserialize_public_key(&pk.serialize()?)?.serialize()?;
+        let mut h = Sha256::new();
+        h.update(DST_KEY);
+        h.update(self.binding);
+        h.update(Sha256::digest(&stable));
+        Ok(h.finalize().into())
     }
     pub fn shape(&self) -> &Shape {
         self.main.shape()
@@ -257,7 +302,7 @@ impl PineTask {
     /// coordinates of magnitude at most `n B`, which must stay below `p / 2`
     /// for the centered lift to be the integer sum.
     pub fn max_batch(&self) -> u64 {
-        MAX_BATCH.min((PLAIN_MOD - 1) / (2 * self.params.l2_norm_bound))
+        MAX_BATCH.min((PLAIN_MOD - 1) / (2 * self.descriptor.params.l2_norm_bound))
     }
 
     fn blocks(&self, part: usize) -> usize {
@@ -277,8 +322,12 @@ impl PineTask {
     fn reduced_len(&self) -> usize {
         self.reduced_codec.len(2, self.ring)
     }
-    pub fn report_len(&self) -> usize {
+    /// Nonce and ciphertexts.
+    fn body_len(&self) -> usize {
         NONCE_LEN + self.ciphertexts_per_report() * self.fresh_len()
+    }
+    pub fn report_len(&self) -> usize {
+        self.body_len() + SEAL_LEN
     }
     /// The bytes of `part` (`PART_*`) in a report.
     pub fn part_range(&self, part: usize) -> Range<usize> {
@@ -287,14 +336,14 @@ impl PineTask {
     }
     /// Verifier elements per report: one ciphertext each in a check request.
     pub fn verifier_len(&self) -> usize {
-        self.params.num_proofs_norm_equality * self.norm_eq.verifier_len() + self.params.num_proofs * self.main.verifier_len()
+        self.descriptor.params.num_proofs_norm_equality * self.norm_eq.verifier_len() + self.descriptor.params.num_proofs * self.main.verifier_len()
     }
     pub fn check_request_len(&self, reports: usize) -> usize {
-        CHECK_HEADER + reports * (NONCE_LEN + self.verifier_len() * self.reduced_len())
+        CHECK_HEADER + reports * (ENTRY_LEN + self.verifier_len() * self.reduced_len())
     }
     /// Ciphertexts of the aggregate: those holding gradient coordinates.
     fn output_blocks(&self) -> usize {
-        self.params.dimension.div_ceil(self.ring)
+        self.descriptor.params.dimension.div_ceil(self.ring)
     }
     pub fn aggregate_request_len(&self) -> usize {
         AGGREGATE_HEADER + self.output_blocks() * self.reduced_len()
@@ -317,25 +366,59 @@ impl PineTask {
     /// two circuits.
     pub fn log2_query_soundness(&self) -> f64 {
         let per = |w: usize| (2.0 * (w as f64 - 1.0) / (PLAIN_MOD as f64 - 2.0 * w as f64)).log2();
-        (per(wire_len(&self.norm_eq)) * self.params.num_proofs_norm_equality as f64).max(per(wire_len(&self.main)) * self.params.num_proofs as f64)
+        (per(wire_len(&self.norm_eq)) * self.descriptor.params.num_proofs_norm_equality as f64)
+            .max(per(wire_len(&self.main)) * self.descriptor.params.num_proofs as f64)
     }
     /// log2 of the probability that one choice of joint randomness makes
     /// the main circuit 0 on an invalid measurement in every proof (see
     /// [`Main::joint_rand_degree`]). A client can try choices offline.
     pub fn log2_joint_rand_per_attempt(&self) -> f64 {
-        (self.main.joint_rand_degree() as f64 / PLAIN_MOD as f64).log2() * self.params.num_proofs as f64
+        (self.main.joint_rand_degree() as f64 / PLAIN_MOD as f64).log2() * self.descriptor.params.num_proofs as f64
     }
 
     fn digest(bytes: &[u8]) -> [u8; 32] {
         Sha256::digest(bytes).into()
     }
 
+    /// The digests of the three parts of a report's body.
+    fn part_digests(&self, body: &[u8]) -> [[u8; 32]; 3] {
+        [PART_GRADIENT, PART_WRAPAROUND, PART_PROOFS].map(|part| Self::digest(&body[self.part_range(part)]))
+    }
+
+    /// What a client signs and what identifies a report: the task and key,
+    /// the nonce, and each part's digest (fixed lengths: no two inputs
+    /// encode alike).
+    fn commitment(&self, key: &[u8; 32], nonce: &[u8], digests: &[[u8; 32]; 3]) -> [u8; 32] {
+        let mut h = Sha256::new();
+        h.update(DST_REPORT);
+        h.update(key);
+        h.update(nonce);
+        for d in digests {
+            h.update(d);
+        }
+        h.finalize().into()
+    }
+
+    /// What ties an aggregate request to a check: the batch, the reports'
+    /// commitments in order, and the verdicts.
+    fn verdict_hash<'c>(&self, key: &[u8; 32], batch: &[u8], commitments: impl Iterator<Item = &'c [u8; 32]>, verdicts: &[u8]) -> [u8; 32] {
+        let mut h = Sha256::new();
+        h.update(DST_VERDICTS);
+        h.update(key);
+        h.update(batch);
+        for c in commitments {
+            h.update(c);
+        }
+        h.update(verdicts);
+        h.finalize().into()
+    }
+
     /// The seed of a report's wraparound test vectors: from its nonce and
-    /// the bytes of its gradient part.
-    fn wr_seed(&self, nonce: &[u8], gradient_part: &[u8]) -> [u8; 32] {
-        let mut xof = XofTurboShake128::init(&[0u8; 32], &[DST_WR_SEED, &self.binding]);
+    /// the digest of its gradient part.
+    fn wr_seed(&self, key: &[u8; 32], nonce: &[u8], gradient: &[u8; 32]) -> [u8; 32] {
+        let mut xof = XofTurboShake128::init(&[0u8; 32], &[DST_WR_SEED, key]);
         xof.update(nonce);
-        xof.update(&Self::digest(gradient_part));
+        xof.update(gradient);
         let mut seed = [0u8; 32];
         seed.copy_from_slice(xof.into_seed().as_ref());
         seed
@@ -349,14 +432,14 @@ impl PineTask {
     }
 
     /// The joint randomness of every main proof: from the nonce and the
-    /// bytes of the gradient and wraparound parts.
-    fn joint_rands(&self, nonce: &[u8], gradient_part: &[u8], wraparound_part: &[u8]) -> Vec<Field> {
-        let mut xof = XofTurboShake128::init(&[0u8; 32], &[DST_JOINT_RAND_SEED, &self.binding]);
+    /// digests of the gradient and wraparound parts.
+    fn joint_rands(&self, key: &[u8; 32], nonce: &[u8], gradient: &[u8; 32], wraparound: &[u8; 32]) -> Vec<Field> {
+        let mut xof = XofTurboShake128::init(&[0u8; 32], &[DST_JOINT_RAND_SEED, key]);
         xof.update(nonce);
-        xof.update(&Self::digest(gradient_part));
-        xof.update(&Self::digest(wraparound_part));
+        xof.update(gradient);
+        xof.update(wraparound);
         let seed = xof.into_seed();
-        XofTurboShake128::seed_stream(seed.as_ref(), &[DST_JOINT_RAND, &self.binding], &[]).into_field_vec(3 * self.params.num_proofs)
+        XofTurboShake128::seed_stream(seed.as_ref(), &[DST_JOINT_RAND, key], &[]).into_field_vec(3 * self.descriptor.params.num_proofs)
     }
 
     /// `ne` query points for the norm-equality circuit and `main` for the
@@ -378,25 +461,31 @@ impl PineTask {
         Ok((a, b))
     }
 
-    /// The query points of a report: from the evaluator's secret key and
-    /// the whole report.
-    fn query_points(&self, verify_key: &[u8; 32], report: &[u8]) -> Result<(Vec<Field>, Vec<Field>)> {
-        let stream = XofTurboShake128::seed_stream(verify_key, &[DST_QUERY, &self.binding], &[&report[..NONCE_LEN], &Self::digest(report)]);
-        self.sample_query_points(stream, self.params.num_proofs_norm_equality, self.params.num_proofs)
-    }
-
     /// Every challenge of a report, as the evaluator derives them: the
-    /// wraparound test vectors, the joint randomness of the main proofs and
-    /// the query points of the norm-equality and of the main proofs.
-    pub fn challenges(&self, verify_key: &[u8; 32], report: &[u8]) -> Result<Challenges> {
+    /// wraparound seed from the nonce and the gradient part, the joint
+    /// randomness from the nonce and the gradient and wraparound parts, the
+    /// query points from the evaluator's secret key and the report's
+    /// commitment (nonce and all three parts). `key`: [`Self::key_context`].
+    pub fn challenges(&self, key: &[u8; 32], verify_key: &[u8; 32], report: &[u8]) -> Result<Challenges> {
         if report.len() != self.report_len() {
             return Err(Error::Codec(format!("report has {} bytes, expected {}", report.len(), self.report_len())));
         }
-        let (g, w) = (&report[self.part_range(PART_GRADIENT)], &report[self.part_range(PART_WRAPAROUND)]);
-        let (t_norm_equality, t_main) = self.query_points(verify_key, report)?;
+        let digests = self.part_digests(report);
+        self.challenges_of(
+            key,
+            verify_key,
+            &report[..NONCE_LEN],
+            &digests,
+            &self.commitment(key, &report[..NONCE_LEN], &digests),
+        )
+    }
+
+    fn challenges_of(&self, key: &[u8; 32], verify_key: &[u8; 32], nonce: &[u8], digests: &[[u8; 32]; 3], commitment: &[u8; 32]) -> Result<Challenges> {
+        let stream = XofTurboShake128::seed_stream(verify_key, &[DST_QUERY, key], &[commitment]);
+        let (t_norm_equality, t_main) = self.sample_query_points(stream, self.descriptor.params.num_proofs_norm_equality, self.descriptor.params.num_proofs)?;
         Ok(Challenges {
-            wr_seed: self.wr_seed(&report[..NONCE_LEN], g),
-            joint_rands: self.joint_rands(&report[..NONCE_LEN], g, w),
+            wr_seed: self.wr_seed(key, nonce, &digests[PART_GRADIENT]),
+            joint_rands: self.joint_rands(key, nonce, &digests[PART_GRADIENT], &digests[PART_WRAPAROUND]),
             t_norm_equality,
             t_main,
         })
@@ -453,7 +542,7 @@ impl PineTask {
 
     /// Prio's `decide` on every proof's verifier.
     fn decide(&self, verifier: &[Field]) -> Result<bool> {
-        let (v_ne, v_main) = verifier.split_at(self.params.num_proofs_norm_equality * self.norm_eq.verifier_len());
+        let (v_ne, v_main) = verifier.split_at(self.descriptor.params.num_proofs_norm_equality * self.norm_eq.verifier_len());
         let mut ok = true;
         for v in v_ne.chunks(self.norm_eq.verifier_len()) {
             ok &= self.norm_eq.decide(v)?;
@@ -498,16 +587,28 @@ pub struct Challenges {
 pub struct PineClient<'a> {
     task: &'a PineTask,
     pk: &'a PublicKey,
+    key: [u8; 32],
+    signing: &'a SigningKey,
 }
 
 impl<'a> PineClient<'a> {
-    pub fn new(task: &'a PineTask, pk: &'a PublicKey) -> Self {
-        Self { task, pk }
+    /// Refused unless `signing`'s verification key is one of the task's
+    /// authorized identities.
+    pub fn new(task: &'a PineTask, pk: &'a PublicKey, signing: &'a SigningKey) -> Result<Self> {
+        if task.descriptor.identity_index(signing.verifying_key().as_bytes()).is_none() {
+            return Err(Error::Protocol("the signing key is not an authorized identity of the task".into()));
+        }
+        Ok(Self {
+            task,
+            pk,
+            key: task.key_context(pk)?,
+            signing,
+        })
     }
 
-    /// Encodes, proves and encrypts a gradient. Refused: a gradient whose
-    /// encoded norm exceeds the bound (clip first), NaN, infinities and
-    /// subnormals.
+    /// Encodes, proves, encrypts and signs a gradient. Refused: a gradient
+    /// whose encoded norm exceeds the bound (clip first), NaN, infinities
+    /// and subnormals.
     pub fn shard(&self, gradient: &[f64]) -> Result<Vec<u8>> {
         Ok(self.shard_with_witness(gradient)?.0)
     }
@@ -526,12 +627,12 @@ impl<'a> PineClient<'a> {
         Err(Error::Protocol("the wraparound tests failed on every attempt".into()))
     }
 
-    /// A report for arbitrary coefficients, valid or not, built in the
-    /// honest order: `gradient_part` is encrypted (the gradient and norm
-    /// bits, then anything up to the end of its last ciphertext), `claim`
-    /// receives the true dot products of the test vectors that fixes and
-    /// returns the wraparound part to send, and the proofs are prio's for
-    /// that input (malicious-client tests).
+    /// A signed report for arbitrary coefficients, valid or not, built in
+    /// the honest order: `gradient_part` is encrypted (the gradient and
+    /// norm bits, then anything up to the end of its last ciphertext),
+    /// `claim` receives the true dot products of the test vectors that
+    /// fixes and returns the wraparound part to send, and the proofs are
+    /// prio's for that input (malicious-client tests).
     pub fn shard_encoded(&self, gradient_part: &[Field], claim: impl FnOnce(&[Field]) -> Vec<Field>) -> Result<Vec<u8>> {
         let task = self.task;
         let shape = task.shape();
@@ -554,7 +655,7 @@ impl<'a> PineClient<'a> {
         let mut nonce = [0u8; NONCE_LEN];
         OsRng.fill_bytes(&mut nonce);
         let g_bytes = self.encrypt(g)?;
-        let vectors = self.task.wr_vectors(&self.task.wr_seed(&nonce, &g_bytes));
+        let vectors = self.task.wr_vectors(&self.task.wr_seed(&self.key, &nonce, &PineTask::digest(&g_bytes)));
         Ok((nonce, g_bytes, vectors))
     }
 
@@ -570,10 +671,10 @@ impl<'a> PineClient<'a> {
         let task = self.task;
         let (ne, main) = (&task.norm_eq, &task.main);
         let w_bytes = self.encrypt(wr_bits)?;
-        let joint_rands = task.joint_rands(&nonce, &g_bytes, &w_bytes);
+        let joint_rands = task.joint_rands(&self.key, &nonce, &PineTask::digest(&g_bytes), &PineTask::digest(&w_bytes));
         let input = [g, wr_bits, results].concat();
 
-        let (k_ne, k) = (task.params.num_proofs_norm_equality, task.params.num_proofs);
+        let (k_ne, k) = (task.descriptor.params.num_proofs_norm_equality, task.descriptor.params.num_proofs);
         let mut seed = [0u8; 32];
         OsRng.fill_bytes(&mut seed);
         let prove_rands: Vec<Field> =
@@ -587,11 +688,26 @@ impl<'a> PineClient<'a> {
             proofs.extend(main.prove(&input, pr, jr)?);
         }
 
-        let mut report = nonce.to_vec();
-        report.extend(g_bytes);
-        report.extend(w_bytes);
-        report.extend(self.encrypt(&proofs)?);
-        Ok((report, input, proofs))
+        let mut body = nonce.to_vec();
+        body.extend(g_bytes);
+        body.extend(w_bytes);
+        body.extend(self.encrypt(&proofs)?);
+        Ok((self.seal(&body)?, input, proofs))
+    }
+
+    /// Signs a report body (nonce and ciphertexts): appends this client's
+    /// identity and its signature of the report's commitment. Tests use it
+    /// to sign bodies assembled from parts, as a malicious client could.
+    pub fn seal(&self, body: &[u8]) -> Result<Vec<u8>> {
+        let task = self.task;
+        if body.len() != task.body_len() {
+            return Err(Error::Codec("report body has the wrong length".into()));
+        }
+        let commitment = task.commitment(&self.key, &body[..NONCE_LEN], &task.part_digests(body));
+        let mut report = body.to_vec();
+        report.extend(self.signing.verifying_key().as_bytes());
+        report.extend(self.signing.sign(&commitment).to_bytes());
+        Ok(report)
     }
 
     /// The ciphertexts of one part of a report: `ring` coefficients each
@@ -610,6 +726,14 @@ impl<'a> PineClient<'a> {
         }
         Ok(out)
     }
+}
+
+/// Checks a client's signature of a report commitment.
+fn verify_signature(identity: &[u8; 32], commitment: &[u8; 32], signature: &[u8]) -> Result<()> {
+    let refused = || Error::Protocol("a report's signature does not verify".into());
+    let key = VerifyingKey::from_bytes(identity).map_err(|_| refused())?;
+    let signature = Signature::from_slice(signature).map_err(|_| refused())?;
+    key.verify_strict(commitment, &signature).map_err(|_| refused())
 }
 
 /// Single-use markers that survive restarts: one empty file per marker in
@@ -669,7 +793,11 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 struct Stored {
-    nonce: [u8; NONCE_LEN],
+    /// Index of the client's identity in the task descriptor.
+    identity: u32,
+    /// The report's entry in the check request.
+    entry: [u8; ENTRY_LEN],
+    commitment: [u8; 32],
     cts: Vec<Ciphertext>,
     challenges: Challenges,
 }
@@ -678,6 +806,7 @@ struct Stored {
 /// then the check request is built once, then the aggregate request once.
 pub struct PineEvaluator<'a> {
     task: &'a PineTask,
+    key: [u8; 32],
     verify_key: [u8; 32],
     reference: Ciphertext,
     ledger: Ledger,
@@ -689,8 +818,8 @@ pub struct PineEvaluator<'a> {
 
 impl<'a> PineEvaluator<'a> {
     /// `verify_key` is the evaluator's secret: clients must not predict the
-    /// query points. `ledger_root`: see [`Ledger`]; it holds the nonces of
-    /// every report this evaluator accepted for the task.
+    /// query points. `ledger_root`: see [`Ledger`]; it holds the identities
+    /// and nonces of every report this evaluator accepted for the task.
     pub fn new(task: &'a PineTask, pk: &PublicKey, verify_key: [u8; 32], ledger_root: &Path) -> Result<Self> {
         verify_single_rebuild_once(&task.ctx)?;
         let reference = task.ctx.encrypt(pk, &task.ctx.coef_plaintext(&[0])?)?;
@@ -698,6 +827,7 @@ impl<'a> PineEvaluator<'a> {
         OsRng.fill_bytes(&mut batch);
         Ok(Self {
             task,
+            key: task.key_context(pk)?,
             verify_key,
             reference,
             ledger: Ledger::open(ledger_root, task, "evaluator")?,
@@ -719,10 +849,12 @@ impl<'a> PineEvaluator<'a> {
         &self.batch
     }
 
-    /// Stores a report and derives its challenges. Refuses malformed bytes,
-    /// a full or sealed batch, and a nonce this evaluator accepted before
-    /// for the task, in this batch or any earlier one (a valid report
-    /// cannot change its nonce: the challenges depend on it).
+    /// Stores a report and derives its challenges. Refused: malformed
+    /// bytes, a full or sealed batch, an identity the task does not
+    /// authorize, a signature that does not verify for this task, key,
+    /// nonce and these exact ciphertext bytes, and an identity or a nonce
+    /// this evaluator accepted before for the task, in this batch or any
+    /// earlier one.
     pub fn ingest(&mut self, report: &[u8]) -> Result<()> {
         let task = self.task;
         if self.sealed {
@@ -734,27 +866,51 @@ impl<'a> PineEvaluator<'a> {
         if self.reports.len() as u64 >= task.max_batch() {
             return Err(Error::Protocol("batch is full".into()));
         }
-        let nonce: [u8; NONCE_LEN] = report[..NONCE_LEN].try_into().expect("length checked");
+        let (body, seal) = report.split_at(task.body_len());
+        let nonce = &body[..NONCE_LEN];
+        let identity: [u8; 32] = seal[..32].try_into().expect("length checked");
+        let index = task
+            .descriptor
+            .identity_index(&identity)
+            .ok_or_else(|| Error::Protocol("the report's identity is not authorized".into()))?;
+        let digests = task.part_digests(body);
+        let commitment = task.commitment(&self.key, nonce, &digests);
+        verify_signature(&identity, &commitment, &seal[32..])?;
+
         let meta = self.reference.meta()?;
         let mut cts = Vec::with_capacity(task.ciphertexts_per_report());
-        for bytes in report[NONCE_LEN..].chunks(task.fresh_len()) {
+        for bytes in body[NONCE_LEN..].chunks(task.fresh_len()) {
             let residues = task.fresh_codec.unpack(bytes, 2, task.ring)?;
             cts.push(task.ctx.build_ciphertext(&self.reference, &meta, &residues)?);
         }
-        self.ledger.reserve("nonce", &nonce)?;
+        self.ledger.reserve("identity", &identity)?;
+        self.ledger.reserve("nonce", nonce)?;
+
+        let mut entry = [0u8; ENTRY_LEN];
+        entry[..4].copy_from_slice(&index.to_le_bytes());
+        entry[4..4 + NONCE_LEN].copy_from_slice(nonce);
+        for (i, d) in digests.iter().enumerate() {
+            entry[4 + NONCE_LEN + 32 * i..4 + NONCE_LEN + 32 * (i + 1)].copy_from_slice(d);
+        }
+        entry[ENTRY_LEN - 64..].copy_from_slice(&seal[32..]);
         self.reports.push(Stored {
-            nonce,
+            identity: index,
+            entry,
+            commitment,
             cts,
-            challenges: task.challenges(&self.verify_key, report)?,
+            challenges: task.challenges_of(&self.key, &self.verify_key, nonce, &digests, &commitment)?,
         });
         Ok(())
     }
 
     /// Seals the batch and builds its check request: the batch identifier,
-    /// the nonces, and for every report and verifier element the sum over
-    /// the report's ciphertexts of `ct x row`, the element at coefficient 0
-    /// (with the verifier's constant added) and a fresh uniform mask on
-    /// every other coefficient, flooded and switched to one tower.
+    /// one entry per report in increasing order of identity (identity
+    /// index, nonce, digests of the three parts, the client's signature),
+    /// and for every report and verifier element the sum over the report's
+    /// ciphertexts of `ct x row`, the element at coefficient 0 (with the
+    /// verifier's constant added) and a fresh uniform mask on every other
+    /// coefficient, flooded and switched to one tower. The verdicts come
+    /// back in the same order.
     pub fn check_request(&mut self) -> Result<Vec<u8>> {
         let task = self.task;
         if self.sealed {
@@ -764,12 +920,13 @@ impl<'a> PineEvaluator<'a> {
             return Err(Error::Protocol("the batch is empty".into()));
         }
         self.sealed = true;
+        self.reports.sort_by_key(|r| r.identity);
         let n = task.ring;
         let mut out = Vec::with_capacity(task.check_request_len(self.reports.len()));
         out.extend((self.reports.len() as u32).to_le_bytes());
         out.extend(self.batch);
         for r in &self.reports {
-            out.extend(r.nonce);
+            out.extend(r.entry);
         }
         for r in &self.reports {
             task.verifier_rows(&r.challenges, |row, constant| {
@@ -801,9 +958,10 @@ impl<'a> PineEvaluator<'a> {
     }
 
     /// The aggregate request, once per batch: the batch identifier, the
-    /// accepted count, and the sum of the gradient ciphertexts the verdicts
-    /// accept, with a fresh uniform mask on every coefficient that is not a
-    /// gradient coordinate, flooded and switched to one tower.
+    /// hash of the batch's commitments and verdicts, the accepted count,
+    /// and the sum of the gradient ciphertexts the verdicts accept, with a
+    /// fresh uniform mask on every coefficient that is not a gradient
+    /// coordinate, flooded and switched to one tower.
     pub fn aggregate_request(&mut self, verdicts: &[u8]) -> Result<Vec<u8>> {
         let task = self.task;
         if !self.sealed || self.released {
@@ -824,6 +982,7 @@ impl<'a> PineEvaluator<'a> {
         }
         self.released = true;
         let mut msg = self.batch.to_vec();
+        msg.extend(task.verdict_hash(&self.key, &self.batch, self.reports.iter().map(|r| &r.commitment), verdicts));
         msg.extend((accepted.len() as u64).to_le_bytes());
         for b in 0..task.output_blocks() {
             let mut sum = accepted[0].cts[b].try_clone()?;
@@ -831,7 +990,7 @@ impl<'a> PineEvaluator<'a> {
                 sum = task.ctx.add(&sum, &r.cts[b])?;
             }
             let mut mask = task.mask();
-            let coordinates = (task.params.dimension - b * task.ring).min(task.ring);
+            let coordinates = (task.descriptor.params.dimension - b * task.ring).min(task.ring);
             mask[..coordinates].fill(0);
             msg.extend(task.pack_reduced(&finish::<Field>(&task.ctx, &task.ctx.add_plain(&sum, &task.ctx.coef_plaintext(&mask)?)?)?)?);
         }
@@ -839,25 +998,39 @@ impl<'a> PineEvaluator<'a> {
     }
 }
 
+/// Where the collector is: nothing pending, or a checked batch whose sum
+/// may be released once.
+enum State {
+    Idle,
+    Checked {
+        batch: [u8; BATCH_LEN],
+        accepted: u64,
+        verdicts: [u8; 32],
+    },
+}
+
 /// The collector: holds the whole secret key.
 ///
-/// It decrypts what it is sent: nothing here lets it verify that a
-/// ciphertext was computed as prescribed. The single-use rules below stop
-/// repetition, not an evaluator that deviates.
+/// It authenticates the cohort of a check request (authorized identities,
+/// each at most once, each with its signed commitment) and enforces single
+/// use. It decrypts what it is sent: nothing here lets it verify that a
+/// ciphertext was computed from the committed reports as prescribed.
 pub struct PineCollector<'a> {
     task: &'a PineTask,
     sk: SecretShare,
     reference: Ciphertext,
+    key: [u8; 32],
     ledger: Ledger,
-    /// The checked batch whose sum has not been released, with its count.
-    pending: Option<([u8; BATCH_LEN], u64)>,
+    state: State,
     accepted: Option<u64>,
+    decryptions: Cell<u64>,
 }
 
 impl<'a> PineCollector<'a> {
     /// Generates the key pair; the public key goes to clients and the
     /// evaluator. `ledger_root`: see [`Ledger`]; it holds the batch
-    /// identifiers, nonces and releases this collector processed.
+    /// identifiers, identities, nonces and releases this collector
+    /// processed.
     pub fn new(task: &'a PineTask, ledger_root: &Path) -> Result<(Self, PublicKey)> {
         let (pk, sk) = keygen_first(&task.ctx)?;
         Ok((Self::with_keys(task, &pk, sk, ledger_root)?, pk))
@@ -877,9 +1050,11 @@ impl<'a> PineCollector<'a> {
             task,
             sk,
             reference,
+            key: task.key_context(pk)?,
             ledger: Ledger::open(ledger_root, task, "collector")?,
-            pending: None,
+            state: State::Idle,
             accepted: None,
+            decryptions: Cell::new(0),
         })
     }
 
@@ -889,9 +1064,16 @@ impl<'a> PineCollector<'a> {
         Ok(self.sk.serialize()?)
     }
 
+    /// Ciphertexts this collector has decrypted so far (tests establish
+    /// with it that a refusal came before any decryption).
+    pub fn decryptions(&self) -> u64 {
+        self.decryptions.get()
+    }
+
     fn open(&self, bytes: &[u8], idx: &[u32]) -> Result<Vec<Field>> {
         let res = self.task.reduced_codec.unpack(bytes, 2, self.task.ring)?;
         let ct = self.task.ctx.build_ciphertext(&self.reference, &self.task.reduced_meta, &res)?;
+        self.decryptions.set(self.decryptions.get() + 1);
         Ok(self.sk.decrypt_coeffs(&ct, idx)?.into_iter().map(from_u64).collect())
     }
 
@@ -904,13 +1086,23 @@ impl<'a> PineCollector<'a> {
     /// [`Self::check`], also returning each report's verifier message,
     /// which the collector learns in any case.
     ///
-    /// Before anything is decrypted: the whole request is decoded, and the
-    /// batch identifier and every nonce are recorded as used; a request
-    /// that repeats one is refused, and what it recorded until then stays
-    /// recorded. A refused request leaves a checked batch releasable; a
-    /// request that passes this point replaces it, released or not.
+    /// Refused while a checked batch awaits release ([`Self::abandon`]
+    /// gives it up). Before anything is decrypted:
+    /// * the whole request is decoded;
+    /// * the cohort is authenticated: identities authorized by the task, in
+    ///   increasing order (so each at most once), each entry's signature
+    ///   valid for this task, key, nonce and part digests;
+    /// * the batch identifier, every identity and every nonce are recorded
+    ///   as used; a request that repeats one is refused, and what it
+    ///   recorded until then stays recorded.
+    ///
+    /// With fewer accepted reports than the task's release threshold the
+    /// batch is closed: nothing can be released for it.
     pub fn check_with_verifiers(&mut self, request: &[u8]) -> Result<(Vec<u8>, Vec<Vec<Field>>)> {
         let task = self.task;
+        if !matches!(self.state, State::Idle) {
+            return Err(Error::Protocol("a checked batch awaits release: release or abandon it first".into()));
+        }
         if request.len() < CHECK_HEADER {
             return Err(Error::Codec("check request too short".into()));
         }
@@ -919,17 +1111,39 @@ impl<'a> PineCollector<'a> {
             return Err(Error::Codec("check request has the wrong length".into()));
         }
         let batch: [u8; BATCH_LEN] = request[4..CHECK_HEADER].try_into().expect("length checked");
-        let (nonces, ciphertexts) = request[CHECK_HEADER..].split_at(n * NONCE_LEN);
-        if nonces.chunks(NONCE_LEN).collect::<HashSet<_>>().len() != n {
+        let (entries, ciphertexts) = request[CHECK_HEADER..].split_at(n * ENTRY_LEN);
+
+        let mut cohort = Vec::with_capacity(n);
+        let mut commitments = Vec::with_capacity(n);
+        let mut previous = None;
+        for entry in entries.chunks(ENTRY_LEN) {
+            let index = u32::from_le_bytes(entry[..4].try_into().expect("length checked"));
+            if previous.is_some_and(|p| index <= p) {
+                return Err(Error::Protocol("identities must be distinct and in increasing order".into()));
+            }
+            previous = Some(index);
+            let identity = task
+                .descriptor
+                .identities
+                .get(index as usize)
+                .ok_or_else(|| Error::Protocol("an identity is not authorized".into()))?;
+            let nonce = &entry[4..4 + NONCE_LEN];
+            let digest = |i: usize| -> [u8; 32] { entry[4 + NONCE_LEN + 32 * i..4 + NONCE_LEN + 32 * (i + 1)].try_into().expect("length checked") };
+            let commitment = task.commitment(&self.key, nonce, &[digest(0), digest(1), digest(2)]);
+            verify_signature(identity, &commitment, &entry[ENTRY_LEN - 64..])?;
+            cohort.push((identity, nonce));
+            commitments.push(commitment);
+        }
+        if cohort.iter().map(|(_, nonce)| nonce).collect::<HashSet<_>>().len() != n {
             return Err(Error::Protocol("a nonce appears twice in the request".into()));
         }
         task.preflight(ciphertexts)?;
 
         self.ledger.reserve("batch", &batch)?;
-        for nonce in nonces.chunks(NONCE_LEN) {
+        for (identity, nonce) in &cohort {
+            self.ledger.reserve("identity", *identity)?;
             self.ledger.reserve("nonce", nonce)?;
         }
-        self.pending = None;
         self.accepted = None;
 
         let mut verdicts = vec![0u8; n.div_ceil(8)];
@@ -946,8 +1160,14 @@ impl<'a> PineCollector<'a> {
             }
             verifiers.push(verifier);
         }
-        self.pending = Some((batch, accepted));
         self.accepted = Some(accepted);
+        if accepted >= u64::from(task.descriptor.min_accepted) {
+            self.state = State::Checked {
+                batch,
+                accepted,
+                verdicts: task.verdict_hash(&self.key, &batch, commitments.iter(), &verdicts),
+            };
+        }
         Ok((verdicts, verifiers))
     }
 
@@ -956,31 +1176,49 @@ impl<'a> PineCollector<'a> {
         self.accepted
     }
 
+    /// Gives up the checked batch without releasing its sum (the operator's
+    /// decision, for instance when the evaluator is gone). Recorded; the
+    /// batch can never be released.
+    pub fn abandon(&mut self) -> Result<()> {
+        let State::Checked { batch, .. } = &self.state else {
+            return Err(Error::Protocol("no checked batch to abandon".into()));
+        };
+        self.ledger.reserve("release", batch)?;
+        self.state = State::Idle;
+        Ok(())
+    }
+
     /// Decrypts the gradient coordinates of the aggregate and decodes them,
     /// once per checked batch. Refused unless the request names the batch
-    /// just checked and the count this collector accepted; the release is
-    /// recorded as used before anything is decrypted.
+    /// just checked, the hash of its commitments and of the verdicts this
+    /// collector gave, and the count it accepted; the release is recorded
+    /// as used before anything is decrypted.
     ///
-    /// The count is the evaluator's statement, not a proof: the collector
-    /// cannot tell whether the ciphertext is the sum of the reports it
-    /// accepted.
+    /// These are the evaluator's statements about which batch it means,
+    /// not a proof: the collector cannot tell whether the ciphertext is the
+    /// sum of the reports it accepted.
     pub fn unshard(&mut self, request: &[u8]) -> Result<Vec<f64>> {
         let task = self.task;
         if request.len() != task.aggregate_request_len() {
             return Err(Error::Codec("aggregate request has the wrong length".into()));
         }
-        let (batch, rest) = request.split_at(BATCH_LEN);
-        let count = u64::from_le_bytes(rest[..8].try_into().expect("length checked"));
-        match self.pending {
-            Some((pending, accepted)) if pending == batch && accepted == count && count > 0 => {}
-            _ => return Err(Error::Protocol("the aggregate does not cover the batch and the reports just accepted".into())),
+        let (header, ciphertexts) = request.split_at(AGGREGATE_HEADER);
+        let count = u64::from_le_bytes(header[BATCH_LEN + 32..].try_into().expect("length checked"));
+        match &self.state {
+            State::Checked { batch, accepted, verdicts }
+                if batch[..] == header[..BATCH_LEN] && verdicts[..] == header[BATCH_LEN..BATCH_LEN + 32] && *accepted == count => {}
+            _ => {
+                return Err(Error::Protocol(
+                    "the aggregate does not cover the batch, the verdicts and the reports just accepted".into(),
+                ));
+            }
         }
-        task.preflight(&rest[8..])?;
-        self.ledger.reserve("release", batch)?;
-        self.pending = None;
-        let mut sum = Vec::with_capacity(task.params.dimension);
-        for (b, bytes) in rest[8..].chunks(task.reduced_len()).enumerate() {
-            let coordinates = (task.params.dimension - b * task.ring).min(task.ring) as u32;
+        task.preflight(ciphertexts)?;
+        self.ledger.reserve("release", &header[..BATCH_LEN])?;
+        self.state = State::Idle;
+        let mut sum = Vec::with_capacity(task.descriptor.params.dimension);
+        for (b, bytes) in ciphertexts.chunks(task.reduced_len()).enumerate() {
+            let coordinates = (task.descriptor.params.dimension - b * task.ring).min(task.ring) as u32;
             sum.extend(self.open(bytes, &(0..coordinates).collect::<Vec<u32>>())?);
         }
         Ok(task.shape().decode(&sum))
@@ -1000,8 +1238,11 @@ mod tests {
     /// doubling of the ciphertexts a row reads can cost one more bit.
     #[test]
     fn flooding_margin_of_a_dense_row_over_every_ciphertext() {
-        let task = PineTask::new(
-            PineParams {
+        let task = PineTask::new(TaskDescriptor {
+            application: [0; 32],
+            model_hash: [0; 32],
+            round: 0,
+            params: PineParams {
                 dimension: 9000,
                 l2_norm_bound: 128,
                 num_frac_bits: 7,
@@ -1010,8 +1251,9 @@ mod tests {
                 num_proofs: 2,
                 num_proofs_norm_equality: 1,
             },
-            [0; 32],
-        )
+            min_accepted: 1,
+            identities: vec![SigningKey::from_bytes(&[1; 32]).verifying_key().to_bytes()],
+        })
         .unwrap();
         let ctx = &task.ctx;
         let (pk, sk) = keygen_first(ctx).unwrap();

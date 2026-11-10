@@ -1,5 +1,11 @@
 # PINE in the one-aggregator protocol: security arguments
 
+> Source-inspection update: see `PINE-COLLECTOR-SOURCE-CHECK.md` for centered
+> plaintext lifting and the collector's one-tower decryption path. In particular,
+> F7 below must be read with its one-tower/no-wrap preconditions; it is not a
+> universal rule for arbitrary full-level ciphertexts. These inspections do not
+> discharge the joint-privacy or malicious-evaluator obligations.
+
 Two arguments, written against the implementation at the commit that adds
 this file:
 

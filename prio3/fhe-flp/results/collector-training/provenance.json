@@ -1,0 +1,32 @@
+{
+  "source_commit": "d5682a63121fb2b689d5034c87b2302ba342c4f1",
+  "base_commit": "64d872e",
+  "recorded_utc": "2026-11-10T20:54:25.330845+00:00",
+  "rustc": "rustc 1.94.1 (e408947bf 2026-03-25)",
+  "openfhe_source_commit": "32362085fcfa8133f86a4e81d4440734c984b16d",
+  "omp_num_threads": "2",
+  "architecture": "x86_64",
+  "cpu": {
+    "CPU(s)": "                                  3",
+    "Model name": "                              INTEL(R) XEON(R) PLATINUM 8573C"
+  },
+  "source_sha256": {
+    "src/pine.rs": "c193a9ed1381e7394ced08f7f2753ae0af68b9e137adc64f715c21dc456364b3",
+    "src/pine/collector_session.rs": "4116184ab42b7d04c735ae4c27d45baadaf50c832db776a115be54929f5b0beb",
+    "src/pine/training.rs": "e4807ea02bf9f1827b948e8b3090644a9d9db320273f8cd9ba386236bd8524fa",
+    "src/bin/train_pine.rs": "bfc60f1ff2b9af465fc0356a68d07b8c267df71623185f9b89026e3ff597712c",
+    "tests/pine_training.rs": "6e24770e7ccfd1e334c4cc95939c449be070d57eac7cfd6dc503dd70093cda1e",
+    "Cargo.lock": "511f82ec555c25616d2595fce0b70cec964f76cef18e07c097139a28107f4b12"
+  },
+  "library_sha256": {
+    "libOPENFHEpke.so.1": "50d1e54c46860b7b4b6ea5b7c228590141ddb0c8cf2222f6d1ac5b4e003b5254",
+    "libOPENFHEcore.so.1": "7726a7061bf681fd2d74321c0370497aa8b99a960a878e61f154ead28d668147",
+    "libOPENFHEbinfhe.so.1": "e36ea659fccdca292ca3fd856e43affafb07643e317350111b4306884ae02b54"
+  },
+  "binary_sha256": "6bd300e161f9607da51e4b625849e12636f0436e13b61fa73856c8e11d57dee9",
+  "dataset_csv_sha256": "6ebb3d2fee246a4e99363262ddf8a00a3c41bee6014c373ed9d9216ba7f651b8",
+  "command": "train_pine digits-verified.csv NEW_RUN_DIRECTORY 5 4",
+  "test_scope": "Full 84-test suite; focused 8-test rerun after the final descriptor-parameter validation guard. No wrapper source was changed.",
+  "timing_scope": "One observation per sequential round; shared cloud machine, no throughput or peak-memory claim.",
+  "security_status": "Not production-qualified. No aggregate computation authentication or full collector-view simulation. Single-process qualification runner."
+}

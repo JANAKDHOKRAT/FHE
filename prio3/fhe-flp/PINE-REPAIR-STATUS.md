@@ -100,8 +100,9 @@ randomness; `P` before the query points, which the client never learns.
    generation, encryption, the Gaussian sampler's support, the modulus
    switch) and from the wrapper's flooding code; `PineTask::new` checks
    the numeric conditions for each task.
-   *Open:* review; two library facts observed and not read (plaintext
-   lifting, decryption).
+   *Source update:* centered plaintext lifting and the reduced decryption
+   path were subsequently inspected; see `PINE-COLLECTOR-SOURCE-CHECK.md`
+   for exact scope. Review and the full composition argument remain open.
 
    *Relation to `PINE-CLIENT-NOISE-OBLIGATION.md`.* That note asks for a
    zero-knowledge proof by the client of a bounded encryption witness,

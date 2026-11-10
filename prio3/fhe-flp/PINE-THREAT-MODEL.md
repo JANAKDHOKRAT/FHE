@@ -94,6 +94,10 @@ forward, crafts check and aggregate requests arbitrarily, adaptively, over
 many batches; may hold client keys of its own (malicious clients
 colluding with it).
 
+*Known to fail today:* goal (b). The collector's one bit per report is a
+reaction to ciphertexts the evaluator chooses (`PINE-REPAIR-STATUS.md`,
+section 5).
+
 *Unavoidable in this topology:* omission. The evaluator can drop any
 report; the collector cannot know. A release threshold limits what a
 release over few reports reveals; it does not detect targeted omission.

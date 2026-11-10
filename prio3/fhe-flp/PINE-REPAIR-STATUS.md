@@ -130,6 +130,18 @@ randomness; `P` before the query points, which the client never learns.
    elements decrypted; with a 92-bit phase it is accepted and summed
    exactly through the real flooding and modulus switch.
 
+   *Relation to `PINE-CLIENT-NOISE-OBLIGATION.md`.* That note asks for a
+   zero-knowledge proof by the client of a bounded encryption witness,
+   checkable by the evaluator without any key. The construction here is
+   the other option the guide allows: it bounds the phase itself, measured
+   by the key holder, and needs no proof system. The note's counterexample
+   (`c0 = floor(Q / 2)`, `c1 = 0`, the wrapper test
+   `chosen_phase_linearity`) has a phase of about `log2 Q - 1` bits and is
+   refused by this admission. What the witness proof would give and this
+   does not: verification before the evaluator computes anything and
+   without the collector seeing any part of a report ciphertext, and
+   validity against an evaluator that deviates.
+
    *What is still open here.*
    * The argument is not reviewed, and the modulus-switch bound is cited.
    * Completeness is measured, not derived: an honest masked copy has
@@ -209,6 +221,22 @@ and a measured cost on these relations, neither of which exists. What
 was deliberately not done: sending the collector reports, or accepting a
 hash, a signature of the evaluator, a count or a batch identifier as
 evidence of computation.
+
+**What the reactions give an evaluator that deviates (experiment E2).**
+The collector answers one bit per report: admitted and accepted, or not.
+Both parts depend on the secret key applied to ciphertexts the evaluator
+chose: the admission bit on the phase of an arbitrary ciphertext, the
+acceptance bit on whether decrypted values satisfy the verifier's
+equations. Bits of this kind about chosen ciphertexts are what reaction
+attacks on lattice encryption use, against clients' inputs (the
+crafted-query attack of `HARDENING-PLAN.md`) and against the key itself.
+No such attack is implemented or measured here; nothing here rules one
+out. What limits it today: every query needs an entry signed by an
+authorized client that has not reported before in the task, so a task
+gives at most as many reaction bits as it has identities; a collector key
+used for several tasks accumulates them. Until section 5 exists, treat
+the collector's key as exposed to an evaluator that deviates, and use a
+fresh key per task.
 
 Gate (the substituted sum refused before decryption): **not met.**
 `known_limit_an_evaluator_that_deviates_can_substitute_the_sum` still

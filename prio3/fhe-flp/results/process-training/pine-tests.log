@@ -1,0 +1,25 @@
+   Compiling fhe-flp v0.1.0 (/workspace/work/pine-bgv/collector-training/prio3/fhe-flp)
+    Finished `release` profile [optimized] target(s) in 6.77s
+     Running tests/pine.rs (/workspace/fhe-build/oblivious-recovered/release/deps/pine-ce514e33a2e25e4f)
+
+running 17 tests
+test a_ciphertext_with_large_noise_is_not_evaluated_linearly ... ok
+test a_claimed_bit_that_is_not_a_bit_is_rejected ... ok
+test a_cohort_the_clients_did_not_sign_is_refused_before_anything_is_decrypted ... ok
+test a_malformed_ciphertext_is_refused_before_anything_is_recorded_or_decrypted ... ok
+test a_norm_beyond_the_bound_is_rejected ... ok
+test a_squared_norm_that_wraps_the_field_is_rejected ... ok
+test below_the_release_threshold_nothing_is_released ... ok
+test checks_and_releases_cannot_be_repeated_and_the_rules_survive_a_restart ... ok
+test coefficients_outside_the_layout_change_nothing ... ok
+test concrete_soundness_bounds ... ok
+test gradients_longer_than_one_ciphertext ... ok
+test honest_gradients_are_summed_exactly ... ok
+test known_limit_an_evaluator_that_deviates_can_substitute_the_sum ... ok
+test malformed_and_replayed_reports_and_wrong_requests_are_refused ... ok
+test noise_beyond_the_admission_bound_is_refused_before_the_verifier_is_decrypted ... ok
+test parts_of_other_reports_re_encryptions_and_other_nonces_are_rejected ... ok
+test the_collector_decrypts_exactly_prios_verifier ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 80.13s
+

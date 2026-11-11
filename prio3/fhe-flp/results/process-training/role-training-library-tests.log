@@ -1,0 +1,53 @@
+   Compiling fhe-flp v0.1.0 (/workspace/work/pine-bgv/collector-training/prio3/fhe-flp)
+    Finished `release` profile [optimized] target(s) in 46.89s
+     Running unittests src/lib.rs (/workspace/fhe-build/oblivious-recovered/release/deps/fhe_flp-6507b2afb2631861)
+
+running 22 tests
+test bitvec::tests::closed_form_equals_prio_query ... ok
+test bitvec::tests::closed_form_on_a_gadget_point_that_is_a_2w_th_root ... ok
+test codec::tests::out_of_range_residue_in_bytes_is_refused ... ok
+test codec::tests::roundtrip_and_canonical ... ok
+test f65537::tests::arithmetic_matches_integer_reference ... ok
+test f65537::tests::encodings_are_canonical ... ok
+test f65537::tests::every_nonzero_element_has_its_inverse ... ok
+test f65537::tests::prio_flp_proves_and_decides_in_this_field ... ok
+test f65537::tests::random_vectors_are_in_range_and_spread ... ok
+test f65537::tests::roots_of_unity_and_generator ... ok
+test pine::circuit::tests::a_norm_that_wraps_the_field_fails_the_wraparound_tests ... ok
+test pine::circuit::tests::closed_form_verifier_maps_agree_with_prio_query ... ok
+test pine::circuit::tests::encoding_rounds_to_even_and_refuses_what_the_reference_refuses ... ok
+test pine::circuit::tests::honest_inputs_satisfy_both_circuits_and_each_violation_is_caught ... ok
+test pine::circuit::tests::parameters_outside_the_reference_guards_are_refused ... ok
+test pine::circuit::tests::prio_proves_and_decides_both_circuits ... ok
+test pine::circuit::tests::wraparound_vectors_have_the_reference_distribution_and_layout ... ok
+test pine::descriptor::tests::encoding_is_canonical_and_strict ... ok
+test pine::process_wire::tests::frame_limits_and_roles_are_enforced_before_reading_body ... ok
+test pine::tests::flooding_margin_of_a_dense_row_over_every_ciphertext ... ok
+test single::tests::aggregate_maps_of_prio3_types ... ok
+test single::tests::weights_that_are_not_one_shifted_pattern_are_refused ... ok
+
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.36s
+
+     Running tests/pine_process.rs (/workspace/fhe-build/oblivious-recovered/release/deps/pine_process-285156cf201fc925)
+
+running 3 tests
+test oversized_check_header_is_refused_without_reading_body ... ok
+test raw_report_frame_is_not_a_collector_check_and_task_cannot_restart ... ok
+test unverified_production_collector_never_starts ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.82s
+
+     Running tests/pine_training.rs (/workspace/fhe-build/oblivious-recovered/release/deps/pine_training-f707c8b9b3bd1da5)
+
+running 8 tests
+test complete_encrypted_training_rounds_match_integer_reference ... ok
+test local_step_matches_cross_entropy_gradient ... ok
+test malformed_release_burns_release_without_secret_work ... ok
+test malformed_request_is_terminal_and_survives_restart ... ok
+test quantization_checks_integer_norm_after_rounding ... ok
+test rejected_client_is_excluded_from_sum_and_average ... ok
+test under_threshold_is_terminal_without_aggregate_release ... ok
+test wrong_model_report_is_refused_before_secret_work ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 31.03s
+

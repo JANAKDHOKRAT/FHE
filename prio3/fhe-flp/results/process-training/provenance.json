@@ -1,0 +1,25 @@
+{
+  "source_commit": "bcbdac1d6ccc4d54c362a369bf5f05dddd929445",
+  "recorded_utc": "2026-11-11T02:50:54.457100+00:00",
+  "source_sha256": {
+    "Cargo.toml": "d63fc6d28de8e46884da82e00036d4c6b88ea24cc78f13601f53990812f30ae2",
+    "Cargo.lock": "511f82ec555c25616d2595fce0b70cec964f76cef18e07c097139a28107f4b12",
+    "src/pine.rs": "8eeffff5217bcb34b59ecb8d2323f18fd635d41538f8a30abc38bc65d426f76a",
+    "src/pine/training.rs": "8f5310adf49ff31ebb136e2f56eac4901eccc880e9849a7b4da9ca056613dc96",
+    "src/pine/process_wire.rs": "36cfed129ca97650b6ff52476b319c349f2a7e8b83744f5029c8a28f6325574c",
+    "src/bin/pine_role.rs": "cc9fa44b7043b839f2b4cbd34df2835aaf25d4fd48a408f684afbe64766d87cb",
+    "scripts/train_pine_processes.py": "9fc51b37f2101d8665ed4a30fd9df3c1177b3f0688f5f1d32f39469fe39ef480",
+    "scripts/test_process_transport.py": "dbfe7daef533b0d6c7e5ab42f2b9e336c4178bf0ba5771f1aaa6bca4314e6a5c",
+    "tests/pine_process.rs": "f5c429ed7ed27c3f433ff0b3e90c53d4552a1a70e63ccc71f36984ee5da247d3"
+  },
+  "binary_sha256": "55b877e2c5ba679493be756553a0fb67c8413264debf6cf57528678dde9d6040",
+  "dataset_csv_sha256": "6ebb3d2fee246a4e99363262ddf8a00a3c41bee6014c373ed9d9216ba7f651b8",
+  "rustc": "rustc 1.94.1 (e408947bf 2026-03-25)",
+  "openfhe_source_commit": "32362085fcfa8133f86a4e81d4440734c984b16d",
+  "omp_num_threads": "2",
+  "command": "python3 scripts/train_pine_processes.py PINE_ROLE_BINARY DIGITS_CSV NEW_OUTPUT --rounds 3 --clients 4 --allow-unverified-evaluator",
+  "rust_tests_passed": 50,
+  "python_tests_passed": 5,
+  "security_status": "Process separation only; no malicious-evaluator execution proof or complete collector-view privacy proof. Same OS user; local pipe transport. Explicit unverified mode.",
+  "timing_scope": "One observation per round on a shared machine; not a controlled performance comparison."
+}

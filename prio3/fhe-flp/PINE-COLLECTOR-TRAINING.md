@@ -39,8 +39,9 @@ update preparation, model/round/configuration binding, accepted-client averaging
 and immutable checksummed checkpoints. Clients need only their local data,
 current model, task, public encryption key and signing key. The evaluator needs
 no local training data or decryption key. The collector needs no client dataset.
-The training APIs can be used by separate role processes; network deployment and
-operator isolation are not supplied by this change.
+Separate role processes are now implemented in `pine_role` and qualified by
+`scripts/train_pine_processes.py`; see `PINE-PROCESS-DEPLOYMENT.md`. Network
+transport and protection against malicious same-user processes are not supplied.
 
 ## Safe arithmetic and exact quantization
 

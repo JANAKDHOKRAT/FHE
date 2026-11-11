@@ -107,6 +107,7 @@
 pub mod circuit;
 pub mod collector_session;
 pub mod descriptor;
+pub mod process_wire;
 pub mod training;
 
 use crate::codec::ResidueCodec;
@@ -172,7 +173,8 @@ pub const PART_GRADIENT: usize = 0;
 pub const PART_WRAPAROUND: usize = 1;
 pub const PART_PROOFS: usize = 2;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PineParams {
     pub dimension: usize,
     /// Bound on the L2 norm of the encoded gradient: a real bound times

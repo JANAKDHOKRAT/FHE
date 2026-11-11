@@ -29,7 +29,8 @@ pub struct Example {
     pub label: usize,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TrainingConfig {
     pub local_epochs: usize,
     pub local_learning_rate: f64,

@@ -292,8 +292,10 @@ images exercise a 650-parameter model, four clients, actual PINE/BGV verificatio
 and exact integer-sum/model/checkpoint comparison. Regression tests include
 rejected-client averaging, wrong-model refusal and post-quantization bounds.
 See `PINE-COLLECTOR-TRAINING.md` and `results/collector-training/` for evidence and
-precise scope. The runner holds all roles in one process for qualification; it
-is not a privacy-isolated deployment.
+precise scope. The original runner holds all roles in one process. The subsequent `pine_role`
+runner uses separate client, evaluator, collector and model-update processes;
+see `PINE-PROCESS-DEPLOYMENT.md`. Same-host process separation is not protection
+against malicious same-user processes or colluding operators.
 
 Not done: production transport/isolation, malicious-evaluator authentication,
 joint collector privacy, exactly-once recovery across release/checkpoint loss,
